@@ -9,8 +9,10 @@ from db import init_db, get_random_response, get_all_responses
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+HOST = os.getenv('HOST')
+PORT = os.getenv('PORT')
 
-API_URL = "http://192.168.0.213:9999/add"  # Your Flask API
+API_URL = f"http://{HOST}:{PORT}/add"  # Your Flask API
 
 intents = discord.Intents.default()
 intents.message_content = True

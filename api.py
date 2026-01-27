@@ -1,5 +1,12 @@
+import os
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from db import init_db, add_response, remove_response, get_all_responses
+
+load_dotenv()
+
+HOST = os.getenv('HOST')
+PORT = os.getenv('PORT')
 
 app = Flask(__name__)
 init_db()
@@ -34,4 +41,4 @@ def all_responses():
     return jsonify(responses)
 
 if __name__ == "__main__":
-    app.run(host="192.168.0.213", port=9999)
+    app.run(host=HOST, port=int(PORT))
