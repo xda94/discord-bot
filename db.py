@@ -1,5 +1,6 @@
 import sqlite3
 import random
+import time
 
 DB_FILE = "responses.db"
 
@@ -11,6 +12,15 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             keyword TEXT NOT NULL,
             response TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            remind_at REAL NOT NULL,
+            message TEXT NOT NULL
         )
     """)
     conn.commit()
@@ -70,3 +80,29 @@ def get_random_response(keyword):
     if not rows:
         return None
     return random.choice(rows)[0]
+
+def add_reminder(user_id, channel_id, remind_at, message):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO reminders (user_id, channel_id, remind_at, message) VALUES (?, ?, ?, ?)",
+        (user_id, channel_id, remind_at, message)
+    )
+    conn.commit()
+    conn.close()
+
+def get_due_reminders():
+    now = time.time()
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT id, user_id, channel_id, message FROM reminders WHERE remind_at <= ?", (now,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def delete_reminder(reminder_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    conn.commit()
+    conn.close()
