@@ -1,13 +1,40 @@
 import os
-from dotenv import load_dotenv
-import discord
-from discord import app_commands
-import requests
-import time
-from db import init_db, get_random_response, get_all_responses, add_reminder, get_due_reminders, delete_reminder
 import re
-from discord.ext import tasks
 import time
+import requests
+import discord
+import logging
+from logging.handlers import RotatingFileHandler
+from discord import app_commands
+from discord.ext import tasks
+from dotenv import load_dotenv
+from db import (
+    init_db, get_random_response, get_all_responses, 
+    add_reminder, get_due_reminders, delete_reminder
+)
+
+# --- Enhanced Logging Setup ---
+logger = logging.getLogger("discord_bot")
+logger.setLevel(logging.INFO)
+
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s')
+
+# Writes to bot.log
+file_handler = RotatingFileHandler('bot.log', maxBytes=5*1024*1024, backupCount=2)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Prints to console
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Link DB logger
+db_logger = logging.getLogger("database")
+db_logger.setLevel(logging.INFO)
+db_logger.addHandler(file_handler)
+db_logger.addHandler(console_handler)
+# ------------------------------
 
 load_dotenv()
 
@@ -15,36 +42,41 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 HOST = os.getenv('HOST')
 PORT = os.getenv('PORT')
 
-API_URL = f"http://{HOST}:{PORT}/add"  # Your Flask API
+API_URL = f"http://{HOST}:{PORT}"
 
 intents = discord.Intents.default()
 intents.message_content = True
 
 last_response_time = 0
-COOLDOWN = 10  # seconds
+COOLDOWN = 10
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+# Initialize DB
 init_db()
 
-# Function to call API
 def add_keyword_response(keyword, response):
     payload = {"keyword": keyword, "response": response}
+    url = f"{API_URL}/add"
     try:
-        r = requests.post(API_URL, json=payload)
+        r = requests.post(url, json=payload)
         r.raise_for_status()
+        logger.info(f"API Success: Added keyword '{keyword}' via {url}")
         return r.json()
     except requests.exceptions.RequestException as e:
-        print("API error:", e)
+        logger.error(f"API Request Failed at {url}: {e}")
         return {"error": str(e)}
 
 @client.event
 async def on_ready():
-    # This syncs your commands so they appear in Discord
-    await tree.sync()
-    if not check_reminders.is_running():
-        check_reminders.start()
-    print(f"Logged in as {client.user}")
+    try:
+        await tree.sync()
+        if not check_reminders.is_running():
+            check_reminders.start()
+        logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
+    except Exception:
+        logger.exception("Error during on_ready startup sequence")
 
 @client.event
 async def on_message(message):
@@ -55,28 +87,35 @@ async def on_message(message):
 
     now = time.time()
     if now - last_response_time < COOLDOWN:
-        return  # still in cooldown, ignore this message
+        return
 
     content = message.content.lower()
-    all_keywords = get_all_responses().keys()
+    
+    try:
+        all_keywords = get_all_responses().keys()
+        for keyword in all_keywords:
+            if keyword in content:
+                response = get_random_response(keyword)
+                if response:
+                    await message.reply(response, mention_author=False)
+                    last_response_time = now
+                    logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
+                    break
+    except Exception:
+        logger.exception("Error processing message for keywords")
 
-    for keyword in all_keywords:
-        if keyword in content:
-            response = get_random_response(keyword)
-            if response:
-                await message.reply(response, mention_author=False)
-                last_response_time = now  # update the timestamp
-                break
-
-# Slash command to add a keyword
 @tree.command(name="add", description="Add a new keyword and response")
-@app_commands.describe(keyword="The keyword to trigger the response", response="The response for the keyword")
+@app_commands.describe(keyword="The keyword", response="The response")
 async def add(interaction: discord.Interaction, keyword: str, response: str):
+    logger.info(f"Command /add called by {interaction.user} for '{keyword}'")
     result = add_keyword_response(keyword, response)
+    
     if "status" in result and result["status"] == "ok":
-         await interaction.response.send_message(f"Added keyword!")
+         await interaction.response.send_message(f"Added keyword: **{keyword}**")
     else:
-        await interaction.response.send_message(f"Failed to add keyword! Error: {result.get('error', 'unknown')}")
+        error_msg = result.get('error', 'unknown')
+        await interaction.response.send_message(f"Failed to add keyword! Error: {error_msg}")
+        logger.warning(f"Failed /add command: {error_msg}")
 
 def parse_time(time_str):
     minutes_per_unit = {"m": 1, "h": 60, "d": 1440}
@@ -86,24 +125,34 @@ def parse_time(time_str):
     amount, unit = match.groups()
     return int(amount) * minutes_per_unit[unit] * 60
 
-# Background task to check reminders
 @tasks.loop(seconds=10)
 async def check_reminders():
-    due = get_due_reminders()
-    for rem_id, user_id, channel_id, message in due:
-        channel = client.get_channel(channel_id)
-        if channel:
-            await channel.send(f"🔔 <@{user_id}>, here is your reminder: **{message}**")
-        delete_reminder(rem_id)
+    try:
+        due = get_due_reminders()
+        for rem_id, user_id, channel_id, message in due:
+            try:
+                # Attempt to send the message
+                channel = client.get_channel(channel_id)
+                if channel:
+                    await channel.send(f"🔔 <@{user_id}>, here is your reminder: **{message}**")
+                    logger.info(f"Delivered reminder {rem_id} to user {user_id}")
+                else:
+                    logger.warning(f"Reminder {rem_id}: Channel {channel_id} inaccessible")
+            except Exception as e:
+                # If sending fails (e.g., missing perms), log it but DO NOT crash the loop
+                logger.error(f"Failed to send reminder {rem_id}: {e}")
+            finally:
+                # CRITICAL: Always delete the reminder so we don't spam errors infinitely
+                delete_reminder(rem_id)
+                
+    except Exception:
+        logger.exception("Critical error inside check_reminders loop")
 
-# The /remind command
 @tree.command(name="remind", description="Set a reminder")
-@app_commands.describe(
-    when="Time until reminder (e.g. 30m, 1h, 1d)", 
-    who="The user to remind", 
-    what="What to remind them about"
-)
+@app_commands.describe(when="Time (e.g. 30m, 1h)", who="User to remind", what="The message")
 async def remind(interaction: discord.Interaction, when: str, who: discord.Member, what: str):
+    logger.info(f"Command /remind called by {interaction.user} targeting {who.display_name}")
+    
     seconds = parse_time(when)
     if seconds is None:
         await interaction.response.send_message("Invalid time format! Use 1m, 1h, or 1d.", ephemeral=True)
