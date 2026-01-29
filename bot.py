@@ -4,7 +4,10 @@ import discord
 from discord import app_commands
 import requests
 import time
-from db import init_db, get_random_response, get_all_responses
+from db import init_db, get_random_response, get_all_responses, add_reminder, get_due_reminders, delete_reminder
+import re
+from discord.ext import tasks
+import time
 
 load_dotenv()
 
@@ -37,7 +40,10 @@ def add_keyword_response(keyword, response):
 
 @client.event
 async def on_ready():
-    await tree.sync()  # Sync commands with Discord
+    # This syncs your commands so they appear in Discord
+    await tree.sync()
+    if not check_reminders.is_running():
+        check_reminders.start()
     print(f"Logged in as {client.user}")
 
 @client.event
@@ -71,5 +77,41 @@ async def add(interaction: discord.Interaction, keyword: str, response: str):
          await interaction.response.send_message(f"Added keyword!")
     else:
         await interaction.response.send_message(f"Failed to add keyword! Error: {result.get('error', 'unknown')}")
+
+def parse_time(time_str):
+    minutes_per_unit = {"m": 1, "h": 60, "d": 1440}
+    match = re.match(r"(\d+)([mhd])", time_str.lower())
+    if not match:
+        return None
+    amount, unit = match.groups()
+    return int(amount) * minutes_per_unit[unit] * 60
+
+# Background task to check reminders
+@tasks.loop(seconds=10)
+async def check_reminders():
+    due = get_due_reminders()
+    for rem_id, user_id, channel_id, message in due:
+        channel = client.get_channel(channel_id)
+        if channel:
+            await channel.send(f"🔔 <@{user_id}>, here is your reminder: **{message}**")
+        delete_reminder(rem_id)
+
+# The /remind command
+@tree.command(name="remind", description="Set a reminder")
+@app_commands.describe(
+    when="Time until reminder (e.g. 30m, 1h, 1d)", 
+    who="The user to remind", 
+    what="What to remind them about"
+)
+async def remind(interaction: discord.Interaction, when: str, who: discord.Member, what: str):
+    seconds = parse_time(when)
+    if seconds is None:
+        await interaction.response.send_message("Invalid time format! Use 1m, 1h, or 1d.", ephemeral=True)
+        return
+
+    remind_at = time.time() + seconds
+    add_reminder(who.id, interaction.channel_id, remind_at, what)
+    
+    await interaction.response.send_message(f"Got it! I'll remind {who.display_name} about '{what}' in {when}.")
 
 client.run(TOKEN)
