@@ -121,14 +121,14 @@ def add_reminder(user_id, channel_id, remind_at, message):
 def get_due_reminders():
     try:
         now = time.time()
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute("SELECT id, user_id, channel_id, message FROM reminders WHERE remind_at <= ?", (now,))
-        rows = c.fetchall()
-        conn.close()
-        if rows:
-            logger.debug(f"Retrieved {len(rows)} due reminders.")
-        return rows
+        # Use context manager for automatic closing
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            # Log 'now' to compare against what's in your DB manually
+            logger.debug(f"Checking for reminders due before: {now}")
+            c.execute("SELECT id, user_id, channel_id, message FROM reminders WHERE remind_at <= ?", (now,))
+            rows = c.fetchall()
+            return rows
     except Exception:
         logger.exception("Failed to fetch due reminders")
         return []
@@ -143,3 +143,19 @@ def delete_reminder(reminder_id):
         logger.debug(f"Deleted executed reminder ID: {reminder_id}")
     except Exception:
         logger.exception(f"Failed to delete reminder ID {reminder_id}")
+
+def get_all_reminders():
+    try:
+        # Use context manager for automatic closing
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            logger.debug("Fetching all reminders from the database.")
+            
+            # Select all columns without a filter
+            c.execute("SELECT id, user_id, channel_id, message, remind_at FROM reminders")
+            
+            rows = c.fetchall()
+            return rows
+    except Exception:
+        logger.exception("Failed to fetch all reminders")
+        return []
