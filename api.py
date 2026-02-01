@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from db import (
     init_db, add_response, remove_response, get_all_responses,
-    add_reminder, get_due_reminders, delete_reminder
+    add_reminder, get_due_reminders, delete_reminder, get_all_reminders
 )
 
 # --- Enhanced Logging Setup for API ---
@@ -32,8 +32,8 @@ db_logger.addHandler(console_handler)
 
 load_dotenv()
 
-HOST = os.getenv('HOST', '0.0.0.0')
-PORT = os.getenv('PORT', 5000)
+HOST = os.getenv('HOST')
+PORT = os.getenv('PORT')
 
 app = Flask(__name__)
 
@@ -116,6 +116,28 @@ def api_delete_reminder(reminder_id):
     delete_reminder(reminder_id)
     logger.info(f"Reminder {reminder_id} deleted via API")
     return jsonify({"status": "deleted", "id": reminder_id})
+
+@app.route("/reminders/all", methods=["GET"]) 
+def api_get_all_reminders(): 
+    try: 
+        reminders = get_all_reminders() 
+        # Mapping the database rows to a clean JSON format
+        result = [ 
+            {
+                "id": r[0], 
+                "user_id": r[1], 
+                "channel_id": r[2], 
+                "message": r[3], 
+                "remind_at": r[4]
+            } 
+            for r in reminders 
+        ] 
+        logger.info(f"All reminders fetched. Count: {len(result)}")
+        return jsonify(result) 
+    except Exception: 
+        logger.exception("Error in /reminders/all") 
+        return jsonify({"error": "Internal server error"}), 500
+
 
 if __name__ == "__main__":
     logger.info(f"Starting Flask API Server on {HOST}:{PORT}")
