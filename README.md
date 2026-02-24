@@ -1,4 +1,4 @@
-# 🤖 Discord Keyword Responder
+# 🤖 Discord Keyword Responder Bot
 
 A lightweight, Python-powered Discord bot that monitors chat and triggers automated responses based on specific keywords. It features a Flask-based API for external management and uses PM2 for "set-it-and-forget-it" stability.
 
