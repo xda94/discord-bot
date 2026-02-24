@@ -43,18 +43,19 @@ PORT=your_port_here
 ## 🏃 Execution
 ​This project runs as two separate processes (the bot and the API). Use PM2 to keep them running in the background.
 
-​Starting the Bot
+**​Starting the Bot**
 ```bash
 pm2 start bot.py --interpreter python3 --name discord-bot
 ```
-Starting the API
+**Starting the API**
 ```bash
 pm2 start api.py --interpreter python3 --name discord-api
 ```
 
-Useful PM2 Commands
-​* pm2 status — Check if the bot and API are online.
-* ​pm2 logs — View real-time logs and errors.
+**Useful PM2 Commands**
+
+* ​pm2 status — Check if the bot and API are online.
+* pm2 logs — View real-time logs and errors.
 * ​pm2 restart all — Restart both processes.
 * ​pm2 stop all — Stop the bot and API.
 
@@ -62,6 +63,6 @@ Useful PM2 Commands
 ## ​📁 Project Structure
 * ​bot.py — The core Discord client logic.
 * ​api.py — Flask application for API handling.
-* ​requirements.txt — List of Python dependencies.
+* requirements.txt — List of Python dependencies.
 * ​.env — Environment variables (ignored by git).
 * ​database.db — SQLite database file.
