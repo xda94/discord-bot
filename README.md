@@ -1,26 +1,26 @@
-Discord bot that reads the discord chat and responds to keywords with certain responses.
+Here's a Discord bot that reads chat and responds to keywords.
 
-Written in python.
+It's written in Python and uses SQLite for the database.
 
-Uses SQLite for DB.
+Flask handles the API HTTP calls.
 
-Flask is used for API HTTP calls.
+PM2, a Node.js process manager, keeps the bot running.
 
-The bot is managed by production process manager PM2 for Node.JS.
+To get it going, create a `.env` file and add these:
 
-To run this app, create a .env file where you will add the following:
-
+```
 DISCORD_TOKEN=your_token_here
 HOST=your_host_here
 PORT=your_port_here
+```
 
-Steps to install:
-install SQLite3
-install python3
-install node.js
-npm install pm2 -g && pm2 update
-pip install python-dotenv
-pip install requests
-pip3 install flask discord.py
-pm2 start bot.py --interpreter python3 --name discord-bot
-pm2 start api.py --interpreter python3 --name discord-api
+Here's how to install it:
+Install SQLite3
+Install Python 3
+Install Node.js
+`npm install pm2 -g && pm2 update`
+`pip install python-dotenv`
+`pip install requests`
+`pip3 install flask discord.py`
+`pm2 start bot.py --interpreter python3 --name discord-bot`
+`pm2 start api.py --interpreter python3 --name discord-api`
