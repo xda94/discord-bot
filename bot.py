@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from db import (
-    init_db, get_random_response, get_all_responses,
+    init_db, add_response, get_random_response, get_all_responses,
     add_reminder, get_due_reminders, delete_reminder,
     log_keyword_usage, get_top_keywords, get_top_keywords_by_user
 )
@@ -42,10 +42,6 @@ db_logger.addHandler(console_handler)
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
-HOST = os.getenv('HOST')
-PORT = os.getenv('PORT')
-
-API_URL = f"http://{HOST}:{PORT}"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -73,18 +69,6 @@ tree = app_commands.CommandTree(client)
 
 # Initialize DB
 init_db()
-
-def add_keyword_response(keyword, response):
-    payload = {"keyword": keyword, "response": response}
-    url = f"{API_URL}/add"
-    try:
-        r = requests.post(url, json=payload)
-        r.raise_for_status()
-        logger.info(f"API Success: Added keyword '{keyword}' via {url}")
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API Request Failed at {url}: {e}")
-        return {"error": str(e)}
 
 @client.event
 async def on_ready():
@@ -141,14 +125,8 @@ async def on_message(message):
 @app_commands.describe(keyword="The keyword", response="The response")
 async def add(interaction: discord.Interaction, keyword: str, response: str):
     logger.info(f"Command /add called by {interaction.user} for '{keyword}'")
-    result = add_keyword_response(keyword, response)
-    
-    if "status" in result and result["status"] == "ok":
-         await interaction.response.send_message(f"Added keyword: **{keyword}**")
-    else:
-        error_msg = result.get('error', 'unknown')
-        await interaction.response.send_message(f"Failed to add keyword! Error: {error_msg}")
-        logger.warning(f"Failed /add command: {error_msg}")
+    add_response(keyword, response)
+    await interaction.response.send_message(f"Added keyword: **{keyword}**")
 
 def parse_time(time_str):
     minutes_per_unit = {"m": 1, "h": 60, "d": 1440}
@@ -219,8 +197,29 @@ async def topkeywords(interaction: discord.Interaction, user: discord.Member = N
 
     lines = [f"**{title}**"]
     for i, (keyword, count) in enumerate(rows, 1):
-        lines.append(f"{i}. `{keyword}` — {count} use{'s' if count != 1 else ''}")
+        display = keyword if keyword.startswith("<@") else f"`{keyword}`"
+        lines.append(f"{i}. {display} — {count} use{'s' if count != 1 else ''}")
 
     await interaction.response.send_message("\n".join(lines))
+
+@tree.command(name="help", description="Show all available commands and how to use them")
+async def help(interaction: discord.Interaction):
+    logger.info(f"Command /help called by {interaction.user}")
+    text = (
+        "**Available Commands**\n\n"
+        "**/add** `<keyword>` `<response>`\n"
+        "Add a keyword-response pair. When someone types a message containing the keyword, "
+        "the bot replies with the response. Multiple responses can be added to the same keyword — "
+        "the bot picks one at random.\n\n"
+        "**/remind** `<when>` `<who>` `<what>`\n"
+        "Set a reminder. The bot will ping the specified user after the given time. "
+        "Time format: `30m` (minutes), `2h` (hours), `1d` (days).\n\n"
+        "**/topkeywords** `[user]`\n"
+        "Show the most triggered keywords in this server. "
+        "Optionally pass a user to see their personal keyword stats.\n\n"
+        "**/help**\n"
+        "Show this message."
+    )
+    await interaction.response.send_message(text, ephemeral=True)
 
 client.run(TOKEN)
