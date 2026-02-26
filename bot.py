@@ -48,7 +48,7 @@ intents.message_content = True
 
 last_response_time = 0
 COOLDOWN = 10
-TEASE_BASE_CHANCE = 0.02
+TEASE_BASE_CHANCE = 0.05
 teases_today = 0
 tease_reset_date = None
 TEASE_MESSAGES = [
