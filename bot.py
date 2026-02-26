@@ -106,7 +106,7 @@ async def on_message(message):
                     if message.guild:
                         log_keyword_usage(keyword, message.author.id, message.guild.id)
                     logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
-                    break
+                    return
     except Exception:
         logger.exception("Error processing message for keywords")
 
