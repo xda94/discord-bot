@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import requests
 import discord
 import logging
 from logging.handlers import RotatingFileHandler
@@ -9,7 +8,7 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from db import (
-    init_db, get_random_response, get_all_responses,
+    init_db, add_response, get_random_response, get_all_responses,
     add_reminder, get_due_reminders, delete_reminder,
     log_keyword_usage, get_top_keywords, get_top_keywords_by_user
 )
@@ -40,10 +39,6 @@ db_logger.addHandler(console_handler)
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
-HOST = os.getenv('HOST')
-PORT = os.getenv('PORT')
-
-API_URL = f"http://{HOST}:{PORT}"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -56,18 +51,6 @@ tree = app_commands.CommandTree(client)
 
 # Initialize DB
 init_db()
-
-def add_keyword_response(keyword, response):
-    payload = {"keyword": keyword, "response": response}
-    url = f"{API_URL}/add"
-    try:
-        r = requests.post(url, json=payload)
-        r.raise_for_status()
-        logger.info(f"API Success: Added keyword '{keyword}' via {url}")
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API Request Failed at {url}: {e}")
-        return {"error": str(e)}
 
 @client.event
 async def on_ready():
@@ -111,14 +94,8 @@ async def on_message(message):
 @app_commands.describe(keyword="The keyword", response="The response")
 async def add(interaction: discord.Interaction, keyword: str, response: str):
     logger.info(f"Command /add called by {interaction.user} for '{keyword}'")
-    result = add_keyword_response(keyword, response)
-    
-    if "status" in result and result["status"] == "ok":
-         await interaction.response.send_message(f"Added keyword: **{keyword}**")
-    else:
-        error_msg = result.get('error', 'unknown')
-        await interaction.response.send_message(f"Failed to add keyword! Error: {error_msg}")
-        logger.warning(f"Failed /add command: {error_msg}")
+    add_response(keyword, response)
+    await interaction.response.send_message(f"Added keyword: **{keyword}**")
 
 def parse_time(time_str):
     minutes_per_unit = {"m": 1, "h": 60, "d": 1440}
