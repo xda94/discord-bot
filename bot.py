@@ -193,4 +193,24 @@ async def topkeywords(interaction: discord.Interaction, user: discord.Member = N
 
     await interaction.response.send_message("\n".join(lines))
 
+@tree.command(name="help", description="Show all available commands and how to use them")
+async def help(interaction: discord.Interaction):
+    logger.info(f"Command /help called by {interaction.user}")
+    text = (
+        "**Available Commands**\n\n"
+        "**/add** `<keyword>` `<response>`\n"
+        "Add a keyword-response pair. When someone types a message containing the keyword, "
+        "the bot replies with the response. Multiple responses can be added to the same keyword — "
+        "the bot picks one at random.\n\n"
+        "**/remind** `<when>` `<who>` `<what>`\n"
+        "Set a reminder. The bot will ping the specified user after the given time. "
+        "Time format: `30m` (minutes), `2h` (hours), `1d` (days).\n\n"
+        "**/topkeywords** `[user]`\n"
+        "Show the most triggered keywords in this server. "
+        "Optionally pass a user to see their personal keyword stats.\n\n"
+        "**/help**\n"
+        "Show this message."
+    )
+    await interaction.response.send_message(text, ephemeral=True)
+
 client.run(TOKEN)
