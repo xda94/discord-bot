@@ -166,7 +166,8 @@ async def topkeywords(interaction: discord.Interaction, user: discord.Member = N
 
     lines = [f"**{title}**"]
     for i, (keyword, count) in enumerate(rows, 1):
-        lines.append(f"{i}. `{keyword}` — {count} use{'s' if count != 1 else ''}")
+        display = keyword if keyword.startswith("<@") else f"`{keyword}`"
+        lines.append(f"{i}. {display} — {count} use{'s' if count != 1 else ''}")
 
     await interaction.response.send_message("\n".join(lines))
 
