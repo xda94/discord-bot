@@ -62,6 +62,8 @@ TEASE_MESSAGES = [
     "that's crazy, anyway",
     "I'm going to pretend I didn't read that",
     "{user} really typed that and hit send",
+    "Taci dracu...",
+    "Iar s-a trezit asta",
 ]
 
 client = discord.Client(intents=intents)
