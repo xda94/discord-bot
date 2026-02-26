@@ -139,7 +139,6 @@ def api_get_all_reminders():
         return jsonify({"error": "Internal server error"}), 500
 
 
-
 if __name__ == "__main__":
     logger.info(f"Starting Flask API Server on {HOST}:{PORT}")
     app.run(host=HOST, port=int(PORT))
