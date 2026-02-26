@@ -28,6 +28,15 @@ def init_db():
                 message TEXT NOT NULL
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS keyword_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                used_at REAL NOT NULL
+            )
+        """)
         conn.commit()
         conn.close()
         logger.info("Database connection initialized.")
@@ -150,12 +159,58 @@ def get_all_reminders():
         with sqlite3.connect(DB_FILE) as conn:
             c = conn.cursor()
             logger.debug("Fetching all reminders from the database.")
-            
+
             # Select all columns without a filter
             c.execute("SELECT id, user_id, channel_id, message, remind_at FROM reminders")
-            
+
             rows = c.fetchall()
             return rows
     except Exception:
         logger.exception("Failed to fetch all reminders")
+        return []
+
+def log_keyword_usage(keyword, user_id, guild_id):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO keyword_usage (keyword, user_id, guild_id, used_at) VALUES (?, ?, ?, ?)",
+            (keyword.lower(), user_id, guild_id, time.time())
+        )
+        conn.commit()
+        conn.close()
+        logger.debug(f"Logged usage of keyword '{keyword}' by user {user_id}")
+    except Exception:
+        logger.exception(f"Failed to log keyword usage for '{keyword}'")
+
+def get_top_keywords(guild_id, limit=10):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute(
+            "SELECT keyword, COUNT(*) as cnt FROM keyword_usage WHERE guild_id = ? GROUP BY keyword ORDER BY cnt DESC LIMIT ?",
+            (guild_id, limit)
+        )
+        rows = c.fetchall()
+        conn.close()
+        logger.info(f"Fetched top {limit} keywords for guild {guild_id}")
+        return rows
+    except Exception:
+        logger.exception("Failed to fetch top keywords")
+        return []
+
+def get_top_keywords_by_user(guild_id, user_id, limit=10):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute(
+            "SELECT keyword, COUNT(*) as cnt FROM keyword_usage WHERE guild_id = ? AND user_id = ? GROUP BY keyword ORDER BY cnt DESC LIMIT ?",
+            (guild_id, user_id, limit)
+        )
+        rows = c.fetchall()
+        conn.close()
+        logger.info(f"Fetched top {limit} keywords for user {user_id} in guild {guild_id}")
+        return rows
+    except Exception:
+        logger.exception(f"Failed to fetch top keywords for user {user_id}")
         return []
