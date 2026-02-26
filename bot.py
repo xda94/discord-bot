@@ -1,6 +1,9 @@
 import os
 import re
 import time
+import random
+from datetime import date
+import requests
 import discord
 import logging
 from logging.handlers import RotatingFileHandler
@@ -45,6 +48,23 @@ intents.message_content = True
 
 last_response_time = 0
 COOLDOWN = 10
+TEASE_BASE_CHANCE = 0.05
+teases_today = 0
+tease_reset_date = None
+TEASE_MESSAGES = [
+    "interesting take, {user}",
+    "nobody asked, {user}",
+    "cool story, {user}",
+    "sure thing, {user}",
+    "ok buddy",
+    "are you done?",
+    "tell me more... actually don't",
+    "that's crazy, anyway",
+    "I'm going to pretend I didn't read that",
+    "{user} really typed that and hit send",
+    "Taci dracu...",
+    "Iar s-a trezit asta",
+]
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
@@ -86,9 +106,22 @@ async def on_message(message):
                     if message.guild:
                         log_keyword_usage(keyword, message.author.id, message.guild.id)
                     logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
-                    break
+                    return
     except Exception:
         logger.exception("Error processing message for keywords")
+
+    # Random tease — decaying chance so it doesn't spam on busy days
+    global teases_today, tease_reset_date
+    today = date.today()
+    if tease_reset_date != today:
+        teases_today = 0
+        tease_reset_date = today
+    chance = TEASE_BASE_CHANCE / (1 + teases_today)
+    if random.random() < chance:
+        tease = random.choice(TEASE_MESSAGES).format(user=message.author.display_name)
+        await message.reply(tease, mention_author=False)
+        teases_today += 1
+        logger.info(f"Tease #{teases_today} triggered on {message.author} in #{message.channel}")
 
 @tree.command(name="add", description="Add a new keyword and response")
 @app_commands.describe(keyword="The keyword", response="The response")
