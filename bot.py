@@ -9,8 +9,9 @@ from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from db import (
-    init_db, get_random_response, get_all_responses, 
-    add_reminder, get_due_reminders, delete_reminder
+    init_db, get_random_response, get_all_responses,
+    add_reminder, get_due_reminders, delete_reminder,
+    log_keyword_usage, get_top_keywords, get_top_keywords_by_user
 )
 
 # --- Enhanced Logging Setup ---
@@ -99,6 +100,8 @@ async def on_message(message):
                 if response:
                     await message.reply(response, mention_author=False)
                     last_response_time = now
+                    if message.guild:
+                        log_keyword_usage(keyword, message.author.id, message.guild.id)
                     logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
                     break
     except Exception:
@@ -162,5 +165,32 @@ async def remind(interaction: discord.Interaction, when: str, who: discord.Membe
     add_reminder(who.id, interaction.channel_id, remind_at, what)
     
     await interaction.response.send_message(f"Got it! I'll remind {who.display_name} about '{what}' in {when}.")
+
+@tree.command(name="topkeywords", description="Show the most used keywords")
+@app_commands.describe(user="Optional: see a specific user's top keywords")
+async def topkeywords(interaction: discord.Interaction, user: discord.Member = None):
+    logger.info(f"Command /topkeywords called by {interaction.user}" + (f" for {user.display_name}" if user else ""))
+    if not interaction.guild:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild.id
+
+    if user:
+        rows = get_top_keywords_by_user(guild_id, user.id)
+        title = f"Top keywords for {user.display_name}"
+    else:
+        rows = get_top_keywords(guild_id)
+        title = "Top keywords in this server"
+
+    if not rows:
+        await interaction.response.send_message("No keyword usage data yet.", ephemeral=True)
+        return
+
+    lines = [f"**{title}**"]
+    for i, (keyword, count) in enumerate(rows, 1):
+        lines.append(f"{i}. `{keyword}` — {count} use{'s' if count != 1 else ''}")
+
+    await interaction.response.send_message("\n".join(lines))
 
 client.run(TOKEN)
