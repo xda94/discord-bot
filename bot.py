@@ -48,7 +48,7 @@ intents.message_content = True
 
 last_response_time = 0
 COOLDOWN = 10
-TEASE_BASE_CHANCE = 0.05
+TEASE_BASE_CHANCE = 0.10
 teases_today = 0
 tease_reset_date = None
 current_mood = "bad"
@@ -104,6 +104,8 @@ TEASE_MOODS = {
         "{user} really said that with their whole chest",
         "that ain't it chief",
         "big yikes from {user}",
+        "let him cook",
+        "are we cooked, chat?",
     ],
     "dad": [
         "Hi {user}, I'm bot",
@@ -160,7 +162,7 @@ async def on_message(message):
     try:
         all_keywords = get_all_responses().keys()
         for keyword in all_keywords:
-            if keyword in content:
+            if re.search(r'\b' + re.escape(keyword) + r'\b', content):
                 response = get_random_response(keyword)
                 if response:
                     await message.reply(response, mention_author=False)
@@ -282,10 +284,10 @@ async def mood(interaction: discord.Interaction, mood: app_commands.Choice[str])
     chosen = mood.value
     if chosen == "random":
         chosen = random.choice(list(TEASE_MOODS.keys()))
-    logger.info(f"Command /mood called by {interaction.user} — setting mood to something random")
+    logger.info(f"Command /mood called by {interaction.user} — setting mood to {chosen}")
     current_mood = chosen
     teases_today = 0
-    await interaction.response.send_message(f"Mood set to **{chosen}**.")
+    await interaction.response.send_message(f"Mood set to **{mood.value}**.")
 
 @tree.command(name="help", description="Show all available commands and how to use them")
 async def help(interaction: discord.Interaction):
