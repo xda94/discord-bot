@@ -130,6 +130,21 @@ TEASE_MOODS = {
     ],
 }
 
+INACTIVITY_THRESHOLD = 86400  # 24 hours in seconds
+inactivity_state = {}  # guild_id -> {"last_time": float, "channel_id": int}
+INACTIVITY_MESSAGES = [
+    "it's quiet... too quiet",
+    "did everyone die?",
+    "hello? is this thing on?",
+    "I'm bored, someone say something",
+    "*tumbleweed rolls by*",
+    "this server is deader than my will to live",
+    "I've been alone for 24 hours now. this is fine.",
+    "not a single message in a whole day? wow.",
+    "guess I'll just talk to myself then",
+    "ce plm, ba? ati murit toti?",
+]
+
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
@@ -142,6 +157,8 @@ async def on_ready():
         await tree.sync()
         if not check_reminders.is_running():
             check_reminders.start()
+        if not check_inactivity.is_running():
+            check_inactivity.start()
         logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
     except Exception:
         logger.exception("Error during on_ready startup sequence")
@@ -152,6 +169,12 @@ async def on_message(message):
 
     if message.author.bot:
         return
+
+    if message.guild:
+        inactivity_state[message.guild.id] = {
+            "last_time": time.time(),
+            "channel_id": message.channel.id,
+        }
 
     now = time.time()
     if now - last_response_time < COOLDOWN:
@@ -224,6 +247,21 @@ async def check_reminders():
                 
     except Exception:
         logger.exception("Critical error inside check_reminders loop")
+
+@tasks.loop(minutes=30)
+async def check_inactivity():
+    try:
+        now = time.time()
+        for guild_id, state in inactivity_state.items():
+            if now - state["last_time"] >= INACTIVITY_THRESHOLD:
+                channel = client.get_channel(state["channel_id"])
+                if channel:
+                    msg = random.choice(INACTIVITY_MESSAGES)
+                    await channel.send(msg)
+                    state["last_time"] = now
+                    logger.info(f"Inactivity nudge sent in #{channel} (guild {guild_id})")
+    except Exception:
+        logger.exception("Error in check_inactivity loop")
 
 @tree.command(name="remind", description="Set a reminder")
 @app_commands.describe(when="Time (e.g. 30m, 1h)", who="User to remind", what="The message")
