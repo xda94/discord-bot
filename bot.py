@@ -185,7 +185,7 @@ async def on_message(message):
     try:
         all_keywords = get_all_responses().keys()
         for keyword in all_keywords:
-            if re.search(r'\b' + re.escape(keyword) + r'\b', content):
+            if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', content):
                 response = get_random_response(keyword)
                 if response:
                     await message.reply(response, mention_author=False)
