@@ -340,13 +340,13 @@ async def stats(interaction: discord.Interaction):
 
     # Memory
     mem = psutil.virtual_memory()
-    mem_used = mem.used / (1024 ** 3)
-    mem_total = mem.total / (1024 ** 3)
+    mem_used = mem.used / (1024 ** 2)
+    mem_total = mem.total / (1024 ** 2)
 
     # Disk
     disk = psutil.disk_usage("/")
-    disk_used = disk.used / (1024 ** 3)
-    disk_total = disk.total / (1024 ** 3)
+    disk_used = disk.used / (1024 ** 2)
+    disk_total = disk.total / (1024 ** 2)
 
     # Temperature
     temps = psutil.sensors_temperatures()
@@ -377,8 +377,8 @@ async def stats(interaction: discord.Interaction):
         "**System Stats**\n"
         f"🌡️ Temperature: {temp_str}\n"
         f"🖥️ CPU: {cpu_percent}% @ {freq_str} | Load: {load_1:.2f} / {load_5:.2f} / {load_15:.2f}\n"
-        f"🧠 RAM: {mem_used:.1f} / {mem_total:.1f} GB ({mem.percent}%)\n"
-        f"💾 Disk: {disk_used:.1f} / {disk_total:.1f} GB ({disk.percent}%)\n"
+        f"🧠 RAM: {mem_used:_.0f} / {mem_total:_.0f} MB ({mem.percent}%)\n"
+        f"💾 Disk: {disk_used:_.0f} / {disk_total:_.0f} MB ({disk.percent}%)\n"
         f"🌐 Network: ↑ {net_sent:.2f} GB / ↓ {net_recv:.2f} GB\n"
         f"⏱️ Uptime: {uptime_str}\n"
         f"🤖 Bot memory: {bot_mem:.1f} MB"
