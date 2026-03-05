@@ -2,8 +2,9 @@ import os
 import re
 import time
 import random
-from datetime import date
+from datetime import date, timedelta
 import requests
+import psutil
 import discord
 import logging
 from logging.handlers import RotatingFileHandler
@@ -327,6 +328,63 @@ async def mood(interaction: discord.Interaction, mood: app_commands.Choice[str])
     teases_today = 0
     await interaction.response.send_message(f"Mood set to **{mood.value}**.")
 
+@tree.command(name="stats", description="Show hardware stats for the machine running the bot")
+async def stats(interaction: discord.Interaction):
+    logger.info(f"Command /stats called by {interaction.user}")
+
+    # CPU
+    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_freq = psutil.cpu_freq()
+    freq_str = f"{cpu_freq.current:.0f}MHz" if cpu_freq else "N/A"
+    load_1, load_5, load_15 = os.getloadavg()
+
+    # Memory
+    mem = psutil.virtual_memory()
+    mem_used = mem.used / (1024 ** 3)
+    mem_total = mem.total / (1024 ** 3)
+
+    # Disk
+    disk = psutil.disk_usage("/")
+    disk_used = disk.used / (1024 ** 3)
+    disk_total = disk.total / (1024 ** 3)
+
+    # Temperature
+    temps = psutil.sensors_temperatures()
+    if temps:
+        first_sensor = next(iter(temps.values()))
+        temp_str = f"{first_sensor[0].current:.1f}°C"
+    else:
+        temp_str = "N/A"
+
+    # Uptime
+    boot_time = psutil.boot_time()
+    uptime = timedelta(seconds=time.time() - boot_time)
+    days = uptime.days
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes = remainder // 60
+    uptime_str = f"{days}d {hours}h {minutes}m"
+
+    # Network
+    net = psutil.net_io_counters()
+    net_sent = net.bytes_sent / (1024 ** 3)
+    net_recv = net.bytes_recv / (1024 ** 3)
+
+    # Bot process
+    proc = psutil.Process()
+    bot_mem = proc.memory_info().rss / (1024 ** 2)
+
+    text = (
+        "**System Stats**\n"
+        f"🌡️ Temperature: {temp_str}\n"
+        f"🖥️ CPU: {cpu_percent}% @ {freq_str} | Load: {load_1:.2f} / {load_5:.2f} / {load_15:.2f}\n"
+        f"🧠 RAM: {mem_used:.1f} / {mem_total:.1f} GB ({mem.percent}%)\n"
+        f"💾 Disk: {disk_used:.1f} / {disk_total:.1f} GB ({disk.percent}%)\n"
+        f"🌐 Network: ↑ {net_sent:.2f} GB / ↓ {net_recv:.2f} GB\n"
+        f"⏱️ Uptime: {uptime_str}\n"
+        f"🤖 Bot memory: {bot_mem:.1f} MB"
+    )
+    await interaction.response.send_message(text)
+
 @tree.command(name="help", description="Show all available commands and how to use them")
 async def help(interaction: discord.Interaction):
     logger.info(f"Command /help called by {interaction.user}")
@@ -347,6 +405,8 @@ async def help(interaction: discord.Interaction):
         "Moods: `bad`, `good`, `computer`, "
         "`gen-z`, `dad`, `anime`, or `random`. "
         "Resets the tease counter for the day.\n\n"
+        "**/stats**\n"
+        "Show hardware stats: CPU, RAM, disk, temperature, network, uptime, and bot memory usage.\n\n"
         "**/help**\n"
         "Show this message."
     )
