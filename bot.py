@@ -49,6 +49,7 @@ intents.message_content = True
 
 last_response_time = 0
 COOLDOWN = 10
+last_used_responses = {}
 TEASE_BASE_CHANCE = 0.10
 teases_today = 0
 tease_reset_date = None
@@ -184,17 +185,37 @@ async def on_message(message):
     content = message.content.lower()
     
     try:
-        all_keywords = get_all_responses().keys()
+        # Fetch all keyword-response lists
+        responses_data = get_all_responses()
+        all_keywords = responses_data.keys()
+
         for keyword in all_keywords:
             if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', content):
-                response = get_random_response(keyword)
-                if response:
-                    await message.reply(response, mention_author=False)
-                    last_response_time = now
-                    if message.guild:
-                        log_keyword_usage(keyword, message.author.id, message.guild.id)
-                    logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
-                    return
+                # Get the list of possible responses for this keyword
+                options = responses_data.get(keyword, [])
+                if not options:
+                    continue
+
+                # Logic: Prevent immediate repeats if more than 1 option exists
+                new_response = random.choice(options)
+                if len(options) > 1:
+                    last_one = last_used_responses.get(keyword)
+                    while new_response == last_one:
+                        new_response = random.choice(options)
+
+                # Store the new response as the 'last used' for this keyword
+                last_used_responses[keyword] = new_response
+
+                # Send the response
+                await message.reply(new_response, mention_author=False)
+                
+                # Update tracking and logs
+                last_response_time = now
+                if message.guild:
+                    log_keyword_usage(keyword, message.author.id, message.guild.id)
+                logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
+                return
+
     except Exception:
         logger.exception("Error processing message for keywords")
 
