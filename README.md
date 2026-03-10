@@ -38,6 +38,7 @@ Create a .env file in the root folder and add your credentials:
 DISCORD_TOKEN=your_token_here
 HOST=your_host_here
 PORT=your_port_here
+DEPLOY_PASSWORD=your_deploy_password_here
 ```
 
 ## 🏃 Execution
@@ -59,6 +60,14 @@ pm2 start api.py --interpreter python3 --name discord-api
 * ​pm2 restart all — Restart both processes.
 * ​pm2 stop all — Stop the bot and API.
 
+
+## 🔧 Deploy Command
+
+The bot includes a `/deploy` slash command for pulling the latest code and restarting via PM2 directly from Discord.
+
+* Running `/deploy` opens a **private modal** — the password is never shown in chat.
+* After entering the correct `DEPLOY_PASSWORD`, the bot runs `git pull` and `pm2 restart all`.
+* All output is sent back as an **ephemeral message** (visible only to you).
 
 ## ​📁 Project Structure
 * ​bot.py — The core Discord client logic.

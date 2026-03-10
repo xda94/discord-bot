@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from db import (
     init_db, add_response, remove_response, get_all_responses,
-    add_reminder, get_due_reminders, delete_reminder, get_all_reminders
+    add_reminder, get_due_reminders, delete_reminder, get_all_reminders,
+    add_joke, get_all_jokes, get_joke_by_id, update_joke, delete_joke, reset_jokes
 )
 
 # --- Enhanced Logging Setup for API ---
@@ -98,19 +99,6 @@ def api_add_reminder():
     logger.info(f"Reminder set via API for User ID {data['user_id']}")
     return jsonify({"status": "reminder_set"})
 
-@app.route("/reminders/due", methods=["GET"])
-def api_get_due():
-    try:
-        reminders = get_due_reminders()
-        result = [
-            {"id": r[0], "user_id": r[1], "channel_id": r[2], "message": r[3]} 
-            for r in reminders
-        ]
-        return jsonify(result)
-    except Exception:
-        logger.exception("Error in /reminders/due")
-        return jsonify({"error": "Internal server error"}), 500
-
 @app.route("/reminders/delete/<int:reminder_id>", methods=["DELETE"])
 def api_delete_reminder(reminder_id):
     delete_reminder(reminder_id)
@@ -137,6 +125,65 @@ def api_get_all_reminders():
     except Exception: 
         logger.exception("Error in /reminders/all") 
         return jsonify({"error": "Internal server error"}), 500
+
+# --- Joke Routes ---
+
+@app.route("/jokes", methods=["GET"])
+def api_get_all_jokes():
+    try:
+        jokes = get_all_jokes()
+        result = [{"id": j[0], "text": j[1], "sent": bool(j[2])} for j in jokes]
+        logger.info(f"All jokes fetched. Count: {len(result)}")
+        return jsonify(result)
+    except Exception:
+        logger.exception("Error in GET /jokes")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/jokes/<int:joke_id>", methods=["GET"])
+def api_get_joke(joke_id):
+    joke = get_joke_by_id(joke_id)
+    if joke is None:
+        return jsonify({"error": "Joke not found"}), 404
+    return jsonify({"id": joke[0], "text": joke[1], "sent": bool(joke[2])})
+
+@app.route("/jokes", methods=["POST"])
+def api_add_joke():
+    data = request.get_json()
+    if not data or "text" not in data:
+        logger.warning(f"BadRequest: Missing 'text' in POST /jokes. IP: {request.remote_addr}")
+        return jsonify({"error": "Missing 'text' field"}), 400
+
+    add_joke(data["text"])
+    logger.info(f"Joke added via API from {request.remote_addr}")
+    return jsonify({"status": "ok"}), 201
+
+@app.route("/jokes/<int:joke_id>", methods=["PUT"])
+def api_update_joke(joke_id):
+    data = request.get_json()
+    if not data or "text" not in data:
+        return jsonify({"error": "Missing 'text' field"}), 400
+
+    success = update_joke(joke_id, data["text"])
+    if success:
+        logger.info(f"Joke {joke_id} updated via API")
+        return jsonify({"status": "updated", "id": joke_id})
+    else:
+        return jsonify({"error": "Joke not found"}), 404
+
+@app.route("/jokes/<int:joke_id>", methods=["DELETE"])
+def api_delete_joke(joke_id):
+    success = delete_joke(joke_id)
+    if success:
+        logger.info(f"Joke {joke_id} deleted via API")
+        return jsonify({"status": "deleted", "id": joke_id})
+    else:
+        return jsonify({"error": "Joke not found"}), 404
+
+@app.route("/jokes/reset", methods=["POST"])
+def api_reset_jokes():
+    reset_jokes()
+    logger.info("All jokes reset to unsent via API")
+    return jsonify({"status": "reset"})
 
 
 if __name__ == "__main__":

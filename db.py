@@ -37,6 +37,13 @@ def init_db():
                 used_at REAL NOT NULL
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS jokes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                sent INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         conn.commit()
         conn.close()
         logger.info("Database connection initialized.")
@@ -198,6 +205,105 @@ def get_top_keywords(guild_id, limit=10):
     except Exception:
         logger.exception("Failed to fetch top keywords")
         return []
+
+def add_joke(text):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("INSERT INTO jokes (text, sent) VALUES (?, 0)", (text,))
+        conn.commit()
+        conn.close()
+        logger.info(f"Added new joke: '{text[:50]}...'")
+    except Exception:
+        logger.exception("Failed to add joke")
+
+def get_unsent_joke():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, text FROM jokes WHERE sent = 0")
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            return None
+        return random.choice(rows)
+    except Exception:
+        logger.exception("Failed to get unsent joke")
+        return None
+
+def mark_joke_sent(joke_id):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("UPDATE jokes SET sent = 1 WHERE id = ?", (joke_id,))
+        conn.commit()
+        conn.close()
+        logger.debug(f"Marked joke {joke_id} as sent")
+    except Exception:
+        logger.exception(f"Failed to mark joke {joke_id} as sent")
+
+def reset_jokes():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("UPDATE jokes SET sent = 0")
+        conn.commit()
+        conn.close()
+        logger.info("Reset all jokes to unsent")
+    except Exception:
+        logger.exception("Failed to reset jokes")
+
+def get_all_jokes():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, text, sent FROM jokes")
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception:
+        logger.exception("Failed to fetch all jokes")
+        return []
+
+def get_joke_by_id(joke_id):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, text, sent FROM jokes WHERE id = ?", (joke_id,))
+        row = c.fetchone()
+        conn.close()
+        return row
+    except Exception:
+        logger.exception(f"Failed to fetch joke {joke_id}")
+        return None
+
+def update_joke(joke_id, text):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("UPDATE jokes SET text = ? WHERE id = ?", (text, joke_id))
+        updated = c.rowcount
+        conn.commit()
+        conn.close()
+        logger.info(f"Updated joke {joke_id}")
+        return updated > 0
+    except Exception:
+        logger.exception(f"Failed to update joke {joke_id}")
+        return False
+
+def delete_joke(joke_id):
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("DELETE FROM jokes WHERE id = ?", (joke_id,))
+        deleted = c.rowcount
+        conn.commit()
+        conn.close()
+        logger.info(f"Deleted joke {joke_id}")
+        return deleted > 0
+    except Exception:
+        logger.exception(f"Failed to delete joke {joke_id}")
+        return False
 
 def get_top_keywords_by_user(guild_id, user_id, limit=10):
     try:
