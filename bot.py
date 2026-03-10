@@ -2,7 +2,8 @@ import os
 import re
 import time
 import random
-from datetime import date, timedelta
+import subprocess
+from datetime import date, datetime, timedelta, timezone
 import requests
 import psutil
 import discord
@@ -14,7 +15,8 @@ from dotenv import load_dotenv
 from db import (
     init_db, add_response, get_random_response, get_all_responses,
     add_reminder, get_due_reminders, delete_reminder,
-    log_keyword_usage, get_top_keywords, get_top_keywords_by_user
+    log_keyword_usage, get_top_keywords, get_top_keywords_by_user,
+    add_joke, get_unsent_joke, mark_joke_sent, reset_jokes
 )
 
 # --- Enhanced Logging Setup ---
@@ -43,6 +45,7 @@ db_logger.addHandler(console_handler)
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+DEPLOY_PASSWORD = os.getenv('DEPLOY_PASSWORD')
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -134,6 +137,9 @@ TEASE_MOODS = {
 
 INACTIVITY_THRESHOLD = 86400  # 24 hours in seconds
 inactivity_state = {}  # guild_id -> {"last_time": float, "channel_id": int}
+joke_channel_id = None  # Auto-set from /joke command channel
+joke_send_time = "12:00"  # Default daily joke time (HH:MM)
+joke_sent_today = False  # Track if today's joke was already sent
 INACTIVITY_MESSAGES = [
     "it's quiet... too quiet",
     "did everyone die?",
@@ -161,6 +167,8 @@ async def on_ready():
             check_reminders.start()
         if not check_inactivity.is_running():
             check_inactivity.start()
+        if not daily_joke_check.is_running():
+            daily_joke_check.start()
         logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
     except Exception:
         logger.exception("Error during on_ready startup sequence")
@@ -398,8 +406,8 @@ async def stats(interaction: discord.Interaction):
         "**System Stats**\n"
         f"🌡️ Temperature: {temp_str}\n"
         f"🖥️ CPU: {cpu_percent}% @ {freq_str} | Load: {load_1:.2f} / {load_5:.2f} / {load_15:.2f}\n"
-        f"🧠 RAM: {mem_used:_.0f} / {mem_total:_.0f} MB ({mem.percent}%)\n"
-        f"💾 Disk: {disk_used:_.0f} / {disk_total:_.0f} MB ({disk.percent}%)\n"
+        f"🧠 RAM: {mem_used:.0f} / {mem_total:.0f} MB ({mem.percent}%)\n"
+        f"💾 Disk: {disk_used:.0f} / {disk_total:.0f} MB ({disk.percent}%)\n"
         f"🌐 Network: ↑ {net_sent:.2f} GB / ↓ {net_recv:.2f} GB\n"
         f"⏱️ Uptime: {uptime_str}\n"
         f"🤖 Bot memory: {bot_mem:.1f} MB"
@@ -426,11 +434,112 @@ async def help(interaction: discord.Interaction):
         "Moods: `bad`, `good`, `computer`, "
         "`gen-z`, `dad`, `anime`, or `random`. "
         "Resets the tease counter for the day.\n\n"
+        "**/joke** `<text>`\n"
+        "Add a joke/text to the daily joke list. "
+        "Once all jokes are sent, the cycle resets.\n\n"
+        "**/joke_activation** `<time>`\n"
+        "Activate the daily joke in this channel at the specified time (e.g. `14:00`).\n\n"
         "**/stats**\n"
         "Show hardware stats: CPU, RAM, disk, temperature, network, uptime, and bot memory usage.\n\n"
         "**/help**\n"
         "Show this message."
     )
     await interaction.response.send_message(text, ephemeral=True)
+
+@tree.command(name="joke", description="Add a joke/text to the daily joke list")
+@app_commands.describe(text="The joke or text to add")
+async def joke(interaction: discord.Interaction, text: str):
+    logger.info(f"Command /joke called by {interaction.user}")
+    add_joke(text)
+    await interaction.response.send_message(f"Joke added!")
+
+@tree.command(name="joke_activation", description="Activate the daily joke in this channel at a specific time")
+@app_commands.describe(time="The time to send the daily joke (e.g. 14:00)")
+async def joke_activation(interaction: discord.Interaction, time: str):
+    global joke_channel_id, joke_send_time
+    logger.info(f"Command /joke_activation called by {interaction.user} with time {time}")
+    try:
+        datetime.strptime(time, "%H:%M")
+    except ValueError:
+        await interaction.response.send_message("Invalid time format! Use HH:MM (e.g. `14:00`).", ephemeral=True)
+        return
+    joke_send_time = time
+    joke_channel_id = interaction.channel_id
+    await interaction.response.send_message(
+        f"Daily joke activated in this channel at **{time}** every day."
+    )
+
+@tasks.loop(seconds=30)
+async def daily_joke_check():
+    global joke_sent_today
+    try:
+        now = datetime.now()
+        target = datetime.strptime(joke_send_time, "%H:%M").replace(
+            year=now.year, month=now.month, day=now.day
+        )
+
+        # Reset flag after the send window passes (2 minutes after target)
+        if now > target + timedelta(minutes=2):
+            joke_sent_today = False if now > target + timedelta(hours=1) else joke_sent_today
+
+        # Reset flag at midnight
+        if now.hour == 0 and now.minute == 0:
+            joke_sent_today = False
+
+        # Check if it's time and we haven't sent yet
+        if joke_sent_today:
+            return
+        if not (target <= now <= target + timedelta(minutes=2)):
+            return
+        if joke_channel_id is None:
+            logger.warning("No joke channel set. Use /joke_activation to set one.")
+            return
+
+        result = get_unsent_joke()
+        if result is None:
+            reset_jokes()
+            result = get_unsent_joke()
+            if result is None:
+                logger.info("No jokes in database. Skipping daily joke.")
+                return
+
+        joke_id, text = result
+        channel = client.get_channel(joke_channel_id)
+        if channel:
+            await channel.send(f"**Joke of the day:** {text}")
+            mark_joke_sent(joke_id)
+            joke_sent_today = True
+            logger.info(f"Daily joke sent: ID {joke_id}")
+        else:
+            logger.warning(f"Joke channel {joke_channel_id} not accessible")
+    except Exception:
+        logger.exception("Error in daily_joke_check task")
+
+class DeployModal(discord.ui.Modal, title="Deploy"):
+    password = discord.ui.TextInput(label="Password", style=discord.TextStyle.short, required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not DEPLOY_PASSWORD or self.password.value != DEPLOY_PASSWORD:
+            await interaction.response.send_message("Invalid password.", ephemeral=True)
+            logger.warning(f"Failed /deploy attempt by {interaction.user}")
+            return
+
+        await interaction.response.send_message("Deploying... running `git pull` and `pm2 restart all`.", ephemeral=True)
+
+        try:
+            pull = subprocess.run(["git", "pull"], capture_output=True, text=True, timeout=30)
+            restart = subprocess.run(["pm2", "restart", "all"], capture_output=True, text=True, timeout=30)
+
+            result = f"**git pull:**\n```\n{pull.stdout or pull.stderr}```\n**pm2 restart all:**\n```\n{restart.stdout or restart.stderr}```"
+            await interaction.followup.send(result, ephemeral=True)
+            logger.info(f"Deploy executed by {interaction.user}")
+        except Exception as e:
+            await interaction.followup.send(f"Deploy failed: {e}", ephemeral=True)
+            logger.exception("Error during /deploy command")
+
+@tree.command(name="deploy", description="Pull latest code and restart the bot (developer only)")
+async def deploy(interaction: discord.Interaction):
+    logger.info(f"Command /deploy called by {interaction.user}")
+    await interaction.response.send_modal(DeployModal())
 
 client.run(TOKEN)
