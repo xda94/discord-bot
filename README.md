@@ -1,6 +1,6 @@
 # 🤖 Discord Keyword Responder Bot
 
-A lightweight, Python-powered Discord bot that monitors chat and triggers automated responses based on specific keywords. It features a Flask-based API for external management and uses PM2 for "set-it-and-forget-it" stability.
+A lightweight, Python-powered Discord bot that monitors chat and triggers automated responses based on specific keywords. It features a Flask-based REST API for external management, configurable mood-based tease messages, reminders, daily jokes, and uses PM2 for "set-it-and-forget-it" stability.
 
 ---
 
@@ -27,24 +27,25 @@ First, install the global process manager:
 ```bash
 npm install pm2 -g && pm2 update
 ```
-Now install the python dependencies
+Now install the python dependencies:
 ```bash
 pip3 install -r requirements.txt
 ```
 
 ### 3. Configuration 
-Create a .env file in the root folder and add your credentials:
+Create a `.env` file in the root folder and add your credentials:
 ```env
 DISCORD_TOKEN=your_token_here
 HOST=your_host_here
 PORT=your_port_here
-DEPLOY_PASSWORD=your_deploy_password_here
 ```
 
-## 🏃 Execution
-​This project runs as two separate processes (the bot and the API). Use PM2 to keep them running in the background.
+---
 
-**​Starting the Bot**
+## 🏃 Execution
+This project runs as two separate processes (the bot and the API). Use PM2 to keep them running in the background.
+
+**Starting the Bot**
 ```bash
 pm2 start bot.py --interpreter python3 --name discord-bot
 ```
@@ -55,23 +56,37 @@ pm2 start api.py --interpreter python3 --name discord-api
 
 **Useful PM2 Commands**
 
-* ​pm2 status — Check if the bot and API are online.
-* pm2 logs — View real-time logs and errors.
-* ​pm2 restart all — Restart both processes.
-* ​pm2 stop all — Stop the bot and API.
+* `pm2 status` — Check if the bot and API are online.
+* `pm2 logs` — View real-time logs and errors.
+* `pm2 restart all` — Restart both processes.
+* `pm2 stop all` — Stop the bot and API.
 
+---
 
-## 🔧 Deploy Command
+## 🤖 Bot Commands
 
-The bot includes a `/deploy` slash command for pulling the latest code and restarting via PM2 directly from Discord.
+| Command | Description |
+|---|---|
+| `/add <keyword> <response>` | Add a keyword-response pair. Multiple responses per keyword are supported — the bot picks one at random. |
+| `/remind <when> <who> <what>` | Set a timed reminder. Format: `30m`, `2h`, `1d`. |
+| `/topkeywords [user]` | Show the most triggered keywords in the server, optionally filtered by user. |
+| `/mood <mood>` | Set the bot's tease mood. Available moods are loaded dynamically from `moods.py`, plus `random`. |
+| `/joke <text>` | Add a joke to the daily joke rotation. |
+| `/joke_activation <time>` | Activate the daily joke in the current channel at a given time (e.g. `14:00`). |
+| `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
+| `/help` | Show the help message. |
 
-* Running `/deploy` opens a **private modal** — the password is never shown in chat.
-* After entering the correct `DEPLOY_PASSWORD`, the bot runs `git pull` and `pm2 restart all`.
-* All output is sent back as an **ephemeral message** (visible only to you).
+---
 
-## ​📁 Project Structure
-* ​bot.py — The core Discord client logic.
-* ​api.py — Flask application for API handling.
-* requirements.txt — List of Python dependencies.
-* ​.env — Environment variables (ignored by git).
-* ​database.db — SQLite database file.
+## 📁 Project Structure
+
+| File | Description |
+|---|---|
+| `bot.py` | Core Discord client — event handlers, slash commands, and background tasks. |
+| `api.py` | Flask REST API for managing responses, reminders, and jokes externally. |
+| `db.py` | Database layer — all SQLite queries and a shared connection context manager. |
+| `moods.py` | Mood/tease message definitions and bot constants (`COOLDOWN`, `TEASE_MOODS`, etc.). |
+| `logger.py` | Shared logging setup used by both the bot and the API. |
+| `requirements.txt` | Python dependencies. |
+| `.env` | Environment variables (ignored by git). |
+| `responses.db` | SQLite database file (auto-created on first run). |
