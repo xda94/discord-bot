@@ -1,35 +1,15 @@
 import os
-import logging
-from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from db import (
     init_db, add_response, remove_response, get_all_responses,
-    add_reminder, get_due_reminders, delete_reminder, get_all_reminders,
+    add_reminder, delete_reminder, get_all_reminders,
     add_joke, get_all_jokes, get_joke_by_id, update_joke, delete_joke, reset_jokes
 )
+from logger import setup_logger
+import logging
 
-# --- Enhanced Logging Setup for API ---
-logger = logging.getLogger("flask_api")
-logger.setLevel(logging.INFO)
-
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s')
-
-# Writes to api.log
-file_handler = RotatingFileHandler('api.log', maxBytes=5*1024*1024, backupCount=2)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-# Link DB logger
-db_logger = logging.getLogger("database")
-db_logger.setLevel(logging.INFO)
-db_logger.addHandler(file_handler)
-db_logger.addHandler(console_handler)
-# --------------------------------------
+logger = setup_logger("flask_api", "api.log")
 
 load_dotenv()
 
@@ -57,7 +37,7 @@ def add():
     logger.info(f"Keyword added via API: '{data['keyword']}' from {request.remote_addr}")
     return jsonify({"status": "ok"})
 
-@app.route("/remove", methods=["POST"])
+@app.route("/remove", methods=["DELETE"])
 def remove():
     data = request.get_json()
     if not data or "keyword" not in data:
@@ -185,7 +165,6 @@ def api_reset_jokes():
     logger.info("All jokes reset to unsent via API")
     return jsonify({"status": "reset"})
 
-
 if __name__ == "__main__":
     logger.info(f"Starting Flask API Server on {HOST}:{PORT}")
-    app.run(host=HOST, port=int(PORT))
+    app.run(host=HOST, port=int(PORT), threaded=True)

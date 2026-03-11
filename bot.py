@@ -2,161 +2,51 @@ import os
 import re
 import time
 import random
-import subprocess
-from datetime import date, datetime, timedelta, timezone
-import requests
+from datetime import date, datetime, timedelta
 import psutil
 import discord
-import logging
-from logging.handlers import RotatingFileHandler
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
 from db import (
-    init_db, add_response, get_random_response, get_all_responses,
+    init_db, add_response, get_all_responses,
     add_reminder, get_due_reminders, delete_reminder,
     log_keyword_usage, get_top_keywords, get_top_keywords_by_user,
     add_joke, get_unsent_joke, mark_joke_sent, reset_jokes
 )
+from moods import (
+    COOLDOWN, TEASE_BASE_CHANCE, TEASE_MOODS,
+    INACTIVITY_THRESHOLD, INACTIVITY_MESSAGES,
+)
+from logger import setup_logger
 
-# --- Enhanced Logging Setup ---
-logger = logging.getLogger("discord_bot")
-logger.setLevel(logging.INFO)
-
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s')
-
-# Writes to bot.log
-file_handler = RotatingFileHandler('bot.log', maxBytes=5*1024*1024, backupCount=2)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-# Prints to console
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-# Link DB logger
-db_logger = logging.getLogger("database")
-db_logger.setLevel(logging.INFO)
-db_logger.addHandler(file_handler)
-db_logger.addHandler(console_handler)
-# ------------------------------
+logger = setup_logger("discord_bot", "bot.log")
 
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
-DEPLOY_PASSWORD = os.getenv('DEPLOY_PASSWORD')
 
 intents = discord.Intents.default()
 intents.message_content = True
 
-last_response_time = 0
-COOLDOWN = 10
-last_used_responses = {}
-TEASE_BASE_CHANCE = 0.10
-teases_today = 0
-tease_reset_date = None
-current_mood = "bad"
-TEASE_MOODS = {
-    "bad": [
-        "interesting take, {user}",
-        "nobody asked, {user}",
-        "cool story, {user}",
-        "sure thing, {user}",
-        "ok buddy",
-        "are you done?",
-        "tell me more... actually don't",
-        "that's crazy, anyway",
-        "I'm going to pretend I didn't read that",
-        "{user} really typed that and hit send",
-        "taci dracu...",
-        "iar s-a trezit asta",
-    ],
-    "good": [
-        "great point, {user}!",
-        "I appreciate you, {user}",
-        "that's a really good take, {user}",
-        "couldn't have said it better myself",
-        "you're on fire today, {user}",
-        "{user} spitting facts as usual",
-        "W take, {user}",
-        "this is why {user} is the goat",
-        "based, {user}",
-        "finally someone with good taste",
-    ],
-    "computer": [
-        "01001000 01101001",
-        "SYNTAX ERROR: {user} not found in database",
-        "sudo rm -rf {user}",
-        "segfault at 0x00000000 in {user}.exe",
-        "ERROR 418: I'm a teapot",
-        "[WARN] {user}.dll has stopped responding",
-        "ping {user} ... Request timed out",
-        "git blame {user}",
-        "404: good take not found",
-        "while(true) {{ {user} }}",
-        "// TODO: understand what {user} just said",
-        "{user} has mass = NaN kg",
-    ],
-    "gen-z": [
-        "no cap {user} just ate",
-        "that's lowkey sus, {user}",
-        "skill issue, {user}",
-        "rent free in {user}'s head",
-        "{user} understood the assignment",
-        "it's giving {user}",
-        "slay i guess, {user}",
-        "{user} really said that with their whole chest",
-        "that ain't it chief",
-        "big yikes from {user}",
-        "let him cook",
-        "are we cooked, chat?",
-    ],
-    "dad": [
-        "Hi {user}, I'm bot",
-        "Back in my day, we didn't say stuff like that, {user}",
-        "Don't make me turn this server around",
-        "Ask your mother, {user}",
-        "That's what she said... wait, who said that",
-        "{user}, pull my finger",
-        "You call that a message? Now MY messages, those were messages",
-        "Pe vremea mea mergeam la scoala pe jos prin zapada",
-    ],
-    "anime": [
-        "N-nani?! {user} said WHAT?!",
-        "Omae wa mou shindeiru, {user}",
-        "{user} just activated my trap card",
-        "This isn't even my final form, {user}",
-        "{user}'s power level is over 9000!!",
-        "You fool, {user}! You fell for it!",
-        "{user} has the power of friendship and anime on their side",
-        "A wild {user} appeared!",
-        "uwu",
-    ],
-}
 
-INACTIVITY_THRESHOLD = 86400  # 24 hours in seconds
-inactivity_state = {}  # guild_id -> {"last_time": float, "channel_id": int}
-joke_channel_id = None  # Auto-set from /joke command channel
-joke_send_time = "12:00"  # Default daily joke time (HH:MM)
-joke_sent_today = False  # Track if today's joke was already sent
-INACTIVITY_MESSAGES = [
-    "it's quiet... too quiet",
-    "did everyone die?",
-    "hello? is this thing on?",
-    "I'm bored, someone say something",
-    "*tumbleweed rolls by*",
-    "this server is deader than my will to live",
-    "I've been alone for 24 hours now. this is fine.",
-    "not a single message in a whole day? wow.",
-    "guess I'll just talk to myself then",
-    "ce plm, ba? ati murit toti?",
-]
+class BotState:
+    last_response_time = 0
+    last_used_responses = {}
+    teases_today = 0
+    tease_reset_date = None
+    current_mood = "bad"
+    inactivity_state = {}
+    joke_channel_id = None
+    joke_send_time = "12:00"
+    joke_sent_today = False
+
+
+state = BotState()
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# Initialize DB
 init_db()
 
 @client.event
@@ -175,50 +65,40 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    global last_response_time
-
     if message.author.bot:
         return
 
     if message.guild:
-        inactivity_state[message.guild.id] = {
+        state.inactivity_state[message.guild.id] = {
             "last_time": time.time(),
             "channel_id": message.channel.id,
         }
 
     now = time.time()
-    if now - last_response_time < COOLDOWN:
+    if now - state.last_response_time < COOLDOWN:
         return
 
     content = message.content.lower()
     
     try:
-        # Fetch all keyword-response lists
         responses_data = get_all_responses()
-        all_keywords = responses_data.keys()
 
-        for keyword in all_keywords:
+        for keyword in responses_data:
             if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', content):
-                # Get the list of possible responses for this keyword
-                options = responses_data.get(keyword, [])
+                options = responses_data[keyword]
                 if not options:
                     continue
 
-                # Logic: Prevent immediate repeats if more than 1 option exists
                 new_response = random.choice(options)
                 if len(options) > 1:
-                    last_one = last_used_responses.get(keyword)
+                    last_one = state.last_used_responses.get(keyword)
                     while new_response == last_one:
                         new_response = random.choice(options)
 
-                # Store the new response as the 'last used' for this keyword
-                last_used_responses[keyword] = new_response
-
-                # Send the response
+                state.last_used_responses[keyword] = new_response
                 await message.reply(new_response, mention_author=False)
                 
-                # Update tracking and logs
-                last_response_time = now
+                state.last_response_time = now
                 if message.guild:
                     log_keyword_usage(keyword, message.author.id, message.guild.id)
                 logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
@@ -228,17 +108,16 @@ async def on_message(message):
         logger.exception("Error processing message for keywords")
 
     # Random tease — decaying chance so it doesn't spam on busy days
-    global teases_today, tease_reset_date
     today = date.today()
-    if tease_reset_date != today:
-        teases_today = 0
-        tease_reset_date = today
-    chance = TEASE_BASE_CHANCE / (1 + teases_today)
+    if state.tease_reset_date != today:
+        state.teases_today = 0
+        state.tease_reset_date = today
+    chance = TEASE_BASE_CHANCE / (1 + state.teases_today)
     if random.random() < chance:
-        tease = random.choice(TEASE_MOODS[current_mood]).format(user=message.author.display_name)
+        tease = random.choice(TEASE_MOODS[state.current_mood]).format(user=message.author.display_name)
         await message.reply(tease, mention_author=False)
-        teases_today += 1
-        logger.info(f"Tease #{teases_today} triggered on {message.author} in #{message.channel}")
+        state.teases_today += 1
+        logger.info(f"Tease #{state.teases_today} triggered on {message.author} in #{message.channel}")
 
 @tree.command(name="add", description="Add a new keyword and response")
 @app_commands.describe(keyword="The keyword", response="The response")
@@ -282,13 +161,13 @@ async def check_reminders():
 async def check_inactivity():
     try:
         now = time.time()
-        for guild_id, state in inactivity_state.items():
-            if now - state["last_time"] >= INACTIVITY_THRESHOLD:
-                channel = client.get_channel(state["channel_id"])
+        for guild_id, guild_state in state.inactivity_state.items():
+            if now - guild_state["last_time"] >= INACTIVITY_THRESHOLD:
+                channel = client.get_channel(guild_state["channel_id"])
                 if channel:
                     msg = random.choice(INACTIVITY_MESSAGES)
                     await channel.send(msg)
-                    state["last_time"] = now
+                    guild_state["last_time"] = now
                     logger.info(f"Inactivity nudge sent in #{channel} (guild {guild_id})")
     except Exception:
         logger.exception("Error in check_inactivity loop")
@@ -336,25 +215,20 @@ async def topkeywords(interaction: discord.Interaction, user: discord.Member = N
 
     await interaction.response.send_message("\n".join(lines))
 
+MOOD_CHOICES = [
+    app_commands.Choice(name=m, value=m) for m in TEASE_MOODS
+] + [app_commands.Choice(name="random", value="random")]
+
 @tree.command(name="mood", description="Set the bot's mood")
 @app_commands.describe(mood="The mood to set")
-@app_commands.choices(mood=[
-    app_commands.Choice(name="bad", value="bad"),
-    app_commands.Choice(name="good", value="good"),
-    app_commands.Choice(name="computer", value="computer"),
-    app_commands.Choice(name="gen-z", value="gen-z"),
-    app_commands.Choice(name="dad", value="dad"),
-    app_commands.Choice(name="anime", value="anime"),
-    app_commands.Choice(name="random", value="random"),
-])
+@app_commands.choices(mood=MOOD_CHOICES)
 async def mood(interaction: discord.Interaction, mood: app_commands.Choice[str]):
-    global current_mood, teases_today
     chosen = mood.value
     if chosen == "random":
         chosen = random.choice(list(TEASE_MOODS.keys()))
     logger.info(f"Command /mood called by {interaction.user} — setting mood to {chosen}")
-    current_mood = chosen
-    teases_today = 0
+    state.current_mood = chosen
+    state.teases_today = 0
     await interaction.response.send_message(f"Mood set to **{mood.value}**.")
 
 @tree.command(name="stats", description="Show hardware stats for the machine running the bot")
@@ -430,7 +304,7 @@ async def help(interaction: discord.Interaction):
         "Show the most triggered keywords in this server. "
         "Optionally pass a user to see their personal keyword stats.\n\n"
         "**/mood** `<mood>`\n"
-        "Set the bot's mood. Changes the style of random tease messages. "
+        "Set the bot's mood. Changes the style of random tease messages. Default mood is `bad`."
         "Moods: `bad`, `good`, `computer`, "
         "`gen-z`, `dad`, `anime`, or `random`. "
         "Resets the tease counter for the day.\n\n"
@@ -456,42 +330,40 @@ async def joke(interaction: discord.Interaction, text: str):
 @tree.command(name="joke_activation", description="Activate the daily joke in this channel at a specific time")
 @app_commands.describe(time="The time to send the daily joke (e.g. 14:00)")
 async def joke_activation(interaction: discord.Interaction, time: str):
-    global joke_channel_id, joke_send_time
     logger.info(f"Command /joke_activation called by {interaction.user} with time {time}")
     try:
         datetime.strptime(time, "%H:%M")
     except ValueError:
         await interaction.response.send_message("Invalid time format! Use HH:MM (e.g. `14:00`).", ephemeral=True)
         return
-    joke_send_time = time
-    joke_channel_id = interaction.channel_id
+    state.joke_send_time = time
+    state.joke_channel_id = interaction.channel_id
     await interaction.response.send_message(
         f"Daily joke activated in this channel at **{time}** every day."
     )
 
 @tasks.loop(seconds=30)
 async def daily_joke_check():
-    global joke_sent_today
     try:
         now = datetime.now()
-        target = datetime.strptime(joke_send_time, "%H:%M").replace(
+        target = datetime.strptime(state.joke_send_time, "%H:%M").replace(
             year=now.year, month=now.month, day=now.day
         )
 
         # Reset flag after the send window passes (2 minutes after target)
         if now > target + timedelta(minutes=2):
-            joke_sent_today = False if now > target + timedelta(hours=1) else joke_sent_today
+            state.joke_sent_today = False if now > target + timedelta(hours=1) else state.joke_sent_today
 
         # Reset flag at midnight
         if now.hour == 0 and now.minute == 0:
-            joke_sent_today = False
+            state.joke_sent_today = False
 
         # Check if it's time and we haven't sent yet
-        if joke_sent_today:
+        if state.joke_sent_today:
             return
         if not (target <= now <= target + timedelta(minutes=2)):
             return
-        if joke_channel_id is None:
+        if state.joke_channel_id is None:
             logger.warning("No joke channel set. Use /joke_activation to set one.")
             return
 
@@ -504,42 +376,15 @@ async def daily_joke_check():
                 return
 
         joke_id, text = result
-        channel = client.get_channel(joke_channel_id)
+        channel = client.get_channel(state.joke_channel_id)
         if channel:
-            await channel.send(f"**Joke of the day:** {text}")
+            await channel.send(f"**Joke of the day:**\n{text}")
             mark_joke_sent(joke_id)
-            joke_sent_today = True
+            state.joke_sent_today = True
             logger.info(f"Daily joke sent: ID {joke_id}")
         else:
-            logger.warning(f"Joke channel {joke_channel_id} not accessible")
+            logger.warning(f"Joke channel {state.joke_channel_id} not accessible")
     except Exception:
         logger.exception("Error in daily_joke_check task")
-
-class DeployModal(discord.ui.Modal, title="Deploy"):
-    password = discord.ui.TextInput(label="Password", style=discord.TextStyle.short, required=True)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not DEPLOY_PASSWORD or self.password.value != DEPLOY_PASSWORD:
-            await interaction.response.send_message("Invalid password.", ephemeral=True)
-            logger.warning(f"Failed /deploy attempt by {interaction.user}")
-            return
-
-        await interaction.response.send_message("Deploying... running `git pull` and `pm2 restart all`.", ephemeral=True)
-
-        try:
-            pull = subprocess.run(["git", "pull"], capture_output=True, text=True, timeout=30)
-            restart = subprocess.run(["pm2", "restart", "all"], capture_output=True, text=True, timeout=30)
-
-            result = f"**git pull:**\n```\n{pull.stdout or pull.stderr}```\n**pm2 restart all:**\n```\n{restart.stdout or restart.stderr}```"
-            await interaction.followup.send(result, ephemeral=True)
-            logger.info(f"Deploy executed by {interaction.user}")
-        except Exception as e:
-            await interaction.followup.send(f"Deploy failed: {e}", ephemeral=True)
-            logger.exception("Error during /deploy command")
-
-@tree.command(name="deploy", description="Pull latest code and restart the bot (developer only)")
-async def deploy(interaction: discord.Interaction):
-    logger.info(f"Command /deploy called by {interaction.user}")
-    await interaction.response.send_modal(DeployModal())
 
 client.run(TOKEN)
