@@ -12,7 +12,8 @@ from db import (
     init_db, add_response, get_all_responses,
     add_reminder, get_due_reminders, delete_reminder,
     log_keyword_usage, get_top_keywords, get_top_keywords_by_user,
-    add_joke, get_unsent_joke, mark_joke_sent, reset_jokes
+    add_joke, get_unsent_joke, mark_joke_sent, reset_jokes,
+    get_joke_settings, set_setting,
 )
 from moods import (
     COOLDOWN, TEASE_BASE_CHANCE, TEASE_MOODS,
@@ -39,7 +40,7 @@ class BotState:
     inactivity_state = {}
     joke_channel_id = None
     joke_send_time = "12:00"
-    joke_sent_today = False
+    joke_last_sent_date = None
 
 
 state = BotState()
@@ -48,6 +49,11 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 init_db()
+
+# Load persisted joke settings from DB
+_joke_settings = get_joke_settings()
+state.joke_channel_id = _joke_settings["channel_id"]
+state.joke_send_time = _joke_settings["send_time"]
 
 @client.event
 async def on_ready():
@@ -338,6 +344,8 @@ async def joke_activation(interaction: discord.Interaction, time: str):
         return
     state.joke_send_time = time
     state.joke_channel_id = interaction.channel_id
+    set_setting("joke_send_time", time)
+    set_setting("joke_channel_id", interaction.channel_id)
     await interaction.response.send_message(
         f"Daily joke activated in this channel at **{time}** every day."
     )
@@ -346,21 +354,16 @@ async def joke_activation(interaction: discord.Interaction, time: str):
 async def daily_joke_check():
     try:
         now = datetime.now()
+        today = now.date()
         target = datetime.strptime(state.joke_send_time, "%H:%M").replace(
             year=now.year, month=now.month, day=now.day
         )
 
-        # Reset flag after the send window passes (2 minutes after target)
-        if now > target + timedelta(minutes=2):
-            state.joke_sent_today = False if now > target + timedelta(hours=1) else state.joke_sent_today
-
-        # Reset flag at midnight
-        if now.hour == 0 and now.minute == 0:
-            state.joke_sent_today = False
-
-        # Check if it's time and we haven't sent yet
-        if state.joke_sent_today:
+        # Already sent today
+        if state.joke_last_sent_date == today:
             return
+
+        # Check if it's within the send window
         if not (target <= now <= target + timedelta(minutes=2)):
             return
         if state.joke_channel_id is None:
@@ -380,7 +383,7 @@ async def daily_joke_check():
         if channel:
             await channel.send(f"**Joke of the day:**\n{text}")
             mark_joke_sent(joke_id)
-            state.joke_sent_today = True
+            state.joke_last_sent_date = today
             logger.info(f"Daily joke sent: ID {joke_id}")
         else:
             logger.warning(f"Joke channel {state.joke_channel_id} not accessible")
