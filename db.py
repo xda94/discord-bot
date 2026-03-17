@@ -55,6 +55,12 @@ def init_db():
                     sent INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")
@@ -248,7 +254,41 @@ def get_all_jokes():
             return c.fetchall()
     except Exception:
         logger.exception("Failed to fetch all jokes")
-        return []
+
+
+# --- Settings functions ---
+
+def get_setting(key):
+    try:
+        with _connect() as c:
+            c.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = c.fetchone()
+        return row[0] if row else None
+    except Exception:
+        logger.exception(f"Failed to get setting '{key}'")
+        return None
+
+
+def set_setting(key, value):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, str(value)),
+            )
+        logger.info(f"Setting '{key}' set to '{value}'")
+    except Exception:
+        logger.exception(f"Failed to set setting '{key}'")
+
+
+def get_joke_settings():
+    channel_id = get_setting("joke_channel_id")
+    send_time = get_setting("joke_send_time")
+    return {
+        "channel_id": int(channel_id) if channel_id else None,
+        "send_time": send_time or "12:00",
+    }
 
 
 def get_joke_by_id(joke_id):
