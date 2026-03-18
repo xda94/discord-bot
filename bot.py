@@ -8,13 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
-from db import (
-    init_db, add_response, get_all_responses,
-    add_reminder, get_due_reminders, delete_reminder,
-    log_keyword_usage, get_top_keywords, get_top_keywords_by_user,
-    add_joke, get_unsent_joke, mark_joke_sent, reset_jokes,
-    get_joke_settings, set_setting,
-)
+import db
 from moods import (
     COOLDOWN, TEASE_BASE_CHANCE, TEASE_MOODS,
     INACTIVITY_THRESHOLD, INACTIVITY_MESSAGES,
@@ -26,6 +20,18 @@ logger = setup_logger("discord_bot", "bot.log")
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+SPONSOR_PASSWORD = os.getenv('SPONSOR_PASSWORD')
+
+SPONSOR_TIERS = {
+    "standard": {"name": "Sponsor Standard", "price": "6 lei / an", "chance": 0.01},
+    "entuziast": {"name": "Sponsor Entuziast", "price": "8 lei / an", "chance": 0.03},
+    "premium": {"name": "Sponsor Premium", "price": "10 lei / an", "chance": 0.05},
+    "ultra": {"name": "Sponsor Ultra Pro Max", "price": "20 lei / an", "chance": 0.08},
+}
+
+SPONSOR_TIER_CHOICES = [
+    app_commands.Choice(name=t["name"], value=k) for k, t in SPONSOR_TIERS.items()
+]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -41,6 +47,11 @@ class BotState:
     joke_channel_id = None
     joke_send_time = "12:00"
     joke_last_sent_date = None
+    sponsor = None
+    sponsor_set_at = None
+    sponsor_warned = False
+    sponsor_tier = "standard"
+    sponsor_custom_message = None
 
 
 state = BotState()
@@ -48,12 +59,18 @@ state = BotState()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-init_db()
+db.init_db()
 
 # Load persisted joke settings from DB
-_joke_settings = get_joke_settings()
+_joke_settings = db.get_joke_settings()
 state.joke_channel_id = _joke_settings["channel_id"]
 state.joke_send_time = _joke_settings["send_time"]
+state.sponsor = db.get_setting("sponsor")
+_sponsor_set_at = db.get_setting("sponsor_set_at")
+state.sponsor_set_at = float(_sponsor_set_at) if _sponsor_set_at else None
+_sponsor_tier = db.get_setting("sponsor_tier")
+state.sponsor_tier = _sponsor_tier if _sponsor_tier in SPONSOR_TIERS else "standard"
+state.sponsor_custom_message = db.get_setting("sponsor_custom_message") or None
 
 @client.event
 async def on_ready():
@@ -65,6 +82,8 @@ async def on_ready():
             check_inactivity.start()
         if not daily_joke_check.is_running():
             daily_joke_check.start()
+        if not check_sponsor_expiry.is_running():
+            check_sponsor_expiry.start()
         logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
     except Exception:
         logger.exception("Error during on_ready startup sequence")
@@ -87,7 +106,7 @@ async def on_message(message):
     content = message.content.lower()
     
     try:
-        responses_data = get_all_responses()
+        responses_data = db.get_all_responses()
 
         for keyword in responses_data:
             if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', content):
@@ -102,11 +121,18 @@ async def on_message(message):
                         new_response = random.choice(options)
 
                 state.last_used_responses[keyword] = new_response
+                if state.sponsor:
+                    tier = SPONSOR_TIERS.get(state.sponsor_tier, SPONSOR_TIERS["standard"])
+                    if random.random() < tier["chance"]:
+                        if state.sponsor_tier == "ultra" and state.sponsor_custom_message:
+                            new_response += f" ({state.sponsor_custom_message})"
+                        else:
+                            new_response += f" (Sponsored by {state.sponsor})"
                 await message.reply(new_response, mention_author=False)
                 
                 state.last_response_time = now
                 if message.guild:
-                    log_keyword_usage(keyword, message.author.id, message.guild.id)
+                    db.log_keyword_usage(keyword, message.author.id, message.guild.id)
                 logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
                 return
 
@@ -125,11 +151,11 @@ async def on_message(message):
         state.teases_today += 1
         logger.info(f"Tease #{state.teases_today} triggered on {message.author} in #{message.channel}")
 
-@tree.command(name="add", description="Add a new keyword and response")
+@tree.command(name="keyword_add", description="Add a new keyword and response")
 @app_commands.describe(keyword="The keyword", response="The response")
-async def add(interaction: discord.Interaction, keyword: str, response: str):
-    logger.info(f"Command /add called by {interaction.user} for '{keyword}'")
-    add_response(keyword, response)
+async def keyword_add(interaction: discord.Interaction, keyword: str, response: str):
+    logger.info(f"Command /keyword_add called by {interaction.user} for '{keyword}'")
+    db.add_response(keyword, response)
     await interaction.response.send_message(f"Added keyword: **{keyword}**")
 
 def parse_time(time_str):
@@ -143,7 +169,7 @@ def parse_time(time_str):
 @tasks.loop(seconds=10)
 async def check_reminders():
     try:
-        due = get_due_reminders()
+        due = db.get_due_reminders()
         for rem_id, user_id, channel_id, message in due:
             try:
                 # Attempt to send the message
@@ -158,7 +184,7 @@ async def check_reminders():
                 logger.error(f"Failed to send reminder {rem_id}: {e}")
             finally:
                 # CRITICAL: Always delete the reminder so we don't spam errors infinitely
-                delete_reminder(rem_id)
+                db.delete_reminder(rem_id)
                 
     except Exception:
         logger.exception("Critical error inside check_reminders loop")
@@ -189,7 +215,7 @@ async def remind(interaction: discord.Interaction, when: str, who: discord.Membe
         return
 
     remind_at = time.time() + seconds
-    add_reminder(who.id, interaction.channel_id, remind_at, what)
+    db.add_reminder(who.id, interaction.channel_id, remind_at, what)
     
     await interaction.response.send_message(f"Got it! I'll remind {who.display_name} about '{what}' in {when}.")
 
@@ -204,10 +230,10 @@ async def topkeywords(interaction: discord.Interaction, user: discord.Member = N
     guild_id = interaction.guild.id
 
     if user:
-        rows = get_top_keywords_by_user(guild_id, user.id)
+        rows = db.get_top_keywords_by_user(guild_id, user.id)
         title = f"Top keywords for {user.display_name}"
     else:
-        rows = get_top_keywords(guild_id)
+        rows = db.get_top_keywords(guild_id)
         title = "Top keywords in this server"
 
     if not rows:
@@ -236,6 +262,139 @@ async def mood(interaction: discord.Interaction, mood: app_commands.Choice[str])
     state.current_mood = chosen
     state.teases_today = 0
     await interaction.response.send_message(f"Mood set to **{mood.value}**.")
+
+class SponsorModal(discord.ui.Modal, title="Set Sponsor"):
+    password = discord.ui.TextInput(label="Password", placeholder="Enter the password", max_length=100)
+    custom_message = discord.ui.TextInput(
+        label="Custom message (Ultra Pro Max only)",
+        placeholder="Leave empty if not Ultra Pro Max",
+        required=False,
+        max_length=200,
+    )
+
+    def __init__(self, sponsor_name: str = None, tier: str = "standard"):
+        super().__init__()
+        self.sponsor_name = sponsor_name
+        self.tier = tier
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.password.value != SPONSOR_PASSWORD:
+            await interaction.response.send_message("Wrong password.", ephemeral=True)
+            return
+        sponsor_name = self.sponsor_name
+        tier = self.tier
+        logger.info(f"Command /sponsor_set called by {interaction.user} with name={sponsor_name}, tier={tier}")
+        state.sponsor = sponsor_name
+        if sponsor_name:
+            db.set_setting("sponsor", sponsor_name)
+            state.sponsor_set_at = time.time()
+            state.sponsor_warned = False
+            state.sponsor_tier = tier
+            db.set_setting("sponsor_set_at", str(state.sponsor_set_at))
+            db.set_setting("sponsor_tier", tier)
+            if tier == "ultra" and self.custom_message.value:
+                state.sponsor_custom_message = self.custom_message.value
+                db.set_setting("sponsor_custom_message", self.custom_message.value)
+            else:
+                state.sponsor_custom_message = None
+                db.set_setting("sponsor_custom_message", "")
+        else:
+            db.set_setting("sponsor", "")
+            state.sponsor_set_at = None
+            state.sponsor_warned = False
+            state.sponsor_tier = "standard"
+            state.sponsor_custom_message = None
+            db.set_setting("sponsor_set_at", "")
+            db.set_setting("sponsor_tier", "")
+            db.set_setting("sponsor_custom_message", "")
+        tier_info = SPONSOR_TIERS.get(tier, SPONSOR_TIERS["standard"])
+        if sponsor_name:
+            await interaction.response.send_message(
+                f"Sponsor set to **{sponsor_name}** with plan **{tier_info['name']}**.", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("Sponsor cleared.", ephemeral=True)
+
+@tree.command(name="sponsor_set", description="Set or clear the sponsor tag")
+@app_commands.describe(user="Select the sponsor user (omit to clear)", plan="Sponsorship plan")
+@app_commands.choices(plan=SPONSOR_TIER_CHOICES)
+async def sponsor_set(interaction: discord.Interaction, user: discord.Member = None, plan: app_commands.Choice[str] = None):
+    sponsor_name = user.display_name if user else None
+    tier = plan.value if plan else "standard"
+    await interaction.response.send_modal(SponsorModal(sponsor_name, tier))
+
+@tasks.loop(hours=1)
+async def check_sponsor_expiry():
+    try:
+        if not state.sponsor or not state.sponsor_set_at:
+            return
+
+        elapsed = time.time() - state.sponsor_set_at
+        one_year = 365 * 24 * 3600
+        one_day_before = one_year - 24 * 3600
+
+        # Warn 1 day before expiry
+        if elapsed >= one_day_before and not state.sponsor_warned:
+            state.sponsor_warned = True
+            for guild in client.guilds:
+                channel = guild.system_channel or next(
+                    (ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages), None
+                )
+                if channel:
+                    await channel.send(
+                        f"@everyone Sponsorship for **{state.sponsor}** is going to expire in one day. "
+                        f"Who would like to be the next sponsor?"
+                    )
+            logger.info(f"Sponsor expiry warning sent for '{state.sponsor}'")
+
+        # Expire after 1 year
+        if elapsed >= one_year:
+            logger.info(f"Sponsor '{state.sponsor}' has expired")
+            state.sponsor = None
+            state.sponsor_set_at = None
+            state.sponsor_warned = False
+            db.set_setting("sponsor", "")
+            db.set_setting("sponsor_set_at", "")
+    except Exception:
+        logger.exception("Error in check_sponsor_expiry task")
+
+@tree.command(name="sponsor_plans", description="Show available sponsorship plans")
+async def sponsor_plans(interaction: discord.Interaction):
+    logger.info(f"Command /sponsor_plans called by {interaction.user}")
+    text = (
+        "**Available Sponsorship Plans:**\n\n"
+        "**Sponsor Standard** — 6 lei / an — 1% sansa sa adauge la un raspuns `(Sponsored by @User)`\n"
+        "**Sponsor Entuziast** — 8 lei / an — 3% sansa sa adauge la un raspuns `(Sponsored by @User)`\n"
+        "**Sponsor Premium** — 10 lei / an — 5% sansa sa adauge la un raspuns `(Sponsored by @User)`\n"
+        "**Sponsor Ultra Pro Max** — 20 lei / an — 8% sansa sa adauge la un raspuns un mesaj pe care il vrei tu"
+    )
+    await interaction.response.send_message(text)
+
+@tree.command(name="sponsor_who", description="Show the current sponsor and time until expiry")
+async def sponsor_who(interaction: discord.Interaction):
+    logger.info(f"Command /sponsor_who called by {interaction.user}")
+    if not state.sponsor or not state.sponsor_set_at:
+        await interaction.response.send_message("There is no active sponsor right now.", ephemeral=True)
+        return
+
+    elapsed = time.time() - state.sponsor_set_at
+    one_year = 365 * 24 * 3600
+    remaining = one_year - elapsed
+
+    if remaining <= 0:
+        await interaction.response.send_message("The sponsorship has expired.", ephemeral=True)
+        return
+
+    days = int(remaining // 86400)
+    hours = int((remaining % 86400) // 3600)
+    minutes = int((remaining % 3600) // 60)
+
+    tier_info = SPONSOR_TIERS.get(state.sponsor_tier, SPONSOR_TIERS["standard"])
+    await interaction.response.send_message(
+        f"**Current Sponsor:** {state.sponsor}\n"
+        f"**Plan:** {tier_info['name']}\n"
+        f"**Expires in:** {days}d {hours}h {minutes}m"
+    )
 
 @tree.command(name="stats", description="Show hardware stats for the machine running the bot")
 async def stats(interaction: discord.Interaction):
@@ -299,7 +458,7 @@ async def help(interaction: discord.Interaction):
     logger.info(f"Command /help called by {interaction.user}")
     text = (
         "**Available Commands**\n\n"
-        "**/add** `<keyword>` `<response>`\n"
+        "**/keyword_add** `<keyword>` `<response>`\n"
         "Add a keyword-response pair. When someone types a message containing the keyword, "
         "the bot replies with the response. Multiple responses can be added to the same keyword — "
         "the bot picks one at random.\n\n"
@@ -314,11 +473,15 @@ async def help(interaction: discord.Interaction):
         "Moods: `bad`, `good`, `computer`, "
         "`gen-z`, `dad`, `anime`, or `random`. "
         "Resets the tease counter for the day.\n\n"
-        "**/joke** `<text>`\n"
+        "**/joke_add** `<text>`\n"
         "Add a joke/text to the daily joke list. "
         "Once all jokes are sent, the cycle resets.\n\n"
         "**/joke_activation** `<time>`\n"
         "Activate the daily joke in this channel at the specified time (e.g. `14:00`).\n\n"
+        "**/sponsor_plans**\n"
+        "Show the available sponsorship plans and pricing.\n\n"
+        "**/sponsor_who**\n"
+        "Show who the current sponsor is, their plan, and how much time remains until expiry.\n\n"
         "**/stats**\n"
         "Show hardware stats: CPU, RAM, disk, temperature, network, uptime, and bot memory usage.\n\n"
         "**/help**\n"
@@ -326,11 +489,11 @@ async def help(interaction: discord.Interaction):
     )
     await interaction.response.send_message(text, ephemeral=True)
 
-@tree.command(name="joke", description="Add a joke/text to the daily joke list")
+@tree.command(name="joke_add", description="Add a joke/text to the daily joke list")
 @app_commands.describe(text="The joke or text to add")
-async def joke(interaction: discord.Interaction, text: str):
-    logger.info(f"Command /joke called by {interaction.user}")
-    add_joke(text)
+async def joke_add(interaction: discord.Interaction, text: str):
+    logger.info(f"Command /joke_add called by {interaction.user}")
+    db.add_joke(text)
     await interaction.response.send_message(f"Joke added!")
 
 @tree.command(name="joke_activation", description="Activate the daily joke in this channel at a specific time")
@@ -344,8 +507,8 @@ async def joke_activation(interaction: discord.Interaction, time: str):
         return
     state.joke_send_time = time
     state.joke_channel_id = interaction.channel_id
-    set_setting("joke_send_time", time)
-    set_setting("joke_channel_id", interaction.channel_id)
+    db.set_setting("joke_send_time", time)
+    db.set_setting("joke_channel_id", interaction.channel_id)
     await interaction.response.send_message(
         f"Daily joke activated in this channel at **{time}** every day."
     )
@@ -370,10 +533,10 @@ async def daily_joke_check():
             logger.warning("No joke channel set. Use /joke_activation to set one.")
             return
 
-        result = get_unsent_joke()
+        result = db.get_unsent_joke()
         if result is None:
-            reset_jokes()
-            result = get_unsent_joke()
+            db.reset_jokes()
+            result = db.get_unsent_joke()
             if result is None:
                 logger.info("No jokes in database. Skipping daily joke.")
                 return
@@ -382,7 +545,7 @@ async def daily_joke_check():
         channel = client.get_channel(state.joke_channel_id)
         if channel:
             await channel.send(f"**Joke of the day:**\n{text}")
-            mark_joke_sent(joke_id)
+            db.mark_joke_sent(joke_id)
             state.joke_last_sent_date = today
             logger.info(f"Daily joke sent: ID {joke_id}")
         else:
