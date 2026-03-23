@@ -65,6 +65,8 @@ db.init_db()
 _joke_settings = db.get_joke_settings()
 state.joke_channel_id = _joke_settings["channel_id"]
 state.joke_send_time = _joke_settings["send_time"]
+_joke_last_sent = db.get_setting("joke_last_sent_date")
+state.joke_last_sent_date = date.fromisoformat(_joke_last_sent) if _joke_last_sent else None
 state.sponsor = db.get_setting("sponsor")
 _sponsor_set_at = db.get_setting("sponsor_set_at")
 state.sponsor_set_at = float(_sponsor_set_at) if _sponsor_set_at else None
@@ -547,6 +549,7 @@ async def daily_joke_check():
             await channel.send(f"**Joke of the day:**\n{text}")
             db.mark_joke_sent(joke_id)
             state.joke_last_sent_date = today
+            db.set_setting("joke_last_sent_date", today.isoformat())
             logger.info(f"Daily joke sent: ID {joke_id}")
         else:
             logger.warning(f"Joke channel {state.joke_channel_id} not accessible")
