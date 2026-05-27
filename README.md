@@ -29,8 +29,20 @@ npm install pm2 -g && pm2 update
 ```
 Now install the python dependencies:
 ```bash
-pip3 install -r requirements.txt or pip3 install --break-system-packages -r requirements.txt
+pip3 install -r requirements.txt
 ```
+or without venv
+```bash
+pip3 install --break-system-packages -r requirements.txt
+```
+
+**For Raspberry Pi Zero W (Optimized)**
+To avoid extremely long compilation times on low-resource devices, it is highly recommended to install the pre-compiled system packages using `apt` instead of `pip`:
+```bash
+sudo apt update
+sudo apt install python3-flask python3-requests python3-bs4 python3-matplotlib python3-psutil python3-dotenv
+```
+*Note: You might still need to install `discord.py` via pip: `pip3 install discord.py`.*
 
 ### 3. Configuration 
 Create a `.env` file in the root folder and add your credentials:
