@@ -4,3 +4,4 @@ python-dotenv
 requests
 psutil
 beautifulsoup4
+matplotlib
