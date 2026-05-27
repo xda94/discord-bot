@@ -3,6 +3,8 @@ import re
 import time
 import random
 import json
+import io
+import matplotlib.pyplot as plt
 from datetime import date, datetime, timedelta
 import psutil
 import discord
@@ -19,6 +21,9 @@ from moods import (
 from logger import setup_logger
 
 logger = setup_logger("discord_bot", "bot.log")
+
+# Set matplotlib to non-interactive mode
+plt.switch_backend('Agg')
 
 load_dotenv()
 
@@ -91,6 +96,8 @@ async def on_ready():
             check_sponsor_expiry.start()
         if not scrape_price_task.is_running():
             scrape_price_task.start()
+        if not update_exchange_rates_task.is_running():
+            update_exchange_rates_task.start()
         logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
     except Exception:
         logger.exception("Error during on_ready startup sequence")
@@ -561,6 +568,52 @@ async def daily_joke_check():
     except Exception:
         logger.exception("Error in daily_joke_check task")
 
+@tasks.loop(hours=24)
+async def update_exchange_rates_task():
+    logger.info("Starting scheduled exchange rate update task...")
+    try:
+        # Using EUR as base for conversion to DKK for common currencies
+        response = requests.get("https://open.er-api.com/v6/latest/EUR", timeout=10)
+        response.raise_for_status() # Raise an exception for HTTP errors
+        data = response.json()
+        rates = data.get("rates")
+
+        if not rates or "DKK" not in rates:
+            logger.error("Failed to fetch DKK rate from exchange rate API.")
+            return
+
+        eur_to_dkk_rate = rates["DKK"]
+        db.set_exchange_rate("DKK", 1.0) # DKK to DKK is 1
+        db.set_exchange_rate("EUR", eur_to_dkk_rate)
+
+        target_currencies = ["RON", "USD", "GBP"]
+        for currency in target_currencies:
+            if currency in rates:
+                # Convert currency to EUR first, then EUR to DKK
+                currency_to_eur_rate = rates[currency]
+                currency_to_dkk_rate = eur_to_dkk_rate / currency_to_eur_rate
+                db.set_exchange_rate(currency, currency_to_dkk_rate)
+        logger.info("Exchange rates updated successfully.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch exchange rates from API: {e}")
+    except Exception:
+        logger.exception("Error in update_exchange_rates_task")
+
+def convert_to_dkk(price, currency):
+    if price is None or not currency:
+        return None
+    rate = db.get_exchange_rate(currency)
+    return price * rate if rate else None
+
+def format_price_with_dkk(price, currency):
+    if price is None:
+        return "N/A"
+    base_str = f"{price} {currency}" if currency else str(price)
+    dkk_val = convert_to_dkk(price, currency)
+    if dkk_val and currency.upper() != "DKK":
+        return f"{base_str} (~{dkk_val:.2f} DKK)"
+    return base_str
+
 @tree.command(name="scrape-item", description="Add a link to track price and stock")
 @app_commands.describe(url="The URL of the item to track")
 async def scrape_item(interaction: discord.Interaction, url: str):
@@ -568,13 +621,14 @@ async def scrape_item(interaction: discord.Interaction, url: str):
     
     await interaction.response.defer(ephemeral=True)
     
-    price, stock, title = get_price_and_stock(url)
-    item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock)
+    price, stock, title, currency = get_price_and_stock(url)
+    item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock, currency)
     
     if item_id:
         if price is not None:
             db.add_price_history(item_id, price)
-        await interaction.followup.send(f"✅ Adăugat: **{title or url}**\nPreț actual: `{price if price else 'N/A'}` | Stoc: `{'Da' if stock else 'Nu'}`", ephemeral=True)
+        price_str = format_price_with_dkk(price, currency)
+        await interaction.followup.send(f"✅ Adăugat: **{title or url}**\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`", ephemeral=True)
     else:
         await interaction.followup.send("Acest link este deja în lista ta de monitorizare.", ephemeral=True)
 
@@ -598,24 +652,85 @@ async def scrape_show(interaction: discord.Interaction):
         return
 
     lines = ["**Your tracked items:**"]
-    for url, price, stock, title in items:
+    for url, price, stock, title, currency in items:
         status = "✅ In stock" if stock else "❌ Out of stock"
-        price_display = f"`{price}`" if price is not None else "N/A"
+        price_display = f"`{format_price_with_dkk(price, currency)}`" if price is not None else "N/A"
         item_name = f"**{title}**" if title else f"🔗 {url}"
         lines.append(f"{item_name}\nURL: {url}\n💰 Price: {price_display} | {status}")
 
     await interaction.response.send_message("\n\n".join(lines), ephemeral=True)
+
+@tree.command(name="scrape-graph", description="Generate a price history graph for a tracked item")
+@app_commands.describe(url="The URL of the item")
+async def scrape_graph(interaction: discord.Interaction, url: str):
+    logger.info(f"Command /scrape-graph called by {interaction.user} for {url}")
+    await interaction.response.defer(ephemeral=True)
+    
+    history = db.get_price_history(interaction.user.id, url)
+    
+    if not history:
+        await interaction.followup.send("No price history found for this URL in your list.", ephemeral=True)
+        return
+
+    prices = [h[0] for h in history]
+    # Convert timestamps to readable hours/days
+    timestamps = [datetime.fromtimestamp(h[1]).strftime('%d/%m %H:%M') for h in history]
+    title = history[0][2] or "Price History"
+    
+    # Fetch the currency for the item to label the Y-axis
+    item_info = next((item for item in db.get_user_scraped_items(interaction.user.id) if item[0] == url), None)
+    item_currency = item_info[4] if item_info and len(item_info) > 4 else "N/A"
+
+    # Prepare DKK conversion for the graph if applicable
+    prices_dkk = []
+    if item_currency and item_currency.upper() != "DKK":
+        for p in prices:
+            prices_dkk.append(convert_to_dkk(p, item_currency))
+    
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(timestamps, prices, marker='o', linestyle='-', color='#7289da', linewidth=2)
+    
+    plt.title(f"Price Evolution: {title[:50]}...", color='white', fontsize=14)
+    plt.xlabel("Date & Time", color='white')
+    
+    # Label Y-axis with the item's currency
+    plt.ylabel(f"Price ({item_currency})", color='white')
+    
+    plt.xticks(rotation=45, color='white')
+    plt.yticks(color='white')
+    plt.grid(True, linestyle='--', alpha=0.3)
+    
+    # Dark theme styling for Discord
+    fig = plt.gcf()
+    fig.patch.set_facecolor('#2c2f33')
+    ax = plt.gca()
+    ax.set_facecolor('#2c2f33')
+    for spine in ax.spines.values():
+        spine.set_color('white')
+
+    plt.tight_layout()
+
+    # Save plot to a bytes buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plt.close()
+
+    file = discord.File(buf, filename="price_graph.png")
+    await interaction.followup.send(content=f"📈 Price history for: **{title}**", file=file, ephemeral=True)
 
 def get_price_and_stock(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
-            return None, False, None
+            return None, False, None, None
         
         soup = BeautifulSoup(response.text, 'html.parser')
         price = None
         title = None
+        currency = None
 
         scripts = soup.find_all('script', type='application/ld+json')
         for script in scripts:
@@ -626,6 +741,7 @@ def get_price_and_stock(url):
                     offers = data.get('offers')
                     if isinstance(offers, dict):
                         price = offers.get('price')
+                        currency = offers.get('priceCurrency')
             except: continue
 
         if not title:
@@ -638,21 +754,25 @@ def get_price_and_stock(url):
                 try:
                     price = float(price_meta["content"].replace(',', '.'))
                 except: pass
+        
+        if not currency:
+            currency_meta = soup.find("meta", property="product:price:currency") or soup.find("meta", property="og:price:currency")
+            currency = currency_meta["content"] if currency_meta else None
 
         in_stock = any(x in response.text.lower() for x in ["in stoc", "în stoc", "disponibil"])
         
-        return price, in_stock, title.strip() if title else None
+        return price, in_stock, title.strip() if title else None, currency
     except Exception as e:
         logger.error(f"Scraping error for {url}: {e}")
-        return None, False, None
+        return None, False, None, None
 
 @tasks.loop(hours=12)
 async def scrape_price_task():
     logger.info("Starting scheduled price scrape task...")
     items = db.get_all_scraped_items()
     
-    for item_id, user_id, url, old_price, old_stock_status, old_title in items:
-        new_price, is_in_stock, new_title = get_price_and_stock(url)
+    for item_id, user_id, url, old_price, old_stock_status, old_title, old_currency in items:
+        new_price, is_in_stock, new_title, new_currency = get_price_and_stock(url)
         
         if new_price is None:
             continue
@@ -673,7 +793,9 @@ async def scrape_price_task():
                     if back_in_stock:
                         msg += "✅ Item is now **BACK IN STOCK**!\n"
                     if price_changed:
-                        msg += f"💰 Price changed: `{old_price}` -> **{new_price} RON**\n"
+                        old_str = format_price_with_dkk(old_price, old_currency)
+                        new_str = format_price_with_dkk(new_price, new_currency)
+                        msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                     
                     await user.send(msg)
                     logger.info(f"Price alert sent to user {user_id} for {url}")
@@ -681,7 +803,7 @@ async def scrape_price_task():
                 logger.error(f"Could not send DM to user {user_id}: {e}")
 
         # Update current state in DB
-        db.update_scraped_item_status(item_id, new_price, is_in_stock, new_title)
+        db.update_scraped_item_status(item_id, new_price, is_in_stock, new_title, new_currency)
         
     # Cleanup history older than 5 days
     db.clean_old_price_history(days=5)

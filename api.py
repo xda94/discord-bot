@@ -203,7 +203,8 @@ def api_get_all_scrapes():
                 "url": i[2],
                 "last_price": i[3],
                 "in_stock": bool(i[4]),
-                "title": i[5] if len(i) > 5 else None
+                "title": i[5] if len(i) > 5 else None,
+                "currency": i[6] if len(i) > 6 else None
             } for i in items
         ]
         return jsonify(result)

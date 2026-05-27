@@ -1,6 +1,6 @@
 # 🤖 Discord Keyword Responder Bot
 
-A lightweight, Python-powered Discord bot that monitors chat and triggers automated responses based on specific keywords. It features a Flask-based REST API for external management, configurable mood-based tease messages, reminders, daily jokes, web scraping for price tracking, and uses PM2 for "set-it-and-forget-it" stability.
+A lightweight, Python-powered Discord bot that monitors chat and triggers automated responses based on specific keywords. It features a Flask-based REST API for external management, configurable mood-based tease messages, reminders, daily jokes, web scraping for price tracking with dynamic currency conversion, and uses PM2 for "set-it-and-forget-it" stability.
 
 ---
 
@@ -76,6 +76,7 @@ pm2 start api.py --interpreter python3 --name discord-api
 | `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
 | `/scrape-item <url>` | Add a link to track price and stock. Checked every 12 hours. |
 | `/scrape-show` | Show your tracked items and their current prices. |
+| `/scrape-graph <url>` | Show a price evolution graph for the last 5 days. |
 | `/scrape-item-delete <url>` | Remove a link and its history from tracking. |
 | `/help` | Show the help message. |
 
