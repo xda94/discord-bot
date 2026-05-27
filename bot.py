@@ -577,6 +577,23 @@ async def scrape_item_delete(interaction: discord.Interaction, url: str):
     else:
         await interaction.response.send_message(f"Link not found in your list.", ephemeral=True)
 
+@tree.command(name="scrape-show", description="Show your tracked items and their current prices")
+async def scrape_show(interaction: discord.Interaction):
+    logger.info(f"Command /scrape-show called by {interaction.user}")
+    items = db.get_user_scraped_items(interaction.user.id)
+    
+    if not items:
+        await interaction.response.send_message("You are not tracking any items.", ephemeral=True)
+        return
+
+    lines = ["**Your tracked items:**"]
+    for url, price, stock in items:
+        status = "✅ In stock" if stock else "❌ Out of stock"
+        price_display = f"`{price}`" if price is not None else "N/A"
+        lines.append(f"🔗 {url}\n💰 Price: {price_display} | {status}")
+
+    await interaction.response.send_message("\n\n".join(lines), ephemeral=True)
+
 def get_price_and_stock(url):
     """
     Placeholder function for web scraping. 
