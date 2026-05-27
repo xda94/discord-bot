@@ -2,6 +2,7 @@ import os
 import re
 import time
 import random
+import json
 from datetime import date, datetime, timedelta
 import psutil
 import discord
@@ -564,8 +565,19 @@ async def daily_joke_check():
 @app_commands.describe(url="The URL of the item to track")
 async def scrape_item(interaction: discord.Interaction, url: str):
     logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
-    db.add_scraped_item(interaction.user.id, url)
-    await interaction.response.send_message(f"I've added the link to your tracking list! I'll check it every 12 hours.", ephemeral=True)
+    
+    # Folosim defer deoarece scraping-ul poate dura mai mult de 3 secunde
+    await interaction.response.defer(ephemeral=True)
+    
+    price, stock, title = get_price_and_stock(url)
+    item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock)
+    
+    if item_id:
+        if price is not None:
+            db.add_price_history(item_id, price)
+        await interaction.followup.send(f"✅ Adăugat: **{title or url}**\nPreț actual: `{price if price else 'N/A'}` | Stoc: `{'Da' if stock else 'Nu'}`", ephemeral=True)
+    else:
+        await interaction.followup.send("Acest link este deja în lista ta de monitorizare.", ephemeral=True)
 
 @tree.command(name="scrape-item-delete", description="Remove a link from tracking")
 @app_commands.describe(url="The URL to remove")
@@ -587,48 +599,63 @@ async def scrape_show(interaction: discord.Interaction):
         return
 
     lines = ["**Your tracked items:**"]
-    for url, price, stock in items:
+    for url, price, stock, title in items:
         status = "✅ In stock" if stock else "❌ Out of stock"
         price_display = f"`{price}`" if price is not None else "N/A"
-        lines.append(f"🔗 {url}\n💰 Price: {price_display} | {status}")
+        item_name = f"**{title}**" if title else f"🔗 {url}"
+        lines.append(f"{item_name}\nURL: {url}\n💰 Price: {price_display} | {status}")
 
     await interaction.response.send_message("\n\n".join(lines), ephemeral=True)
 
 def get_price_and_stock(url):
-    """
-    Placeholder function for web scraping. 
-    Needs customization based on the target website's HTML structure.
-    """
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-        response = requests.get(url, headers=headers, timeout=10)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
-            return None, False
+            return None, False, None
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # EXEMPLU GENERIC (trebuie adaptat pentru fiecare site):
-        # Încearcă să găsească prețul în meta tags sau clase comune
         price = None
-        price_meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
-        if price_meta:
-            price = float(price_meta["content"].replace(',', '.'))
+        title = None
+
+        # 1. Încercăm JSON-LD (cel mai precis pentru magazine moderne)
+        scripts = soup.find_all('script', type='application/ld+json')
+        for script in scripts:
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict) and data.get('@type') == 'Product':
+                    title = data.get('name')
+                    offers = data.get('offers')
+                    if isinstance(offers, dict):
+                        price = offers.get('price')
+            except: continue
+
+        # 2. Fallback la Meta Tags
+        if not title:
+            title_tag = soup.find("meta", property="og:title") or soup.find("title")
+            title = title_tag.get("content") if title_tag.has_attr("content") else title_tag.string
+
+        if not price:
+            price_meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
+            if price_meta:
+                try:
+                    price = float(price_meta["content"].replace(',', '.'))
+                except: pass
+
+        in_stock = any(x in response.text.lower() for x in ["in stoc", "în stoc", "disponibil"])
         
-        # Verificare sumară stoc (exemplu: caută textul "în stoc")
-        in_stock = "in stoc" in response.text.lower() or "în stoc" in response.text.lower()
-        
-        return price, in_stock
+        return price, in_stock, title.strip() if title else None
     except Exception as e:
         logger.error(f"Scraping error for {url}: {e}")
-        return None, False
+        return None, False, None
 
 @tasks.loop(hours=12)
 async def scrape_price_task():
     logger.info("Starting scheduled price scrape task...")
     items = db.get_all_scraped_items()
     
-    for item_id, user_id, url, old_price, old_stock_status in items:
-        new_price, is_in_stock = get_price_and_stock(url)
+    for item_id, user_id, url, old_price, old_stock_status, old_title in items:
+        new_price, is_in_stock, new_title = get_price_and_stock(url)
         
         if new_price is None:
             continue
@@ -644,11 +671,12 @@ async def scrape_price_task():
             try:
                 user = await client.fetch_user(user_id)
                 if user:
-                    msg = f"🔔 **Update for your tracked item!**\nLink: {url}\n"
+                    disp_name = new_title or old_title or url
+                    msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
                     if back_in_stock:
                         msg += "✅ Item is now **BACK IN STOCK**!\n"
                     if price_changed:
-                        msg += f"💰 Price changed: `{old_price}` -> **{new_price}**\n"
+                        msg += f"💰 Price changed: `{old_price}` -> **{new_price} RON**\n"
                     
                     await user.send(msg)
                     logger.info(f"Price alert sent to user {user_id} for {url}")
@@ -656,7 +684,7 @@ async def scrape_price_task():
                 logger.error(f"Could not send DM to user {user_id}: {e}")
 
         # Update current state in DB
-        db.update_scraped_item_status(item_id, new_price, is_in_stock)
+        db.update_scraped_item_status(item_id, new_price, is_in_stock, new_title)
         
     # Cleanup history older than 5 days
     db.clean_old_price_history(days=5)
