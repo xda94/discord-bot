@@ -380,6 +380,15 @@ def get_all_scraped_items():
         logger.exception("Failed to fetch all scraped items")
         return []
 
+def get_user_scraped_items(user_id):
+    try:
+        with _connect() as c:
+            c.execute("SELECT url, last_price, last_stock_status FROM scraped_items WHERE user_id = ?", (user_id,))
+            return c.fetchall()
+    except Exception:
+        logger.exception(f"Failed to fetch scraped items for user {user_id}")
+        return []
+
 def update_scraped_item_status(item_id, price, in_stock):
     try:
         with _connect(commit=True) as c:
