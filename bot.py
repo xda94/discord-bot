@@ -599,19 +599,48 @@ async def update_exchange_rates_task():
     except Exception:
         logger.exception("Error in update_exchange_rates_task")
 
-def convert_to_dkk(price, currency):
-    if price is None or not currency:
+def convert_currency(price, from_currency, to_currency):
+    if price is None or not from_currency or not to_currency:
         return None
-    rate = db.get_exchange_rate(currency)
-    return price * rate if rate else None
+    try:
+        price = float(price)
+    except (ValueError, TypeError):
+        return None
+        
+    from_rate = db.get_exchange_rate(from_currency)
+    to_rate = db.get_exchange_rate(to_currency)
+    
+    if not from_rate or not to_rate:
+        return None
+        
+    # Everything in DB is stored relative to DKK, so step through DKK
+    price_in_dkk = price * from_rate
+    return price_in_dkk / to_rate
 
-def format_price_with_dkk(price, currency):
+def format_price_with_conversions(price, currency):
     if price is None:
         return "N/A"
-    base_str = f"{price} {currency}" if currency else str(price)
-    dkk_val = convert_to_dkk(price, currency)
-    if dkk_val and currency.upper() != "DKK":
-        return f"{base_str} (~{dkk_val:.2f} DKK)"
+    
+    try:
+        price = float(price)
+    except (ValueError, TypeError):
+        return "N/A"
+
+    base_str = f"{price:.2f} {currency}" if currency else str(price)
+    if not currency:
+        return base_str
+
+    conversions = []
+    # Target conversions to append
+    for target in ["DKK", "EUR", "USD"]:
+        if currency.upper() != target:
+            val = convert_currency(price, currency, target)
+            if val:
+                conversions.append(f"{val:.2f} {target}")
+    
+    if conversions:
+        return f"{base_str} (~" + " | ".join(conversions) + ")"
+    
     return base_str
 
 @tree.command(name="scrape-item", description="Add a link to track price and stock")
@@ -627,7 +656,7 @@ async def scrape_item(interaction: discord.Interaction, url: str):
     if item_id:
         if price is not None:
             db.add_price_history(item_id, price)
-        price_str = format_price_with_dkk(price, currency)
+        price_str = format_price_with_conversions(price, currency)
         await interaction.followup.send(f"✅ Adăugat: **{title or url}**\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`", ephemeral=True)
     else:
         await interaction.followup.send("Acest link este deja în lista ta de monitorizare.", ephemeral=True)
@@ -654,7 +683,7 @@ async def scrape_show(interaction: discord.Interaction):
     lines = ["**Your tracked items:**"]
     for url, price, stock, title, currency in items:
         status = "✅ In stock" if stock else "❌ Out of stock"
-        price_display = f"`{format_price_with_dkk(price, currency)}`" if price is not None else "N/A"
+        price_display = f"`{format_price_with_conversions(price, currency)}`" if price is not None else "N/A"
         item_name = f"**{title}**" if title else f"🔗 {url}"
         lines.append(f"{item_name}\nURL: {url}\n💰 Price: {price_display} | {status}")
 
@@ -681,11 +710,11 @@ async def scrape_graph(interaction: discord.Interaction, url: str):
     item_info = next((item for item in db.get_user_scraped_items(interaction.user.id) if item[0] == url), None)
     item_currency = item_info[4] if item_info and len(item_info) > 4 else "N/A"
 
-    # Prepare DKK conversion for the graph if applicable
-    prices_dkk = []
+    # Prepare conversion for the graph if you later decide to plot it
+    prices_converted = []
     if item_currency and item_currency.upper() != "DKK":
         for p in prices:
-            prices_dkk.append(convert_to_dkk(p, item_currency))
+            prices_converted.append(convert_currency(p, item_currency, "DKK"))
     
     # Create the plot
     plt.figure(figsize=(10, 6))
@@ -740,7 +769,13 @@ def get_price_and_stock(url):
                     title = data.get('name')
                     offers = data.get('offers')
                     if isinstance(offers, dict):
-                        price = offers.get('price')
+                        # Ensure we extract and cast to float properly
+                        raw_price = offers.get('price')
+                        if raw_price is not None:
+                            try:
+                                price = float(str(raw_price).replace(',', '.'))
+                            except ValueError:
+                                pass
                         currency = offers.get('priceCurrency')
             except: continue
 
@@ -793,8 +828,8 @@ async def scrape_price_task():
                     if back_in_stock:
                         msg += "✅ Item is now **BACK IN STOCK**!\n"
                     if price_changed:
-                        old_str = format_price_with_dkk(old_price, old_currency)
-                        new_str = format_price_with_dkk(new_price, new_currency)
+                        old_str = format_price_with_conversions(old_price, old_currency)
+                        new_str = format_price_with_conversions(new_price, new_currency)
                         msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                     
                     await user.send(msg)
