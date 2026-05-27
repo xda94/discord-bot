@@ -66,11 +66,19 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     url TEXT NOT NULL,
+                    title TEXT,
                     last_price REAL,
                     last_stock_status INTEGER DEFAULT 1,
                     UNIQUE(user_id, url)
                 )
             """)
+
+            # Asigurăm existența coloanei title pentru bazele de date existente
+            c.execute("PRAGMA table_info(scraped_items)")
+            columns = [info[1] for info in c.fetchall()]
+            if "title" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN title TEXT")
+
             c.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,14 +353,20 @@ def delete_joke(joke_id):
 
 # --- Scrape functions ---
 
-def add_scraped_item(user_id, url):
+def add_scraped_item(user_id, url, title=None, price=None, stock=1):
     try:
         with _connect(commit=True) as c:
-            c.execute("INSERT OR IGNORE INTO scraped_items (user_id, url) VALUES (?, ?)", (user_id, url))
-        return True
+            c.execute(
+                "INSERT OR IGNORE INTO scraped_items (user_id, url, title, last_price, last_stock_status) VALUES (?, ?, ?, ?, ?)",
+                (user_id, url, title, price, 1 if stock else 0)
+            )
+            if c.rowcount > 0:
+                item_id = c.lastrowid
+                return item_id
+        return None
     except Exception:
         logger.exception(f"Failed to add scrape item: {url}")
-        return False
+        return None
 
 def delete_scraped_item(user_id, url):
     try:
@@ -374,7 +388,7 @@ def delete_scraped_item(user_id, url):
 def get_all_scraped_items():
     try:
         with _connect() as c:
-            c.execute("SELECT id, user_id, url, last_price, last_stock_status FROM scraped_items")
+            c.execute("SELECT id, user_id, url, last_price, last_stock_status, title FROM scraped_items")
             return c.fetchall()
     except Exception:
         logger.exception("Failed to fetch all scraped items")
@@ -383,18 +397,18 @@ def get_all_scraped_items():
 def get_user_scraped_items(user_id):
     try:
         with _connect() as c:
-            c.execute("SELECT url, last_price, last_stock_status FROM scraped_items WHERE user_id = ?", (user_id,))
+            c.execute("SELECT url, last_price, last_stock_status, title FROM scraped_items WHERE user_id = ?", (user_id,))
             return c.fetchall()
     except Exception:
         logger.exception(f"Failed to fetch scraped items for user {user_id}")
         return []
 
-def update_scraped_item_status(item_id, price, in_stock):
+def update_scraped_item_status(item_id, price, in_stock, title=None):
     try:
         with _connect(commit=True) as c:
             c.execute(
-                "UPDATE scraped_items SET last_price = ?, last_stock_status = ? WHERE id = ?",
-                (price, 1 if in_stock else 0, item_id)
+                "UPDATE scraped_items SET last_price = ?, last_stock_status = ?, title = COALESCE(?, title) WHERE id = ?",
+                (price, 1 if in_stock else 0, title, item_id)
             )
     except Exception:
         logger.exception(f"Failed to update scraped item status for ID {item_id}")
