@@ -73,7 +73,6 @@ def init_db():
                 )
             """)
 
-            # Asigurăm existența coloanei title pentru bazele de date existente
             c.execute("PRAGMA table_info(scraped_items)")
             columns = [info[1] for info in c.fetchall()]
             if "title" not in columns:
