@@ -760,28 +760,50 @@ def get_price_and_stock(url):
         price = None
         title = None
         currency = None
+        in_stock = None  # Use None initially to track if we found a definitive status
 
+        # 1. Try JSON-LD structured data first (Standard e-commerce format)
         scripts = soup.find_all('script', type='application/ld+json')
         for script in scripts:
             try:
                 data = json.loads(script.string)
-                if isinstance(data, dict) and data.get('@type') == 'Product':
-                    title = data.get('name')
-                    offers = data.get('offers')
-                    if isinstance(offers, dict):
-                        # Ensure we extract and cast to float properly
-                        raw_price = offers.get('price')
-                        if raw_price is not None:
-                            try:
-                                price = float(str(raw_price).replace(',', '.'))
-                            except ValueError:
-                                pass
-                        currency = offers.get('priceCurrency')
+                # Sometimes JSON-LD is a list of dictionaries
+                items = data if isinstance(data, list) else [data]
+                    
+                for item in items:
+                    # Check for Product schema
+                    if isinstance(item, dict) and item.get('@type') in ['Product', 'http://schema.org/Product']:
+                        if not title:
+                            title = item.get('name')
+                        
+                        offers = item.get('offers')
+                        # Offers can be a dictionary or a list of dictionaries
+                        offer_list = offers if isinstance(offers, list) else [offers] if isinstance(offers, dict) else []
+
+                        for offer in offer_list:
+                            if isinstance(offer, dict):
+                                # Price extraction
+                                if price is None:
+                                    raw_price = offer.get('price')
+                                    if raw_price is not None:
+                                        try:
+                                            price = float(str(raw_price).replace(',', '.'))
+                                        except ValueError:
+                                            pass
+                                
+                                if currency is None:
+                                    currency = offer.get('priceCurrency')
+                                
+                                # Stock extraction via JSON-LD
+                                availability = offer.get('availability', '')
+                                if availability:
+                                    in_stock = 'InStock' in availability or 'PreOrder' in availability
             except: continue
 
+        # 2. Try Meta tags if JSON-LD didn't have the data
         if not title:
             title_tag = soup.find("meta", property="og:title") or soup.find("title")
-            title = title_tag.get("content") if title_tag.has_attr("content") else title_tag.string
+            title = title_tag.get("content") if title_tag and title_tag.has_attr("content") else (title_tag.string if title_tag else None)
 
         if not price:
             price_meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
@@ -794,12 +816,42 @@ def get_price_and_stock(url):
             currency_meta = soup.find("meta", property="product:price:currency") or soup.find("meta", property="og:price:currency")
             currency = currency_meta["content"] if currency_meta else None
 
-        in_stock = any(x in response.text.lower() for x in ["in stoc", "în stoc", "disponibil"])
-        
+        # Stock extraction via Meta tags
+        if in_stock is None:
+            avail_meta = soup.find("meta", property="product:availability") or soup.find("meta", property="og:availability")
+            if avail_meta:
+                content = avail_meta.get("content", "").lower()
+                in_stock = "instock" in content or "in stoc" in content
+
+        # 3. Smart Text Fallback (if structured data is completely missing)
+        if in_stock is None:
+            text_lower = response.text.lower()
+            
+            # Check negative keywords FIRST to prevent false positives
+            out_of_stock_keywords = [
+                "stoc epuizat", "indisponibil", "nu este in stoc", 
+                "lipsa stoc", "out of stock", "momentan indisponibil"
+            ]
+            
+            if any(x in text_lower for x in out_of_stock_keywords):
+                in_stock = False
+            else:
+                # Check positive keywords, adding "adauga in cos" as a strong indicator
+                in_stock = any(x in text_lower for x in [
+                    "in stoc", "în stoc", "disponibil", 
+                    "adauga in cos", "adaugă în coș", "add to cart"
+                ])
+
+        # Final safety net
+        if in_stock is None:
+            in_stock = False
+
         return price, in_stock, title.strip() if title else None, currency
+
     except Exception as e:
         logger.error(f"Scraping error for {url}: {e}")
         return None, False, None, None
+
 
 @tasks.loop(hours=12)
 async def scrape_price_task():
