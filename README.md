@@ -29,7 +29,7 @@ npm install pm2 -g && pm2 update
 ```
 Now install the python dependencies:
 ```bash
-pip3 install -r requirements.txt
+pip3 install -r requirements.txt or pip3 install --break-system-packages -r requirements.txt
 ```
 
 ### 3. Configuration 
@@ -74,6 +74,9 @@ pm2 start api.py --interpreter python3 --name discord-api
 | `/joke <text>` | Add a joke to the daily joke rotation. |
 | `/joke_activation <time>` | Activate the daily joke in the current channel at a given time (e.g. `14:00`). |
 | `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
+| `/scrape-item <url>` | Add a link to track price and stock. Checked every 12 hours. |
+| `/scrape-show` | Show your tracked items and their current prices. |
+| `/scrape-item-delete <url>` | Remove a link and its history from tracking. |
 | `/help` | Show the help message. |
 
 ---
