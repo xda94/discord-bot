@@ -61,6 +61,25 @@ def init_db():
                     value TEXT NOT NULL
                 )
             """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS scraped_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    last_price REAL,
+                    last_stock_status INTEGER DEFAULT 1,
+                    UNIQUE(user_id, url)
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS price_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL,
+                    price REAL,
+                    timestamp REAL NOT NULL,
+                    FOREIGN KEY(item_id) REFERENCES scraped_items(id) ON DELETE CASCADE
+                )
+            """)
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")
@@ -323,3 +342,68 @@ def delete_joke(joke_id):
     except Exception:
         logger.exception(f"Failed to delete joke {joke_id}")
         return False
+
+# --- Scrape functions ---
+
+def add_scraped_item(user_id, url):
+    try:
+        with _connect(commit=True) as c:
+            c.execute("INSERT OR IGNORE INTO scraped_items (user_id, url) VALUES (?, ?)", (user_id, url))
+        return True
+    except Exception:
+        logger.exception(f"Failed to add scrape item: {url}")
+        return False
+
+def delete_scraped_item(user_id, url):
+    try:
+        with _connect(commit=True) as c:
+            # Cascade delete relies on foreign key, but sqlite needs PRAGMA foreign_keys = ON;
+            # Alternatively, we delete manually from both:
+            c.execute("SELECT id FROM scraped_items WHERE user_id = ? AND url = ?", (user_id, url))
+            row = c.fetchone()
+            if row:
+                item_id = row[0]
+                c.execute("DELETE FROM price_history WHERE item_id = ?", (item_id,))
+                c.execute("DELETE FROM scraped_items WHERE id = ?", (item_id,))
+                return True
+        return False
+    except Exception:
+        logger.exception(f"Failed to delete scrape item: {url}")
+        return False
+
+def get_all_scraped_items():
+    try:
+        with _connect() as c:
+            c.execute("SELECT id, user_id, url, last_price, last_stock_status FROM scraped_items")
+            return c.fetchall()
+    except Exception:
+        logger.exception("Failed to fetch all scraped items")
+        return []
+
+def update_scraped_item_status(item_id, price, in_stock):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE scraped_items SET last_price = ?, last_stock_status = ? WHERE id = ?",
+                (price, 1 if in_stock else 0, item_id)
+            )
+    except Exception:
+        logger.exception(f"Failed to update scraped item status for ID {item_id}")
+
+def add_price_history(item_id, price):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO price_history (item_id, price, timestamp) VALUES (?, ?, ?)",
+                (item_id, price, time.time())
+            )
+    except Exception:
+        logger.exception(f"Failed to add price history for item {item_id}")
+
+def clean_old_price_history(days=5):
+    try:
+        cutoff = time.time() - (days * 86400)
+        with _connect(commit=True) as c:
+            c.execute("DELETE FROM price_history WHERE timestamp < ?", (cutoff,))
+    except Exception:
+        logger.exception("Failed to clean old price history")

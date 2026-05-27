@@ -8,6 +8,8 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 from dotenv import load_dotenv
+import requests
+from bs4 import BeautifulSoup
 import db
 from moods import (
     COOLDOWN, TEASE_BASE_CHANCE, TEASE_MOODS,
@@ -86,6 +88,8 @@ async def on_ready():
             daily_joke_check.start()
         if not check_sponsor_expiry.is_running():
             check_sponsor_expiry.start()
+        if not scrape_price_task.is_running():
+            scrape_price_task.start()
         logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
     except Exception:
         logger.exception("Error during on_ready startup sequence")
@@ -555,5 +559,90 @@ async def daily_joke_check():
             logger.warning(f"Joke channel {state.joke_channel_id} not accessible")
     except Exception:
         logger.exception("Error in daily_joke_check task")
+
+@tree.command(name="scrape-item", description="Add a link to track price and stock")
+@app_commands.describe(url="The URL of the item to track")
+async def scrape_item(interaction: discord.Interaction, url: str):
+    logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
+    db.add_scraped_item(interaction.user.id, url)
+    await interaction.response.send_message(f"I've added the link to your tracking list! I'll check it every 12 hours.", ephemeral=True)
+
+@tree.command(name="scrape-item-delete", description="Remove a link from tracking")
+@app_commands.describe(url="The URL to remove")
+async def scrape_item_delete(interaction: discord.Interaction, url: str):
+    logger.info(f"Command /scrape-item-delete called by {interaction.user} for {url}")
+    success = db.delete_scraped_item(interaction.user.id, url)
+    if success:
+        await interaction.response.send_message(f"Link removed and data cleared.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Link not found in your list.", ephemeral=True)
+
+def get_price_and_stock(url):
+    """
+    Placeholder function for web scraping. 
+    Needs customization based on the target website's HTML structure.
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return None, False
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # EXEMPLU GENERIC (trebuie adaptat pentru fiecare site):
+        # Încearcă să găsească prețul în meta tags sau clase comune
+        price = None
+        price_meta = soup.find("meta", property="product:price:amount") or soup.find("meta", property="og:price:amount")
+        if price_meta:
+            price = float(price_meta["content"].replace(',', '.'))
+        
+        # Verificare sumară stoc (exemplu: caută textul "în stoc")
+        in_stock = "in stoc" in response.text.lower() or "în stoc" in response.text.lower()
+        
+        return price, in_stock
+    except Exception as e:
+        logger.error(f"Scraping error for {url}: {e}")
+        return None, False
+
+@tasks.loop(hours=12)
+async def scrape_price_task():
+    logger.info("Starting scheduled price scrape task...")
+    items = db.get_all_scraped_items()
+    
+    for item_id, user_id, url, old_price, old_stock_status in items:
+        new_price, is_in_stock = get_price_and_stock(url)
+        
+        if new_price is None:
+            continue
+        
+        # Store price in history
+        db.add_price_history(item_id, new_price)
+        
+        # Logic for notifications
+        price_changed = old_price is not None and new_price != old_price
+        back_in_stock = not old_stock_status and is_in_stock
+        
+        if price_changed or back_in_stock:
+            try:
+                user = await client.fetch_user(user_id)
+                if user:
+                    msg = f"🔔 **Update for your tracked item!**\nLink: {url}\n"
+                    if back_in_stock:
+                        msg += "✅ Item is now **BACK IN STOCK**!\n"
+                    if price_changed:
+                        msg += f"💰 Price changed: `{old_price}` -> **{new_price}**\n"
+                    
+                    await user.send(msg)
+                    logger.info(f"Price alert sent to user {user_id} for {url}")
+            except Exception as e:
+                logger.error(f"Could not send DM to user {user_id}: {e}")
+
+        # Update current state in DB
+        db.update_scraped_item_status(item_id, new_price, is_in_stock)
+        
+    # Cleanup history older than 5 days
+    db.clean_old_price_history(days=5)
+    logger.info("Finished price scrape task and cleaned history.")
 
 client.run(TOKEN)

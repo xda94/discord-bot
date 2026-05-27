@@ -3,3 +3,4 @@ Flask
 python-dotenv
 requests
 psutil
+beautifulsoup4

@@ -4,7 +4,8 @@ from flask import Flask, request, jsonify
 from db import (
     init_db, add_response, remove_response, get_all_responses,
     add_reminder, delete_reminder, get_all_reminders,
-    add_joke, get_all_jokes, get_joke_by_id, update_joke, delete_joke, reset_jokes
+    add_joke, get_all_jokes, get_joke_by_id, update_joke, delete_joke, reset_jokes,
+    add_scraped_item, delete_scraped_item, get_all_scraped_items
 )
 from logger import setup_logger
 import logging
@@ -164,6 +165,50 @@ def api_reset_jokes():
     reset_jokes()
     logger.info("All jokes reset to unsent via API")
     return jsonify({"status": "reset"})
+
+# --- Scrape Routes ---
+
+@app.route("/scrape/add", methods=["POST"])
+def api_add_scrape():
+    data = request.get_json()
+    if not data or "user_id" not in data or "url" not in data:
+        logger.warning(f"BadRequest: Missing fields in /scrape/add. IP: {request.remote_addr}")
+        return jsonify({"error": "Missing user_id or url"}), 400
+
+    add_scraped_item(data["user_id"], data["url"])
+    logger.info(f"Scrape item added via API for User {data['user_id']}: {data['url']}")
+    return jsonify({"status": "ok"})
+
+@app.route("/scrape/remove", methods=["DELETE"])
+def api_remove_scrape():
+    data = request.get_json()
+    if not data or "user_id" not in data or "url" not in data:
+        return jsonify({"error": "Missing user_id or url"}), 400
+
+    success = delete_scraped_item(data["user_id"], data["url"])
+    if success:
+        logger.info(f"Scrape item removed via API for User {data['user_id']}")
+        return jsonify({"status": "removed"})
+    else:
+        return jsonify({"error": "Item not found"}), 404
+
+@app.route("/scrape/all", methods=["GET"])
+def api_get_all_scrapes():
+    try:
+        items = get_all_scraped_items()
+        result = [
+            {
+                "id": i[0],
+                "user_id": i[1],
+                "url": i[2],
+                "last_price": i[3],
+                "in_stock": bool(i[4])
+            } for i in items
+        ]
+        return jsonify(result)
+    except Exception:
+        logger.exception("Error in /scrape/all")
+        return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == "__main__":
     logger.info(f"Starting Flask API Server on {HOST}:{PORT}")
