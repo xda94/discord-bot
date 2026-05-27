@@ -566,7 +566,6 @@ async def daily_joke_check():
 async def scrape_item(interaction: discord.Interaction, url: str):
     logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
     
-    # Folosim defer deoarece scraping-ul poate dura mai mult de 3 secunde
     await interaction.response.defer(ephemeral=True)
     
     price, stock, title = get_price_and_stock(url)
@@ -618,7 +617,6 @@ def get_price_and_stock(url):
         price = None
         title = None
 
-        # 1. Încercăm JSON-LD (cel mai precis pentru magazine moderne)
         scripts = soup.find_all('script', type='application/ld+json')
         for script in scripts:
             try:
@@ -630,7 +628,6 @@ def get_price_and_stock(url):
                         price = offers.get('price')
             except: continue
 
-        # 2. Fallback la Meta Tags
         if not title:
             title_tag = soup.find("meta", property="og:title") or soup.find("title")
             title = title_tag.get("content") if title_tag.has_attr("content") else title_tag.string
