@@ -487,6 +487,71 @@ class ScrapingFeature:
             file = feature._render_price_graph(timestamps, prices, title, item_currency)
             await interaction.followup.send(file=file, ephemeral=True)
 
+        @self.tree.command(
+            name="scrape-graph-all",
+            description="Combined price history graph for ALL your tracked items (normalized to DKK)",
+        )
+        async def scrape_graph_all(interaction: discord.Interaction):
+            logger.info(f"Command /scrape-graph-all called by {interaction.user}")
+            await interaction.response.defer(ephemeral=True)
+
+            items = db.get_user_scraped_items(interaction.user.id)
+            if not items:
+                await interaction.followup.send(
+                    "You are not tracking any items.", ephemeral=True
+                )
+                return
+
+            # Build one (label, [(datetime, price_in_dkk), ...]) series per item.
+            # All series share a DKK Y-axis so cross-currency comparisons are valid.
+            series: list[tuple[str, list[tuple[datetime, float]]]] = []
+            skipped_no_history = 0
+            skipped_no_currency = 0
+
+            for url, _last_price, _stock, title, currency in items:
+                history = db.get_price_history(interaction.user.id, url)
+                if not history:
+                    skipped_no_history += 1
+                    continue
+
+                points: list[tuple[datetime, float]] = []
+                for price, ts, _row_title in history:
+                    if not currency:
+                        # Unknown unit — can't safely place it on a DKK axis.
+                        continue
+                    if currency.upper() == "DKK":
+                        points.append((datetime.fromtimestamp(ts), float(price)))
+                    else:
+                        price_dkk = feature.converter.convert(price, currency, "DKK")
+                        if price_dkk is not None:
+                            points.append((datetime.fromtimestamp(ts), price_dkk))
+
+                if not points:
+                    skipped_no_currency += 1
+                    continue
+
+                series.append((title or _domain(url), points))
+
+            if not series:
+                await interaction.followup.send(
+                    "No price history available yet for any of your tracked items.",
+                    ephemeral=True,
+                )
+                return
+
+            file = feature._render_multi_price_graph(series)
+            parts = [
+                f"Combined price history for **{len(series)}** tracked item"
+                f"{'s' if len(series) != 1 else ''} (normalized to DKK).",
+            ]
+            if skipped_no_history:
+                parts.append(f"_Skipped (no history yet): {skipped_no_history}._")
+            if skipped_no_currency:
+                parts.append(
+                    f"_Skipped (no known currency to normalize): {skipped_no_currency}._"
+                )
+            await interaction.followup.send("\n".join(parts), file=file, ephemeral=True)
+
     @staticmethod
     def _render_price_graph(timestamps, prices, title, item_currency) -> discord.File:
         fig, ax = plt.subplots(figsize=(10, 6), facecolor="#2f3136")
@@ -508,6 +573,54 @@ class ScrapingFeature:
         plt.close(fig)
         buf.seek(0)
         return discord.File(buf, filename="price_history.png")
+
+    @staticmethod
+    def _render_multi_price_graph(
+        series: list[tuple[str, list[tuple[datetime, float]]]],
+    ) -> discord.File:
+        """Render a multi-line price chart.
+
+        `series` is a list of `(label, [(datetime, price_in_dkk), ...])` tuples,
+        one per tracked item. All Y-values must already be in DKK.
+        """
+        fig, ax = plt.subplots(figsize=(12, 7), facecolor="#2f3136")
+        ax.set_facecolor("#36393f")
+
+        for label, points in series:
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            # Trim long product names so the legend stays readable.
+            legend_label = (label[:40] + "…") if len(label) > 40 else label
+            ax.plot(
+                xs, ys,
+                marker="o", linestyle="-", linewidth=2, markersize=4,
+                label=legend_label,
+            )
+
+        ax.set_title(
+            "Price Evolution — All Tracked Items", color="white", fontsize=14,
+        )
+        ax.set_xlabel("Date & Time", color="white")
+        ax.set_ylabel("Price (DKK)", color="white")
+        ax.tick_params(axis="x", colors="white")
+        ax.tick_params(axis="y", colors="white")
+        for spine in ax.spines.values():
+            spine.set_color("white")
+        ax.grid(True, color="#4f545c", linestyle="--", linewidth=0.5)
+        ax.legend(
+            loc="best", facecolor="#36393f", edgecolor="#4f545c",
+            labelcolor="white", fontsize=8,
+        )
+
+        # Auto-format the date axis (rotation, tick density) based on the range.
+        fig.autofmt_xdate()
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
+        plt.close(fig)
+        buf.seek(0)
+        return discord.File(buf, filename="price_history_all.png")
 
     @tasks.loop(hours=12)
     async def _scrape_loop(self):
