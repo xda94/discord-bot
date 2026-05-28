@@ -82,7 +82,7 @@ pm2 start api.py --interpreter python3 --name discord-api
 | `/add <keyword> <response>` | Add a keyword-response pair. Multiple responses per keyword are supported — the bot picks one at random. |
 | `/remind <when> <who> <what>` | Set a timed reminder. Format: `30m`, `2h`, `1d`. |
 | `/topkeywords [user]` | Show the most triggered keywords in the server, optionally filtered by user. |
-| `/mood <mood>` | Set the bot's tease mood. Available moods are loaded dynamically from `moods.py`, plus `random`. |
+| `/mood <mood>` | Set the bot's tease mood. Available moods are loaded dynamically from `features/teases.py`, plus `random`. |
 | `/joke <text>` | Add a joke to the daily joke rotation. |
 | `/joke_activation <time>` | Activate the daily joke in the current channel at a given time (e.g. `14:00`). |
 | `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
@@ -96,13 +96,31 @@ pm2 start api.py --interpreter python3 --name discord-api
 
 ## 📁 Project Structure
 
+### Top-level
+
 | File | Description |
 |---|---|
-| `bot.py` | Core Discord client — event handlers, slash commands, and background tasks. |
+| `bot.py` | Thin entry point — instantiates every feature class, registers a unified `on_message` dispatcher and `on_ready` task starter, then runs the Discord client. |
 | `api.py` | Flask REST API for managing responses, reminders, and jokes externally. |
 | `db.py` | Database layer — all SQLite queries and a shared connection context manager. |
-| `moods.py` | Mood/tease message definitions and bot constants (`COOLDOWN`, `TEASE_MOODS`, etc.). |
 | `logger.py` | Shared logging setup used by both the bot and the API. |
 | `requirements.txt` | Python dependencies. |
 | `.env` | Environment variables (ignored by git). |
 | `responses.db` | SQLite database file (auto-created on first run). |
+
+### `features/` — one class per domain
+
+Each feature class self-registers its slash commands in `__init__`, optionally implements `handle_message(message)` to participate in the `on_message` chain, and optionally implements `start_tasks()` to kick off background loops in `on_ready`.
+
+| File | Class(es) | Responsibility |
+|---|---|---|
+| `response_gate.py` | `ResponseGate` | Shared cooldown clock used by `KeywordsFeature` so the bot never spams the channel. Exposes `can_respond()` / `mark_responded()` and a `DEFAULT_COOLDOWN_SECONDS` default. |
+| `keywords.py` | `KeywordsFeature` | Owns keyword auto-responses (`on_message` match → reply), `/keyword_add`, and `/topkeywords`. Consults `SponsorsFeature` to append a sponsor suffix and consumes the shared `ResponseGate`. |
+| `teases.py` | `TeasesFeature` | Random mood-based teases that fire on messages, plus the `/mood` command. Owns the full `TEASE_MOODS` mood-line corpus and the daily tease counter. |
+| `inactivity.py` | `InactivityFeature` | Tracks the most recent activity timestamp per guild via `handle_message`, and nudges quiet channels with an `INACTIVITY_MESSAGES` line via a 30-minute background loop. |
+| `reminders.py` | `RemindersFeature` | The `/remind` command (parses `30m` / `2h` / `1d`) and a 10-second loop that delivers due reminders and deletes them from the DB. |
+| `jokes.py` | `JokesFeature` | The `/joke_add` and `/joke_activation` commands plus a 30-second loop that posts one unsent joke per day at the configured time and recycles the pool when exhausted. |
+| `sponsors.py` | `SponsorsFeature`, `_SponsorModal` | Sponsor state machine (name, tier, custom message, set-at timestamp), `/sponsor_set` (gated by a password modal), `/sponsor_plans`, `/sponsor_who`, and an hourly loop that warns 1 day before expiry and clears the sponsor after 1 year. Exposes `maybe_get_sponsor_suffix()` to other features. |
+| `scraping.py` | `ScrapingFeature`, `PriceScraper`, `CurrencyConverter` | All `/scrape-*` commands plus a 12-hour scrape loop that DMs users on price/stock changes. `PriceScraper` extracts price/title/currency/stock from JSON-LD → meta → text-fallback. `CurrencyConverter` refreshes exchange rates daily and pivots through DKK for display. Uses Matplotlib (Agg backend) to render price-history graphs. |
+| `stats.py` | `StatsFeature` | The `/stats` command — host CPU, RAM, disk, temperature, network, uptime and bot process memory via `psutil`. Gracefully degrades load average to `N/A` on Windows. |
+| `help_feature.py` | `HelpFeature` | The `/help` command — static description of all user-facing slash commands. |
