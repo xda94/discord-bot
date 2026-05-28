@@ -40,9 +40,20 @@ pip3 install --break-system-packages -r requirements.txt
 To avoid extremely long compilation times on low-resource devices, it is highly recommended to install the pre-compiled system packages using `apt` instead of `pip`:
 ```bash
 sudo apt update
-sudo apt install python3-flask python3-requests python3-bs4 python3-matplotlib python3-psutil python3-dotenv
+sudo apt install python3-flask python3-requests python3-bs4 python3-matplotlib python3-psutil python3-dotenv python3-cffi python3-certifi
 ```
-*Note: You might still need to install `discord.py` via pip: `pip3 install discord.py`.*
+Then install the pip-only packages on top:
+```bash
+pip3 install --break-system-packages discord.py curl_cffi
+```
+
+*Why `python3-cffi` and `python3-certifi` first?* `curl_cffi` is a thin wrapper around a C extension that links against `_cffi_backend`. On ARMv6 (Pi Zero W) the prebuilt wheel is missing, so pip falls back to compiling from source — which fails unless the `cffi` and `certifi` system bindings are already present. Installing them from `apt` first lets the `pip install curl_cffi` step pick them up instead of trying (and failing) to build everything from scratch.
+
+*If `pip install curl_cffi` still fails on your Pi*, that's fine — the scraper degrades to plain `requests` automatically. You'll lose the ability to scrape bot-protected sites (Altex, eMag, Cel.ro) but the rest of the bot works normally. You can check by running:
+```bash
+python3 -c "from curl_cffi import requests; print('OK')"
+```
+A clean `OK` means impersonation is active; an `ImportError` means you're on the fallback path.
 
 ### 3. Configuration 
 Create a `.env` file in the root folder and add your credentials:
@@ -126,9 +137,10 @@ Each test that touches the database uses a temporary SQLite file (via the `tmp_d
 | File | Description |
 |---|---|
 | `bot.py` | Thin entry point — instantiates every feature class, registers a unified `on_message` dispatcher and `on_ready` task starter, then runs the Discord client. |
-| `api.py` | Flask REST API for managing responses, reminders, and jokes externally. |
+| `api.py` | Flask REST API for managing responses, reminders, jokes, and scraped items externally. `POST /scrape/add` does a live scrape during the request so unscrapeable URLs are rejected immediately instead of becoming dead rows. |
+| `scraper.py` | Pure scraping core — `PriceScraper`, `ScrapeResult`, URL/TLD helpers. No Discord or Matplotlib imports, so `api.py` can reuse it without dragging those into the API process. The Discord-side `ScrapingFeature` re-imports from here. |
 | `db.py` | Database layer — all SQLite queries and a shared connection context manager. |
-| `logger.py` | Shared logging setup used by both the bot and the API. |
+| `logger.py` | Shared logging setup used by both the bot and the API. Uses `RotatingFileHandler` (5 MB × 2 backups) and attaches the `database` and `scraper` module loggers to the same handlers. |
 | `requirements.txt` | Python runtime dependencies. |
 | `requirements-dev.txt` | Test-only dependencies (pytest). |
 | `pytest.ini` | Pytest configuration (test discovery rooted at `tests/`). |

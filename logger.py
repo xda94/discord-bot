@@ -18,10 +18,13 @@ def setup_logger(name, log_file):
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # Attach db logger to the same handlers
-    db_logger = logging.getLogger("database")
-    db_logger.setLevel(logging.INFO)
-    db_logger.addHandler(file_handler)
-    db_logger.addHandler(console_handler)
+    # Attach the shared module loggers ("database", "scraper") to the same
+    # handlers so their output ends up in `bot.log` / `api.log` instead of
+    # being silently dropped by Python's default root handler config.
+    for child_name in ("database", "scraper"):
+        child = logging.getLogger(child_name)
+        child.setLevel(logging.INFO)
+        child.addHandler(file_handler)
+        child.addHandler(console_handler)
 
     return logger
