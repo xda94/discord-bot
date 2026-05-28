@@ -50,6 +50,14 @@ Create a `.env` file in the root folder and add your credentials:
 DISCORD_TOKEN=your_token_here
 HOST=your_host_here
 PORT=your_port_here
+API_TOKEN=any_long_random_string
+```
+
+`API_TOKEN` gates every Flask route via `Authorization: Bearer <token>`. Generate one with e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`. If you omit it the API still runs but is **unauthenticated** — `api.log` will record a `CRITICAL` line at startup announcing the open state. Set it before exposing the API to anything beyond `localhost`.
+
+Example authenticated request:
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" http://localhost:$PORT/all
 ```
 
 ---
