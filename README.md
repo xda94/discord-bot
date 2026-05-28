@@ -89,11 +89,11 @@ pm2 start api.py --interpreter python3 --name discord-api
 | `/sponsor_plans` | List the available sponsorship plans, prices and per-tier chance of appending a sponsor tag to a keyword response. |
 | `/sponsor_who` | Show the current sponsor, their plan, and time remaining until the 1-year expiry. |
 | `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
-| `/scrape-item <url>` | Add a link to track price and stock. Checked every 12 hours. |
+| `/scrape-item <url>` | Add a link to track price and stock. Checked every 12 hours. Currency is read from the page (JSON-LD / meta tags) with a TLD-based fallback for `.dk` → DKK and `.ro` → RON. |
 | `/scrape-item-delete <url>` | Remove a link and its history from tracking. |
-| `/scrape-show` | Show your tracked items and their current prices. |
-| `/scrape-graph <url>` | Show a price evolution graph for one tracked URL. |
-| `/scrape-graph-all` | Combined price evolution graph for **all** your tracked items, normalized to DKK so cross-currency items share one Y-axis. |
+| `/scrape-show [currency]` | Show your tracked items and their current prices. Optional `currency` (RON, DKK, EUR, USD, GBP) converts every row into the picked unit; defaults to **RON**. |
+| `/scrape-graph <url> [currency]` | Price evolution graph for one tracked URL. Optional `currency` (RON, DKK, EUR, USD, GBP) converts the Y-axis; defaults to **RON**. |
+| `/scrape-graph-all [currency]` | Combined price evolution graph for **all** your tracked items, normalized to a single currency so cross-currency items share one Y-axis. Optional `currency` (RON, DKK, EUR, USD, GBP); defaults to **RON**. |
 | `/help` | Show the help message. |
 
 ---
@@ -125,6 +125,6 @@ Each feature class self-registers its slash commands in `__init__`, optionally i
 | `reminders.py` | `RemindersFeature` | The `/remind` command (parses `30m` / `2h` / `1d`) and a 10-second loop that delivers due reminders and deletes them from the DB. |
 | `jokes.py` | `JokesFeature` | The `/joke_add` and `/joke_activation` commands plus a 30-second loop that posts one unsent joke per day at the configured time and recycles the pool when exhausted. |
 | `sponsors.py` | `SponsorsFeature`, `_SponsorModal` | Sponsor state machine (name, tier, custom message, set-at timestamp), `/sponsor_set` (gated by a password modal), `/sponsor_plans`, `/sponsor_who`, and an hourly loop that warns 1 day before expiry and clears the sponsor after 1 year. Exposes `maybe_get_sponsor_suffix()` to other features. |
-| `scraping.py` | `ScrapingFeature`, `PriceScraper`, `CurrencyConverter` | All `/scrape-*` commands plus a 12-hour scrape loop that DMs users on price/stock changes. `PriceScraper` extracts price/title/currency/stock from JSON-LD → meta → text-fallback. `CurrencyConverter` refreshes exchange rates daily and pivots through DKK for display. Uses Matplotlib (Agg backend) to render price-history graphs. |
+| `scraping.py` | `ScrapingFeature`, `PriceScraper`, `CurrencyConverter` | All `/scrape-*` commands plus a 12-hour scrape loop that DMs users on price/stock changes. `PriceScraper` extracts price/title/currency/stock from JSON-LD → meta → text-fallback, then guesses currency from the URL's TLD (`TLD_CURRENCY_FALLBACKS`: `.dk` → DKK, `.ro` → RON) when the page provides no currency metadata. `CurrencyConverter` refreshes exchange rates daily and pivots through DKK for display; the supported display set (`SUPPORTED_DISPLAY_CURRENCIES` = RON / DKK / EUR / USD / GBP) drives the `currency` picker on `/scrape-show`, `/scrape-graph`, and `/scrape-graph-all`. Uses Matplotlib (Agg backend) to render price-history graphs. Optional `curl_cffi` dependency impersonates Chrome's TLS fingerprint to bypass bot-detection on protected sites (Altex, eMag, Cel.ro); falls back to plain `requests` when unavailable. |
 | `stats.py` | `StatsFeature` | The `/stats` command — host CPU, RAM, disk, temperature, network, uptime and bot process memory via `psutil`. Gracefully degrades load average to `N/A` on Windows. |
 | `help_feature.py` | `HelpFeature` | The `/help` command — static description of all user-facing slash commands. |
