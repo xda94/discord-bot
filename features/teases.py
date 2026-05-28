@@ -88,6 +88,41 @@ TEASE_MOODS = {
         "uwu",
         "{user} is the senpai of this server",
     ],
+    "shy": [
+        "um... t-that's... interesting, {user}...",
+        "s-sorry, {user}, I didn't mean to read that...",
+        "I... I'd say something but... nevermind...",
+        "{user}... y-you really sent that?",
+        "*hides face* o-oh... hi {user}",
+        "ah... s-sorry to bother, but...",
+        "*whispers* {user}... maybe don't",
+        "I-I'll just... leave that alone...",
+        "p-please don't look at me, {user}",
+        "*looks at floor* mhm... yeah...",
+        "{user}... was that really... necessary?",
+        "I... I have no opinion on this. honest.",
+        "n-no thoughts. head empty. sorry, {user}",
+    ],
+    # Parody of Ionuț Lenghel — Romanian food YouTuber whose catchphrase
+    # is "îmi place să mănânc". Earnest, food-obsessed, slightly deadpan.
+    # The "tease" is gentle redirection: your message is fine, I'm just
+    # thinking about lunch.
+    "lenghel": [
+        "îmi place să mănânc, {user}",
+        "{user}, ai mâncat azi?",
+        "porție mare, {user}, hai!",
+        "băi {user}, eu am venit aici să mănânc",
+        "lasă vorba, hai la masă, {user}",
+        "{user}, asta-i porție de copil",
+        "deliciooos, {user}",
+        "am venit, am văzut, am mâncat",
+        "rețeta mea? îmi place să mănânc",
+        "{user}, hai la o șaormă, lasă vorbele",
+        "{user}, mai dă-mi un cartof, te rog frumos",
+        "vorbești mult, {user}, eu mănânc mult",
+        "ai zis ceva, {user}? eram cu gura plină",
+        "porția ta de cuvinte e cam mică, {user}",
+    ],
 }
 
 MOOD_CHOICES = [
@@ -101,7 +136,8 @@ class TeasesFeature:
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
         self.client = client
         self.tree = tree
-        self.current_mood = "bad"
+        self.current_mood = random.choice(list(TEASE_MOODS.keys()))
+        logger.info(f"Tease mood initialised to '{self.current_mood}'")
         self.teases_today = 0
         self.tease_reset_date: date | None = None
         self._register_commands()
