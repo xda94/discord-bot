@@ -373,9 +373,8 @@ class ScrapingFeature:
             if result.failure == FAILURE_BLOCKED:
                 await interaction.followup.send(
                     f"❌ The domain `{_domain(url)}` is blocking the scraper "
-                    f"(TLS/Cloudflare anti-bot protection). "
-                    f"This hardware can't bypass the protection — the link was **not** added.\n\n"
-                    f"_Known unsupported domains on this host: altex.ro, emag.ro, cel.ro._",
+                    f"(TLS/Cloudflare anti-bot protection or the page took too long to respond). "
+                    f"The link was **not** added.",
                     ephemeral=True,
                     suppress_embeds=True,
                 )
