@@ -7,6 +7,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 import discord
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import requests
 from bs4 import BeautifulSoup
@@ -874,7 +875,15 @@ class ScrapingFeature:
             labelcolor="white", fontsize=8,
         )
 
-        # Auto-format the date axis (rotation, tick density) based on the range.
+        # Explicit formatter on the date axis. Matplotlib's default
+        # auto-formatter renders short same-day ranges as ambiguous
+        # `"MM-DD HH"` (e.g. "05-28 00"), which reads like a year or a
+        # zero-padded time. Matching the single-item graph's `"dd/mm HH:MM"`
+        # keeps the two `/scrape-graph*` charts visually consistent.
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m %H:%M"))
+        # `autofmt_xdate` rotates/right-aligns the (now-formatted) labels so
+        # they don't overlap on dense ranges.
         fig.autofmt_xdate()
         plt.tight_layout()
 
