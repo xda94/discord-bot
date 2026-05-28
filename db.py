@@ -12,6 +12,11 @@ DB_FILE = "responses.db"
 @contextmanager
 def _connect(commit=False):
     conn = sqlite3.connect(DB_FILE)
+    # SQLite ships with foreign-key enforcement OFF for backwards compat. The
+    # pragma is per-connection, so it has to be set every time we open one,
+    # not just once in `init_db`. Without this, `ON DELETE CASCADE` on
+    # `price_history.item_id` is silently ignored.
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn.cursor()
         if commit:
@@ -97,12 +102,39 @@ def init_db():
                     last_updated REAL NOT NULL
                 )
             """)
+            # Per-guild last-activity timestamp used by `InactivityFeature` to
+            # decide when to nudge a quiet channel. Persisted so the 24h
+            # threshold survives bot restarts.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS guild_activity (
+                    guild_id INTEGER PRIMARY KEY,
+                    last_time REAL NOT NULL,
+                    channel_id INTEGER NOT NULL
+                )
+            """)
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")
 
 
 # --- Response functions ---
+#
+# `get_all_responses()` runs on EVERY message the bot sees, doing a full
+# `SELECT * FROM responses`. To avoid hammering SQLite on a chatty server we
+# memoise the result for a short TTL and invalidate explicitly whenever
+# *this process* mutates the table (add/remove). Cross-process mutations
+# (e.g. via the Flask API in `api.py`) become visible at most TTL seconds
+# later — well below user-perceptible for "I just added a keyword".
+
+_RESPONSES_CACHE_TTL = 30.0  # seconds
+_responses_cache: dict | None = None
+_responses_cache_at: float = 0.0
+
+
+def _invalidate_responses_cache():
+    global _responses_cache
+    _responses_cache = None
+
 
 def add_response(keyword, response):
     try:
@@ -110,6 +142,7 @@ def add_response(keyword, response):
             c.execute("INSERT INTO responses (keyword, response) VALUES (?, ?)",
                       (keyword.lower(), response))
         logger.info(f"Inserted new response for keyword: '{keyword}'")
+        _invalidate_responses_cache()
     except Exception:
         logger.exception(f"Failed to add response for '{keyword}'")
 
@@ -124,6 +157,8 @@ def remove_response(keyword, response=None):
                           (keyword.lower(), response))
             deleted = c.rowcount
         logger.info(f"Deleted {deleted} response(s) for keyword: '{keyword}'")
+        if deleted:
+            _invalidate_responses_cache()
         return deleted > 0
     except Exception:
         logger.exception(f"Failed to remove response for '{keyword}'")
@@ -131,16 +166,23 @@ def remove_response(keyword, response=None):
 
 
 def get_all_responses():
+    global _responses_cache, _responses_cache_at
+    now = time.time()
+    if _responses_cache is not None and (now - _responses_cache_at) < _RESPONSES_CACHE_TTL:
+        return _responses_cache
     try:
         with _connect() as c:
             c.execute("SELECT keyword, response FROM responses")
             data = c.fetchall()
-        result = {}
+        result: dict = {}
         for keyword, response in data:
             result.setdefault(keyword.lower(), []).append(response)
+        _responses_cache = result
+        _responses_cache_at = now
         return result
     except Exception:
         logger.exception("Failed to fetch all responses")
+        # Don't poison the cache with an empty dict — let the next call retry.
         return {}
 
 
@@ -390,8 +432,11 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
 def delete_scraped_item(user_id, url):
     try:
         with _connect(commit=True) as c:
-            # Cascade delete relies on foreign key, but sqlite needs PRAGMA foreign_keys = ON;
-            # Alternatively, we delete manually from both:
+            # `PRAGMA foreign_keys = ON` (set in `_connect`) now makes the
+            # `ON DELETE CASCADE` on `price_history.item_id` work, so the
+            # explicit `DELETE FROM price_history` is no longer strictly
+            # required. Kept as belt-and-braces in case a future caller
+            # opens its own connection and forgets the pragma.
             c.execute("SELECT id FROM scraped_items WHERE user_id = ? AND url = ?", (user_id, url))
             row = c.fetchone()
             if row:
@@ -499,4 +544,34 @@ def get_price_history(user_id, url):
             return c.fetchall()
     except Exception:
         logger.exception(f"Failed to fetch price history for {url}")
+        return []
+
+
+# --- Guild activity functions (used by InactivityFeature) ---
+
+def set_guild_activity(guild_id, last_time, channel_id):
+    """UPSERT the most recent activity for a guild. Called on every message,
+    so kept as a single fast statement."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO guild_activity (guild_id, last_time, channel_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET "
+                "last_time = excluded.last_time, channel_id = excluded.channel_id",
+                (guild_id, last_time, channel_id),
+            )
+    except Exception:
+        logger.exception(f"Failed to set guild_activity for guild {guild_id}")
+
+
+def get_all_guild_activity():
+    """Return `[(guild_id, last_time, channel_id), ...]` for every known
+    guild. `InactivityFeature` loads this once on startup to repopulate its
+    in-memory cache so the 24h nudge threshold survives restarts."""
+    try:
+        with _connect() as c:
+            c.execute("SELECT guild_id, last_time, channel_id FROM guild_activity")
+            return c.fetchall()
+    except Exception:
+        logger.exception("Failed to fetch guild_activity")
         return []

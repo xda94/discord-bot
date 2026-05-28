@@ -1,8 +1,14 @@
-discord.py
-Flask
-python-dotenv
-requests
-curl_cffi
-psutil
-beautifulsoup4
-matplotlib
+# Pinned to known-good minimum versions. `>=` keeps you on the supported track
+# without locking to a single patch release. For a fully-reproducible build
+# (recommended in production / on the Pi), run `pip freeze > requirements.lock`
+# inside the venv once everything works and install with that file instead.
+discord.py>=2.3,<3.0
+Flask>=3.0,<4.0
+python-dotenv>=1.0,<2.0
+requests>=2.31,<3.0
+# Optional: TLS-fingerprint bypass for bot-protected sites. Installation may
+# fail on ARMv6 (Pi Zero W) — the scraper degrades to plain `requests` if so.
+curl_cffi>=0.6,<1.0
+psutil>=5.9,<7.0
+beautifulsoup4>=4.12,<5.0
+matplotlib>=3.7,<4.0

@@ -1,4 +1,5 @@
 import os
+import sys
 
 import discord
 from discord import app_commands
@@ -26,6 +27,16 @@ from features.teases import TeasesFeature
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+
+# Fail loud and early when required env vars are missing. discord.py raises an
+# opaque LoginFailure deep in its stack when handed an empty token; this
+# message is far easier to action.
+if not TOKEN:
+    logger.critical(
+        "DISCORD_TOKEN is not set. Add it to your .env file or environment "
+        "and restart. Refusing to start."
+    )
+    sys.exit(1)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -81,4 +92,17 @@ async def on_message(message: discord.Message):
             return
 
 
-client.run(TOKEN)
+# discord.py's `client.run()` installs its own SIGINT handler and closes the
+# client cleanly on Ctrl+C / `pm2 stop`, but it does so silently. The
+# try/finally surface gives us a clear "shutting down" + "exited" pair in
+# `bot.log` so we can confirm a clean exit at a glance (and catch the case
+# where the process gets SIGKILL'd, which leaves the "exited" line missing).
+try:
+    client.run(TOKEN)
+except KeyboardInterrupt:
+    logger.info("Received keyboard interrupt; shutting down.")
+except Exception:
+    logger.exception("Bot crashed with an unhandled exception")
+    raise
+finally:
+    logger.info("Bot process exited.")

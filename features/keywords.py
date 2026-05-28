@@ -12,6 +12,18 @@ from features.sponsors import SponsorsFeature
 logger = logging.getLogger("discord_bot")
 
 
+def _pick_response(options: list[str], last_one: str | None) -> str:
+    """Pick a response, preferring anything other than `last_one` when an
+    alternative exists.
+
+    Falls back to picking from `options` itself when every entry equals
+    `last_one` (e.g. the user added the same response twice for one
+    keyword). The previous `while new_response == last_one` loop would
+    spin forever in that case — see `tests/test_keywords.py`."""
+    alternatives = [r for r in options if r != last_one]
+    return random.choice(alternatives or options)
+
+
 class KeywordsFeature:
     """Keyword-triggered auto-responses plus the /keyword_add and /topkeywords
     commands."""
@@ -49,11 +61,7 @@ class KeywordsFeature:
             if not re.search(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", content):
                 continue
 
-            new_response = random.choice(options)
-            if len(options) > 1:
-                last_one = self._last_used.get(keyword)
-                while new_response == last_one:
-                    new_response = random.choice(options)
+            new_response = _pick_response(options, self._last_used.get(keyword))
             self._last_used[keyword] = new_response
 
             suffix = self.sponsors.maybe_get_sponsor_suffix()
