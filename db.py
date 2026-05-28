@@ -363,11 +363,18 @@ def delete_joke(joke_id):
 # --- Scrape functions ---
 
 def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=None):
+    """Insert a new tracked item.
+
+    `stock` is tri-state: True/1 → in stock, False/0 → out of stock,
+    None → unknown. Unknown is stored as NULL so future scrapes that read
+    `None` don't get conflated with "definitely out of stock".
+    """
     try:
+        stock_int = None if stock is None else (1 if stock else 0)
         with _connect(commit=True) as c:
             c.execute(
                 "INSERT OR IGNORE INTO scraped_items (user_id, url, title, last_price, last_stock_status, currency) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, url, title, price, 1 if stock else 0, currency)
+                (user_id, url, title, price, stock_int, currency)
             )
             if c.rowcount > 0:
                 item_id = c.lastrowid
@@ -413,11 +420,25 @@ def get_user_scraped_items(user_id):
         return []
 
 def update_scraped_item_status(item_id, price, in_stock, title=None, currency=None):
+    """Update a tracked item's latest snapshot. Every field is COALESCEd, so
+    passing `None` for any one of them preserves the previously-stored value
+    rather than clobbering it.
+
+    `in_stock` is tri-state (True / False / None=unknown) — None leaves
+    `last_stock_status` untouched, which is what callers want when the
+    scraper couldn't determine stock status on this pass.
+    """
     try:
+        stock_int = None if in_stock is None else (1 if in_stock else 0)
         with _connect(commit=True) as c:
             c.execute(
-                "UPDATE scraped_items SET last_price = ?, last_stock_status = ?, title = COALESCE(?, title), currency = COALESCE(?, currency) WHERE id = ?",
-                (price, 1 if in_stock else 0, title, currency, item_id)
+                "UPDATE scraped_items SET "
+                "last_price = COALESCE(?, last_price), "
+                "last_stock_status = COALESCE(?, last_stock_status), "
+                "title = COALESCE(?, title), "
+                "currency = COALESCE(?, currency) "
+                "WHERE id = ?",
+                (price, stock_int, title, currency, item_id)
             )
     except Exception:
         logger.exception(f"Failed to update scraped item status for ID {item_id}")

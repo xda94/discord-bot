@@ -91,9 +91,9 @@ pm2 start api.py --interpreter python3 --name discord-api
 | `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
 | `/scrape-item <url>` | Add a link to track price and stock. Checked every 12 hours. Currency is read from the page (JSON-LD / meta tags) with a TLD-based fallback for `.dk` → DKK and `.ro` → RON. |
 | `/scrape-item-delete <url>` | Remove a link and its history from tracking. |
-| `/scrape-show [currency]` | Show your tracked items and their current prices. Optional `currency` (RON, DKK, EUR, USD, GBP) converts every row into the picked unit; defaults to **RON**. |
-| `/scrape-graph <url> [currency]` | Price evolution graph for one tracked URL. Optional `currency` (RON, DKK, EUR, USD, GBP) converts the Y-axis; defaults to **RON**. |
-| `/scrape-graph-all [currency]` | Combined price evolution graph for **all** your tracked items, normalized to a single currency so cross-currency items share one Y-axis. Optional `currency` (RON, DKK, EUR, USD, GBP); defaults to **RON**. |
+| `/scrape-show [currency]` | Show your tracked items and their current prices. By default each row is shown in its own native currency (merchant-quoted or TLD-guessed). Optional `currency` (RON, DKK, EUR, USD, GBP) converts every row into that single currency instead. |
+| `/scrape-graph <url> [currency]` | Price evolution graph for one tracked URL. Defaults to the item's own currency (no conversion). Optional `currency` (RON, DKK, EUR, USD, GBP) converts the Y-axis into that unit instead. |
+| `/scrape-graph-all [currency]` | Combined price evolution graph for **all** your tracked items, normalized to a single currency so cross-currency items share one Y-axis. Defaults to the **majority currency** across your tracked items (largest number of items shown without conversion). Optional `currency` (RON, DKK, EUR, USD, GBP) overrides the default. |
 | `/help` | Show the help message. |
 
 ---
