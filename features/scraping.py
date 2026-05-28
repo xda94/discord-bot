@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
@@ -190,17 +191,30 @@ class ScrapeResult:
 
     `failure` is None on success or one of `FAILURE_BLOCKED` / `FAILURE_UNSUPPORTED`
     so the caller can render a precise error message.
+
+    `in_stock` is tri-state: True / False / None. `None` means "couldn't
+    determine" — distinct from False ("definitely out of stock"). The
+    `_scrape_loop` relies on this distinction to avoid mis-firing the
+    "back in stock" DM on a flapping signal, and to leave the persisted
+    `last_stock_status` untouched on unknown reads.
     """
 
     price: float | None = None
-    in_stock: bool = False
+    in_stock: bool | None = None
     title: str | None = None
     currency: str | None = None
     failure: str | None = None
 
     @property
     def has_data(self) -> bool:
-        return self.price is not None or self.title is not None or self.currency is not None
+        # `in_stock` counts here too — a successful text-fallback stock read
+        # is a real signal even when price/title/currency are missing.
+        return (
+            self.price is not None
+            or self.title is not None
+            or self.currency is not None
+            or self.in_stock is not None
+        )
 
 
 def _domain(url: str) -> str:
@@ -220,6 +234,28 @@ def _effective_currency(stored_currency: str | None, url: str) -> str | None:
     render and convert correctly in `/scrape-show`, `/scrape-graph`, and
     `/scrape-graph-all` without needing a migration."""
     return stored_currency or PriceScraper._currency_from_tld(url)
+
+
+def _majority_currency(url_currency_pairs) -> str:
+    """Pick the most-common effective currency across `(url, stored_currency)`
+    pairs.
+
+    Each pair is run through `_effective_currency` first so the TLD fallback
+    counts (a `.ro` row with NULL currency tallies as RON). Ties are broken
+    by insertion order — the first currency to reach the max wins.
+
+    Returns `CurrencyConverter.DEFAULT_DISPLAY_CURRENCY` (RON) when none of
+    the pairs have a known currency. Used as the default for
+    `/scrape-graph-all` (over the user's full list) so the chart shows the
+    largest number of items without conversion."""
+    counts: Counter[str] = Counter()
+    for url, stored in url_currency_pairs:
+        eff = _effective_currency(stored, url)
+        if eff:
+            counts[eff.upper()] += 1
+    if not counts:
+        return CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+    return counts.most_common(1)[0][0]
 
 
 class PriceScraper:
@@ -293,8 +329,10 @@ class PriceScraper:
                 in_stock = self._extract_meta_availability(soup)
             if in_stock is None:
                 in_stock = self._extract_text_availability(response.text)
-            if in_stock is None:
-                in_stock = False
+            # NOTE: deliberately do NOT coerce `in_stock=None` to False here.
+            # Unknown stock status is propagated up so `_scrape_loop` can
+            # leave the persisted value alone (via COALESCE) instead of
+            # mis-stamping the item as out-of-stock.
 
             result = ScrapeResult(
                 price=price,
@@ -500,10 +538,14 @@ class ScrapingFeature:
             if result.price is not None:
                 db.add_price_history(item_id, result.price)
             price_str = feature.converter.format_with_conversions(result.price, result.currency)
+            stock_label = (
+                "Unknown" if result.in_stock is None
+                else ("Yes" if result.in_stock else "No")
+            )
             display_name = f"**{result.title}**" if result.title else f"**{url}**"
             await interaction.followup.send(
                 f"✅ Added: {display_name}\n"
-                f"Current price: `{price_str}` | In stock: `{'Yes' if result.in_stock else 'No'}`",
+                f"Current price: `{price_str}` | In stock: `{stock_label}`",
                 ephemeral=True,
                 suppress_embeds=True,
             )
@@ -521,18 +563,20 @@ class ScrapingFeature:
             name="scrape-show", description="Show your tracked items and their current prices"
         )
         @app_commands.describe(
-            currency=f"Display currency (default: {CurrencyConverter.DEFAULT_DISPLAY_CURRENCY})"
+            currency="Convert every row to this currency (default: show each item in its own currency)"
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_show(
             interaction: discord.Interaction,
             currency: app_commands.Choice[str] | None = None,
         ):
-            target_currency = (
-                currency.value if currency else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
-            )
+            # `target_currency = None` → render each item in its own native
+            # (stored / TLD-derived) currency. When the user explicitly picks
+            # a currency from the dropdown, every row is converted into it.
+            target_currency = currency.value if currency else None
             logger.info(
-                f"Command /scrape-show called by {interaction.user} (currency={target_currency})"
+                f"Command /scrape-show called by {interaction.user} "
+                f"(currency={target_currency or 'native'})"
             )
             await interaction.response.defer(ephemeral=True)
 
@@ -543,20 +587,29 @@ class ScrapingFeature:
 
             blocks = []
             for url, price, stock, title, item_currency in items:
-                status = "✅ In stock" if stock else "❌ Out of stock"
+                if stock is None:
+                    status = "❓ Stock unknown"
+                elif stock:
+                    status = "✅ In stock"
+                else:
+                    status = "❌ Out of stock"
                 # Resolve currency the same way the scraper does: prefer the
                 # value persisted at scrape-time, fall back to a TLD guess.
                 source_currency = _effective_currency(item_currency, url)
-                price_display = (
-                    f"`{feature.converter.format_in_currency(price, source_currency, target_currency)}`"
-                    if price is not None else "N/A"
+                price_display = feature._format_show_price(
+                    price, source_currency, target_currency
                 )
                 item_name = f"**{title}**" if title else f"🔗 {url}"
                 blocks.append(f"{item_name}\nURL: {url}\n💰 Price: {price_display} | {status}")
 
             # Group items into chunks under Discord's 2000-char message limit.
+            header = (
+                f"**Your tracked items** (converted to **{target_currency}**):\n\n"
+                if target_currency
+                else "**Your tracked items** (shown in each item's native currency):\n\n"
+            )
             chunks = []
-            current = f"**Your tracked items** (prices in **{target_currency}**):\n\n"
+            current = header
             for block in blocks:
                 if len(current) + len(block) + 2 > 1900:
                     chunks.append(current.strip())
@@ -574,7 +627,7 @@ class ScrapingFeature:
         )
         @app_commands.describe(
             url="The URL of the item",
-            currency=f"Display currency (default: {CurrencyConverter.DEFAULT_DISPLAY_CURRENCY})",
+            currency="Display currency (default: the item's own currency)",
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph(
@@ -582,13 +635,6 @@ class ScrapingFeature:
             url: str,
             currency: app_commands.Choice[str] | None = None,
         ):
-            target_currency = (
-                currency.value if currency else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
-            )
-            logger.info(
-                f"Command /scrape-graph called by {interaction.user} for {url} "
-                f"(currency={target_currency})"
-            )
             await interaction.response.defer(ephemeral=True)
 
             history = db.get_price_history(interaction.user.id, url)
@@ -608,6 +654,22 @@ class ScrapingFeature:
                 item_info[4] if item_info and len(item_info) > 4 else None
             )
             item_currency = _effective_currency(stored_currency, url)
+
+            # Default to the item's own currency when the user didn't ask
+            # otherwise — graphing one item in some other currency is just
+            # unnecessary conversion noise. Fall back to RON only if the
+            # item's currency can't be determined at all.
+            if currency:
+                target_currency = currency.value
+                auto_chosen = False
+            else:
+                target_currency = item_currency or CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+                auto_chosen = True
+
+            logger.info(
+                f"Command /scrape-graph called by {interaction.user} for {url} "
+                f"(currency={target_currency}{' [auto]' if auto_chosen else ''})"
+            )
 
             # Convert each point to the requested display currency. If a point
             # can't be converted we drop it — better an honest gap than a misleading
@@ -640,20 +702,13 @@ class ScrapingFeature:
             description="Combined price history graph for ALL your tracked items",
         )
         @app_commands.describe(
-            currency=f"Display currency (default: {CurrencyConverter.DEFAULT_DISPLAY_CURRENCY})"
+            currency="Display currency (default: the majority currency across your tracked items)"
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph_all(
             interaction: discord.Interaction,
             currency: app_commands.Choice[str] | None = None,
         ):
-            target_currency = (
-                currency.value if currency else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
-            )
-            logger.info(
-                f"Command /scrape-graph-all called by {interaction.user} "
-                f"(currency={target_currency})"
-            )
             await interaction.response.defer(ephemeral=True)
 
             items = db.get_user_scraped_items(interaction.user.id)
@@ -662,6 +717,23 @@ class ScrapingFeature:
                     "You are not tracking any items.", ephemeral=True
                 )
                 return
+
+            # Default to the majority currency across the user's items, so the
+            # chart can show as many items as possible without conversion. The
+            # user can still override with the dropdown.
+            if currency:
+                target_currency = currency.value
+                auto_chosen = False
+            else:
+                target_currency = _majority_currency(
+                    (url, stored_currency) for url, _p, _s, _t, stored_currency in items
+                )
+                auto_chosen = True
+
+            logger.info(
+                f"Command /scrape-graph-all called by {interaction.user} "
+                f"(currency={target_currency}{' [auto]' if auto_chosen else ''})"
+            )
 
             # Build one (label, [(datetime, price_in_target), ...]) series per item.
             # All series share a single Y-axis in `target_currency` so
@@ -712,6 +784,33 @@ class ScrapingFeature:
                     f"{skipped_no_currency}._"
                 )
             await interaction.followup.send("\n".join(parts), file=file, ephemeral=True)
+
+    def _format_show_price(
+        self,
+        price,
+        source_currency: str | None,
+        target_currency: str | None,
+    ) -> str:
+        """Render the price column for one `/scrape-show` row.
+
+        - `target_currency=None`        → show in `source_currency` as-is.
+        - `target_currency=<picked>`    → convert source → target via
+                                          `CurrencyConverter.format_in_currency`.
+        Both paths fall back gracefully on missing data ("N/A" / "(?)").
+        """
+        if price is None:
+            return "N/A"
+        try:
+            price = float(price)
+        except (ValueError, TypeError):
+            return "N/A"
+
+        if target_currency:
+            return f"`{self.converter.format_in_currency(price, source_currency, target_currency)}`"
+
+        if source_currency:
+            return f"`{price:.2f} {source_currency.upper()}`"
+        return f"`{price:.2f} (?)`"
 
     @staticmethod
     def _render_price_graph(timestamps, prices, title, item_currency) -> discord.File:
@@ -792,14 +891,35 @@ class ScrapingFeature:
 
         for item_id, user_id, url, old_price, old_stock_status, old_title, old_currency in items:
             result = self.scraper.fetch(url)
-            # Skip transient failures so we don't overwrite good data with None.
-            if result.price is None:
+
+            # Transport-level failure (timeout, anti-bot block, 5xx): trust
+            # nothing, change nothing. Try again next pass.
+            if result.failure == FAILURE_BLOCKED:
+                continue
+            # Page reachable but literally nothing useful was parsed — same
+            # outcome. Don't overwrite known-good state with empty data.
+            if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
                 continue
 
-            db.add_price_history(item_id, result.price)
+            # Detect what changed against the previously-persisted state.
+            #   - `price_changed`  requires both an old and a new price.
+            #   - `back_in_stock`  requires that we *previously knew* it was
+            #     OOS (old_stock_status is a concrete 0, not NULL/unknown)
+            #     and that we *now know* it's in stock (result.in_stock is
+            #     literally True, not None).
+            price_changed = (
+                old_price is not None
+                and result.price is not None
+                and result.price != old_price
+            )
+            back_in_stock = (
+                old_stock_status is not None
+                and not old_stock_status
+                and result.in_stock is True
+            )
 
-            price_changed = old_price is not None and result.price != old_price
-            back_in_stock = not old_stock_status and result.in_stock
+            if result.price is not None:
+                db.add_price_history(item_id, result.price)
 
             if price_changed or back_in_stock:
                 try:
@@ -810,14 +930,24 @@ class ScrapingFeature:
                         if back_in_stock:
                             msg += "✅ Item is now **BACK IN STOCK**!\n"
                         if price_changed:
-                            old_str = self.converter.format_with_conversions(old_price, old_currency)
-                            new_str = self.converter.format_with_conversions(result.price, result.currency)
+                            # Apply the same TLD currency fallback `/scrape-show`
+                            # uses, so old rows with currency = NULL render in
+                            # the right unit instead of as a bare number.
+                            old_src = _effective_currency(old_currency, url)
+                            new_src = _effective_currency(result.currency, url)
+                            old_str = self.converter.format_with_conversions(old_price, old_src)
+                            new_str = self.converter.format_with_conversions(result.price, new_src)
                             msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                         await user.send(msg, suppress_embeds=True)
                         logger.info(f"Price alert sent to user {user_id} for {url}")
                 except Exception as e:
                     logger.error(f"Could not send DM to user {user_id}: {e}")
 
+            # Persist whatever signals we extracted. COALESCE inside the SQL
+            # means passing None for any field leaves the previous value
+            # intact — so a price-less stock-only scrape doesn't wipe the
+            # last-known price, and an unknown stock read doesn't flip the
+            # status to OOS.
             db.update_scraped_item_status(
                 item_id, result.price, result.in_stock, result.title, result.currency,
             )
