@@ -2,6 +2,7 @@ discord.py
 Flask
 python-dotenv
 requests
+curl_cffi
 psutil
 beautifulsoup4
 matplotlib
