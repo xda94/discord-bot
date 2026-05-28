@@ -1,7 +1,9 @@
 import asyncio
 import io
 import logging
+import statistics
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 
 import discord
@@ -29,6 +31,151 @@ logger = logging.getLogger("discord_bot")
 
 # Non-interactive matplotlib backend, safe inside an async bot process.
 plt.switch_backend("Agg")
+
+# Size of the rolling per-item price-history window. At every scrape pass
+# the loop trims rows older than this many days, so each tracked item
+# always shows roughly the most recent N days of history regardless of how
+# long it's been tracked — items are NOT wiped on their 180-day anniversary,
+# the window just slides forward one pass at a time.
+#
+# At a 12 h scrape cadence and 100 tracked items this is ~36 k rows /
+# ~2.5 MB at steady state — fine for the Pi. Backed by
+# `idx_price_history_timestamp` so the periodic cleanup stays fast as
+# the table grows.
+PRICE_HISTORY_RETENTION_DAYS = 180
+
+
+# ---------------------------------------------------------------------------
+# Buy-signal alerts (LOW / HIGH)
+# ---------------------------------------------------------------------------
+#
+# Evaluated once per scrape pass per item inside `_process_scrape_item`.
+# Goal: DM the user when the price drops to a new all-time low ("buy now")
+# or rises above the historical median ("maybe wait"), without spamming
+# them on every 12 h pass while the price stays in the alert zone.
+
+# Minimum number of historical price points required before any alert can
+# fire. Avoids noise on freshly-added items where 2 points trivially
+# define both min and median.
+ALERT_MIN_DATA_POINTS = 7
+
+# When already in the LOW zone, only re-alert if the new price is at least
+# this much lower than the price at the previous LOW alert. Prevents
+# penny-fluctuation spam while still firing on a meaningfully fresher low.
+ALERT_LOW_REALERT_DROP_PCT = 0.01  # 1 %
+
+
+@dataclass
+class AlertDecision:
+    """Result of running `_classify_price` for one scrape pass.
+
+    `alert_kind` is what to DM the user about (or None for silence).
+    `new_state` / `new_state_price` are what to persist back into
+    `scraped_items.last_alert_kind` / `last_alert_price` — they may
+    differ from `alert_kind` because we always update the state even
+    when we suppress the DM (so future passes know what zone we're in).
+
+    The remaining fields are context for message formatting (all-time
+    low, median, previous-alert price) — populated even when no alert
+    fires, so callers don't have to recompute them.
+    """
+
+    alert_kind: str | None              # "low" | "high" | None
+    new_state: str | None               # "low" | "high" | None (= neutral)
+    new_state_price: float | None
+    all_time_low: float | None = None
+    median_price: float | None = None
+    prev_alert_price: float | None = None
+
+
+def _classify_price(
+    current: float | None,
+    history: list[float | None],
+    last_alert_kind: str | None,
+    last_alert_price: float | None,
+) -> AlertDecision:
+    """Decide whether this scrape pass should fire a LOW or HIGH alert.
+
+    `current` is the price just scraped (in the item's native currency).
+    `history` is the list of historical prices for this item — call sites
+    are responsible for excluding `current` from it, so the comparison
+    is against actually-prior data.
+
+    The function is pure: no DB, no DM, no side effects. The caller
+    decides what to do with the returned `AlertDecision`.
+
+    Zones:
+      - "low"     :  current <= min(history)
+      - "high"    :  current  > median(history)
+      - None      :  neutral (between min and median, inclusive)
+
+    Firing rules:
+      - LOW fires when we *enter* the low zone (last_alert_kind != "low")
+        OR when we're already in it and the new price is at least
+        `ALERT_LOW_REALERT_DROP_PCT` lower than the previous LOW alert.
+      - HIGH fires only when we *enter* the high zone (one alert per
+        elevated period; the state resets back to neutral once the
+        price drops to/below the median, re-arming the next HIGH alert).
+    """
+    # Not enough info to say anything.
+    if current is None:
+        return AlertDecision(None, last_alert_kind, last_alert_price)
+
+    numeric_history = [p for p in history if isinstance(p, (int, float))]
+    if len(numeric_history) < ALERT_MIN_DATA_POINTS:
+        return AlertDecision(None, last_alert_kind, last_alert_price)
+
+    all_time_low = min(numeric_history)
+    median_price = statistics.median(numeric_history)
+
+    # Which zone is `current` in right now?
+    if current <= all_time_low:
+        zone = "low"
+    elif current > median_price:
+        zone = "high"
+    else:
+        zone = None  # neutral
+
+    alert: str | None = None
+    new_state_price = last_alert_price  # default: preserve unless we update below
+
+    if zone == "low":
+        if last_alert_kind != "low":
+            # Just entered the low zone (was neutral or high) — fire.
+            alert = "low"
+            new_state_price = current
+        elif (
+            last_alert_price is not None
+            and current <= last_alert_price * (1 - ALERT_LOW_REALERT_DROP_PCT)
+        ):
+            # Already at the low, but the new price beats the previous
+            # alert by a meaningful margin → re-fire so the user knows
+            # the floor has dropped further.
+            alert = "low"
+            new_state_price = current
+        # else: still at the low, no meaningful further drop → silent.
+
+    elif zone == "high":
+        if last_alert_kind != "high":
+            # Just entered the high zone (was neutral or low) — fire.
+            alert = "high"
+            new_state_price = current
+        # else: already alerted on this elevated period → silent.
+        # State only re-arms when the price drops back to/below median.
+
+    else:  # neutral
+        # No alert and no remembered alert price — leaving the zone
+        # re-arms both LOW and HIGH for the next time we re-enter them.
+        new_state_price = None
+
+    return AlertDecision(
+        alert_kind=alert,
+        new_state=zone,
+        new_state_price=new_state_price,
+        all_time_low=all_time_low,
+        median_price=median_price,
+        prev_alert_price=last_alert_price,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +566,13 @@ class ScrapingFeature:
             # Convert each point to the requested display currency. If a point
             # can't be converted we drop it — better an honest gap than a misleading
             # number labelled in the wrong unit.
-            timestamps: list[str] = []
+            #
+            # Timestamps are kept as real `datetime` objects (not pre-formatted
+            # strings) so matplotlib treats the x-axis as a true time axis.
+            # That lets `ConciseDateFormatter` in `_render_price_graph` pick
+            # readable labels regardless of range — hours within a day, days
+            # within a month, months across half a year.
+            timestamps: list[datetime] = []
             prices: list[float] = []
             for raw_price, ts, _ in history:
                 converted = feature.converter.to_currency(
@@ -427,7 +580,7 @@ class ScrapingFeature:
                 )
                 if converted is None:
                     continue
-                timestamps.append(datetime.fromtimestamp(ts).strftime("%d/%m %H:%M"))
+                timestamps.append(datetime.fromtimestamp(ts))
                 prices.append(converted)
 
             if not prices:
@@ -559,6 +712,15 @@ class ScrapingFeature:
 
     @staticmethod
     def _render_price_graph(timestamps, prices, title, item_currency) -> discord.File:
+        """Render a single-item price-evolution chart.
+
+        `timestamps` must be a list of `datetime` objects (not pre-formatted
+        strings) so matplotlib treats the x-axis as a real time axis.
+        That's what lets `ConciseDateFormatter` adapt the tick labels to
+        the visible range — hours within a day, days within a month,
+        months across a half-year. Without it, long-range charts crowd
+        the axis to the point of being unreadable.
+        """
         fig, ax = plt.subplots(figsize=(10, 6), facecolor="#2f3136")
         ax.set_facecolor("#36393f")
         ax.plot(timestamps, prices, marker="o", linestyle="-", color="#7289da", linewidth=2)
@@ -566,11 +728,20 @@ class ScrapingFeature:
         ax.set_title(f"Price Evolution: {title[:50]}", color="white", fontsize=14)
         ax.set_xlabel("Date & Time", color="white")
         ax.set_ylabel(f"Price ({item_currency})", color="white")
-        ax.tick_params(axis="x", rotation=45, colors="white")
+        ax.tick_params(axis="x", colors="white")
         ax.tick_params(axis="y", colors="white")
         for spine in ax.spines.values():
             spine.set_color("white")
         ax.grid(True, color="#4f545c", linestyle="--", linewidth=0.5)
+
+        # Auto-pick a date locator + matching concise formatter so the labels
+        # stay readable from a single-day range up to multi-month history.
+        locator = mdates.AutoDateLocator()
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+        # `autofmt_xdate` handles rotation/alignment for whichever ticks the
+        # locator picked — replaces the old fixed `rotation=45`.
+        fig.autofmt_xdate()
         plt.tight_layout()
 
         buf = io.BytesIO()
@@ -619,13 +790,14 @@ class ScrapingFeature:
             labelcolor="white", fontsize=8,
         )
 
-        # Explicit formatter on the date axis. Matplotlib's default
-        # auto-formatter renders short same-day ranges as ambiguous
-        # `"MM-DD HH"` (e.g. "05-28 00"), which reads like a year or a
-        # zero-padded time. Matching the single-item graph's `"dd/mm HH:MM"`
-        # keeps the two `/scrape-graph*` charts visually consistent.
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m %H:%M"))
+        # Auto-pick a date locator + matching `ConciseDateFormatter` so the
+        # axis labels adapt to whatever range the user is looking at — hours
+        # within a day, days within a month, months across a half-year —
+        # rather than getting crammed at a fixed `"dd/mm HH:MM"` granularity
+        # that becomes illegible past ~30 ticks.
+        locator = mdates.AutoDateLocator()
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
         # `autofmt_xdate` rotates/right-aligns the (now-formatted) labels so
         # they don't overlap on dense ranges.
         fig.autofmt_xdate()
@@ -642,13 +814,17 @@ class ScrapingFeature:
     SCRAPE_LOOP_GAP_SECONDS = 1.0
 
     async def _process_scrape_item(self, item) -> None:
-        """Run one full per-item scrape: fetch → diff → DM → persist.
+        """Run one full per-item scrape: fetch → diff → classify → DM → persist.
 
         Raises nothing on its own — `_scrape_loop` wraps the whole call in a
         catch-all so an unexpected error in any single item is logged and
         skipped, never killing the whole 12-hour pass.
         """
-        item_id, user_id, url, old_price, old_stock_status, old_title, old_currency = item
+        (
+            item_id, user_id, url,
+            old_price, old_stock_status, old_title, old_currency,
+            old_alert_kind, old_alert_price,
+        ) = item
 
         # Each `fetch` is up to ~15s of blocking I/O. Running it in a worker
         # thread keeps the bot responsive to slash commands and messages
@@ -681,10 +857,23 @@ class ScrapingFeature:
             and result.in_stock is True
         )
 
+        # Classify the new price against historical data BEFORE we insert the
+        # fresh row. `_classify_price` excludes `current` from its input on
+        # the caller's behalf, so feeding it the not-yet-updated history is
+        # the cleanest way to compare against actually-prior values.
+        prior_history = db.get_price_history(user_id, url)
+        prior_prices = [row[0] for row in prior_history]
+        decision = _classify_price(
+            current=result.price,
+            history=prior_prices,
+            last_alert_kind=old_alert_kind,
+            last_alert_price=old_alert_price,
+        )
+
         if result.price is not None:
             db.add_price_history(item_id, result.price)
 
-        if price_changed or back_in_stock:
+        if price_changed or back_in_stock or decision.alert_kind:
             try:
                 user = await self.client.fetch_user(user_id)
                 if user:
@@ -701,18 +890,82 @@ class ScrapingFeature:
                         old_str = self.converter.format_with_conversions(old_price, old_src)
                         new_str = self.converter.format_with_conversions(result.price, new_src)
                         msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
+                    if decision.alert_kind:
+                        new_src = _effective_currency(result.currency, url)
+                        msg += self._format_alert_section(decision, new_src)
                     await user.send(msg, suppress_embeds=True)
-                    logger.info(f"Price alert sent to user {user_id} for {url}")
+                    logger.info(
+                        f"Scrape DM sent to user {user_id} for {url} "
+                        f"(price_changed={price_changed}, back_in_stock={back_in_stock}, "
+                        f"alert={decision.alert_kind})"
+                    )
             except Exception as e:
                 logger.error(f"Could not send DM to user {user_id}: {e}")
 
-        # Persist whatever signals we extracted. COALESCE inside the SQL means
-        # passing None for any field leaves the previous value intact — so a
-        # price-less stock-only scrape doesn't wipe the last-known price, and
-        # an unknown stock read doesn't flip the status to OOS.
+        # Persist the latest price / stock / title / currency snapshot. COALESCE
+        # inside the SQL means passing None for any field leaves the previous
+        # value intact — so a price-less stock-only scrape doesn't wipe the
+        # last-known price, and an unknown stock read doesn't flip the status
+        # to OOS.
         db.update_scraped_item_status(
             item_id, result.price, result.in_stock, result.title, result.currency,
         )
+
+        # Persist the new alert zone unconditionally — even when no DM fires
+        # we want the state to reflect the current zone so the NEXT pass's
+        # transition logic is accurate (e.g. "we were in high, dropped to
+        # neutral → now armed to re-alert on the next HIGH crossing").
+        if (
+            decision.new_state != old_alert_kind
+            or decision.new_state_price != old_alert_price
+        ):
+            db.update_item_alert_state(
+                item_id, decision.new_state, decision.new_state_price,
+            )
+
+    def _format_alert_section(self, decision: "AlertDecision", source_currency: str | None) -> str:
+        """Render the LOW/HIGH alert block of the per-item DM.
+
+        Pulled out of `_process_scrape_item` so the formatting (and the
+        currency-fallback dance) is in one place. Returns a `\\n`-terminated
+        markdown block ready to be appended to the main DM string.
+        """
+        if decision.alert_kind == "low":
+            # Re-alert (price drops further) vs first entry to the low zone:
+            # the former has `prev_alert_price` set, so we can show the
+            # delta; the latter just says "new all-time low".
+            current_str = self.converter.format_with_conversions(
+                decision.new_state_price, source_currency,
+            )
+            prev_low_str = self.converter.format_with_conversions(
+                decision.all_time_low, source_currency,
+            )
+            if decision.prev_alert_price is not None and decision.prev_alert_price > (decision.new_state_price or 0):
+                # We've already alerted at a higher floor in this low period.
+                prev_alert_str = self.converter.format_with_conversions(
+                    decision.prev_alert_price, source_currency,
+                )
+                return (
+                    f"🟢 **New low!** Now `{current_str}` — even lower than the "
+                    f"previous alert at `{prev_alert_str}`. **Buy window.**\n"
+                )
+            return (
+                f"🟢 **All-time low!** Now `{current_str}` — matches/beats the "
+                f"previous low of `{prev_low_str}` over the tracked window. "
+                f"**Buy window.**\n"
+            )
+        if decision.alert_kind == "high":
+            current_str = self.converter.format_with_conversions(
+                decision.new_state_price, source_currency,
+            )
+            median_str = self.converter.format_with_conversions(
+                decision.median_price, source_currency,
+            )
+            return (
+                f"🔴 **Above usual.** Now `{current_str}` — historical median "
+                f"is `{median_str}`. **Maybe wait.**\n"
+            )
+        return ""
 
     @tasks.loop(hours=12)
     async def _scrape_loop(self):
@@ -733,8 +986,11 @@ class ScrapingFeature:
             # await regardless.
             await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
 
-        db.clean_old_price_history(days=5)
-        logger.info("Finished price scrape task and cleaned history.")
+        db.clean_old_price_history(days=PRICE_HISTORY_RETENTION_DAYS)
+        logger.info(
+            f"Finished price scrape task and cleaned history "
+            f"(retention: {PRICE_HISTORY_RETENTION_DAYS} days)."
+        )
 
     @tasks.loop(hours=24)
     async def _refresh_rates_loop(self):
