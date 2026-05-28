@@ -1,7 +1,9 @@
 import io
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlparse
 
 import discord
 import matplotlib.pyplot as plt
@@ -120,14 +122,45 @@ class CurrencyConverter:
 # ---------------------------------------------------------------------------
 
 
+# Possible values for ScrapeResult.failure.
+FAILURE_BLOCKED = "blocked"          # transport-level: timeout, conn refused, 4xx/5xx
+FAILURE_UNSUPPORTED = "unsupported"  # HTML fetched OK but no structured data
+
+
+@dataclass
+class ScrapeResult:
+    """Outcome of a scrape attempt.
+
+    `failure` is None on success or one of `FAILURE_BLOCKED` / `FAILURE_UNSUPPORTED`
+    so the caller can render a precise error message.
+    """
+
+    price: float | None = None
+    in_stock: bool = False
+    title: str | None = None
+    currency: str | None = None
+    failure: str | None = None
+
+    @property
+    def has_data(self) -> bool:
+        return self.price is not None or self.title is not None or self.currency is not None
+
+
+def _domain(url: str) -> str:
+    """Return the hostname of `url`, falling back to the URL itself on parse errors."""
+    try:
+        return urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
 class PriceScraper:
     """Fetches a product page and tries JSON-LD → meta → text-fallback for
     price, currency, stock status, and title.
 
-    `fetch` returns a 4-tuple `(price, in_stock, title, currency)`. When all of
-    `price`, `title`, and `currency` are None the caller should treat the page
-    as "unusable" — either the request was blocked at the transport layer or
-    none of the three extraction strategies (JSON-LD, meta, text) matched.
+    `fetch` returns a `ScrapeResult`. Inspect `result.failure` for the failure
+    category (or None on success) and the data fields for whatever was
+    extracted.
     """
 
     USER_AGENT = (
@@ -137,6 +170,9 @@ class PriceScraper:
     # Chrome version to impersonate via curl_cffi. Bumping this occasionally
     # keeps the fingerprint fresh.
     IMPERSONATE_TARGET = "chrome124"
+    # These Romanian phrases are intentional — they're matched against the
+    # page HTML to detect stock status on RO e-commerce sites that don't
+    # provide structured data. Do not translate; add more languages instead.
     OUT_OF_STOCK_KEYWORDS = (
         "stoc epuizat", "indisponibil", "nu este in stoc",
         "lipsa stoc", "out of stock", "momentan indisponibil",
@@ -146,14 +182,21 @@ class PriceScraper:
         "adauga in cos", "adaugă în coș", "add to cart",
     )
 
-    def fetch(self, url: str):
-        """Return (price, in_stock, title, currency). Any field may be None on
-        failure; in_stock defaults to False if no signal is found."""
+    def fetch(self, url: str) -> ScrapeResult:
+        """Fetch `url` and try to extract price/title/currency/stock from it."""
         try:
             response = self._http_get(url)
-            if response.status_code != 200:
-                return None, False, None, None
+        except Exception as e:
+            # Transport-level failure: timeout, conn refused, TLS reject, etc.
+            # Almost always a bot-block on Romanian e-commerce sites.
+            logger.error(f"Scraping transport error for {url}: {e}")
+            return ScrapeResult(failure=FAILURE_BLOCKED)
 
+        if response.status_code != 200:
+            logger.warning(f"Scraping HTTP {response.status_code} for {url}")
+            return ScrapeResult(failure=FAILURE_BLOCKED)
+
+        try:
             soup = BeautifulSoup(response.text, "html.parser")
             price = None
             title = None
@@ -173,10 +216,20 @@ class PriceScraper:
             if in_stock is None:
                 in_stock = False
 
-            return price, in_stock, title.strip() if title else None, currency
+            result = ScrapeResult(
+                price=price,
+                in_stock=in_stock,
+                title=title.strip() if title else None,
+                currency=currency,
+            )
+            if not result.has_data:
+                # Page returned 200 but had no JSON-LD, no meta tags, and no
+                # text signals. Most likely a JS-rendered SPA.
+                result.failure = FAILURE_UNSUPPORTED
+            return result
         except Exception as e:
-            logger.error(f"Scraping error for {url}: {e}")
-            return None, False, None, None
+            logger.error(f"Scraping parse error for {url}: {e}")
+            return ScrapeResult(failure=FAILURE_UNSUPPORTED)
 
     def _http_get(self, url: str):
         """Perform the HTTP GET. Prefer curl_cffi's Chrome impersonation so we
@@ -315,35 +368,46 @@ class ScrapingFeature:
             logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
             await interaction.response.defer(ephemeral=True)
 
-            price, stock, title, currency = feature.scraper.fetch(url)
+            result = feature.scraper.fetch(url)
 
-            # Refuse to insert dead entries. If the scrape returned nothing
-            # extractable at all, the URL is either anti-bot-blocked or the
-            # page format is unsupported — adding it would create a permanent
-            # "N/A" row that never recovers.
-            if price is None and title is None and currency is None:
+            if result.failure == FAILURE_BLOCKED:
                 await interaction.followup.send(
-                    "❌ Nu am putut extrage informații de pe acest link.\n"
-                    "Cauze posibile: site-ul blochează scraperul (anti-bot), pagina necesită "
-                    "JavaScript, sau formatul ei nu este suportat. Linkul **nu** a fost adăugat.",
+                    f"❌ The domain `{_domain(url)}` is blocking the scraper "
+                    f"(TLS/Cloudflare anti-bot protection). "
+                    f"This hardware can't bypass the protection — the link was **not** added.\n\n"
+                    f"_Known unsupported domains on this host: altex.ro, emag.ro, cel.ro._",
                     ephemeral=True,
                     suppress_embeds=True,
                 )
                 return
 
-            item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock, currency)
-            if not item_id:
+            if result.failure == FAILURE_UNSUPPORTED:
                 await interaction.followup.send(
-                    "Acest link este deja în lista ta de monitorizare.", ephemeral=True
+                    "❌ Reached the page, but couldn't find any price/stock data in the "
+                    "supported formats (JSON-LD, meta tags, plain text). It's most likely "
+                    "a JavaScript-rendered page. The link was **not** added.",
+                    ephemeral=True,
+                    suppress_embeds=True,
                 )
                 return
 
-            if price is not None:
-                db.add_price_history(item_id, price)
-            price_str = feature.converter.format_with_conversions(price, currency)
-            display_name = f"**{title}**" if title else f"**{url}**"
+            item_id = db.add_scraped_item(
+                interaction.user.id, url,
+                result.title, result.price, result.in_stock, result.currency,
+            )
+            if not item_id:
+                await interaction.followup.send(
+                    "This link is already in your tracking list.", ephemeral=True
+                )
+                return
+
+            if result.price is not None:
+                db.add_price_history(item_id, result.price)
+            price_str = feature.converter.format_with_conversions(result.price, result.currency)
+            display_name = f"**{result.title}**" if result.title else f"**{url}**"
             await interaction.followup.send(
-                f"✅ Adăugat: {display_name}\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`",
+                f"✅ Added: {display_name}\n"
+                f"Current price: `{price_str}` | In stock: `{'Yes' if result.in_stock else 'No'}`",
                 ephemeral=True,
                 suppress_embeds=True,
             )
@@ -452,33 +516,36 @@ class ScrapingFeature:
         items = db.get_all_scraped_items()
 
         for item_id, user_id, url, old_price, old_stock_status, old_title, old_currency in items:
-            new_price, is_in_stock, new_title, new_currency = self.scraper.fetch(url)
-            if new_price is None:
+            result = self.scraper.fetch(url)
+            # Skip transient failures so we don't overwrite good data with None.
+            if result.price is None:
                 continue
 
-            db.add_price_history(item_id, new_price)
+            db.add_price_history(item_id, result.price)
 
-            price_changed = old_price is not None and new_price != old_price
-            back_in_stock = not old_stock_status and is_in_stock
+            price_changed = old_price is not None and result.price != old_price
+            back_in_stock = not old_stock_status and result.in_stock
 
             if price_changed or back_in_stock:
                 try:
                     user = await self.client.fetch_user(user_id)
                     if user:
-                        disp_name = new_title or old_title or url
+                        disp_name = result.title or old_title or url
                         msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
                         if back_in_stock:
                             msg += "✅ Item is now **BACK IN STOCK**!\n"
                         if price_changed:
                             old_str = self.converter.format_with_conversions(old_price, old_currency)
-                            new_str = self.converter.format_with_conversions(new_price, new_currency)
+                            new_str = self.converter.format_with_conversions(result.price, result.currency)
                             msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                         await user.send(msg, suppress_embeds=True)
                         logger.info(f"Price alert sent to user {user_id} for {url}")
                 except Exception as e:
                     logger.error(f"Could not send DM to user {user_id}: {e}")
 
-            db.update_scraped_item_status(item_id, new_price, is_in_stock, new_title, new_currency)
+            db.update_scraped_item_status(
+                item_id, result.price, result.in_stock, result.title, result.currency,
+            )
 
         db.clean_old_price_history(days=5)
         logger.info("Finished price scrape task and cleaned history.")
