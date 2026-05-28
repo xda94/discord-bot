@@ -1,6 +1,13 @@
-COOLDOWN = 10
+import logging
+import random
+from datetime import date
+
+import discord
+from discord import app_commands
+
+logger = logging.getLogger("discord_bot")
+
 TEASE_BASE_CHANCE = 0.10
-INACTIVITY_THRESHOLD = 86400  # 24 hours in seconds
 
 TEASE_MOODS = {
     "bad": [
@@ -83,16 +90,62 @@ TEASE_MOODS = {
     ],
 }
 
-INACTIVITY_MESSAGES = [
-    "it's quiet... too quiet",
-    "did everyone die?",
-    "hello? is this thing on?",
-    "I'm bored, someone say something",
-    "*tumbleweed rolls by*",
-    "this server is deader than my will to live",
-    "I've been alone for 24 hours now. this is fine.",
-    "not a single message in a whole day? wow.",
-    "guess I'll just talk to myself then",
-    "ce plm, ba? ati murit toti?",
-    "HELLO? ANYBODY HERE? ECHOOOOO.....",
-]
+MOOD_CHOICES = [
+    app_commands.Choice(name=m, value=m) for m in TEASE_MOODS
+] + [app_commands.Choice(name="random", value="random")]
+
+
+class TeasesFeature:
+    """Random teases that fire on messages, plus the /mood command."""
+
+    def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
+        self.client = client
+        self.tree = tree
+        self.current_mood = "bad"
+        self.teases_today = 0
+        self.tease_reset_date: date | None = None
+        self._register_commands()
+
+    async def handle_message(self, message: discord.Message) -> bool:
+        today = date.today()
+        if self.tease_reset_date != today:
+            self.teases_today = 0
+            self.tease_reset_date = today
+
+        chance = TEASE_BASE_CHANCE / (1 + self.teases_today)
+        if random.random() >= chance:
+            return False
+
+        tease = random.choice(TEASE_MOODS[self.current_mood]).format(
+            user=message.author.display_name
+        )
+        try:
+            await message.reply(tease, mention_author=False)
+        except Exception:
+            logger.exception("Failed to send tease")
+            return False
+
+        self.teases_today += 1
+        logger.info(
+            f"Tease #{self.teases_today} triggered on {message.author} in #{message.channel}"
+        )
+        # Teases historically did NOT consume the cooldown gate, so return False
+        # so any other handlers (if added later) can still observe the message.
+        return False
+
+    def _register_commands(self) -> None:
+        feature = self
+
+        @self.tree.command(name="mood", description="Set the bot's mood")
+        @app_commands.describe(mood="The mood to set")
+        @app_commands.choices(mood=MOOD_CHOICES)
+        async def mood(interaction: discord.Interaction, mood: app_commands.Choice[str]):
+            chosen = mood.value
+            if chosen == "random":
+                chosen = random.choice(list(TEASE_MOODS.keys()))
+            logger.info(
+                f"Command /mood called by {interaction.user} — setting mood to {chosen}"
+            )
+            feature.current_mood = chosen
+            feature.teases_today = 0
+            await interaction.response.send_message(f"Mood set to **{mood.value}**.")
