@@ -4,6 +4,14 @@ import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
+# IMPORTANT: configure logging BEFORE importing any feature module. Some
+# feature modules (e.g. scraping) emit `logger.warning` at import time to
+# announce missing optional dependencies, and those warnings are lost if the
+# logger has no handlers attached yet.
+from logger import setup_logger
+
+logger = setup_logger("discord_bot", "bot.log")
+
 import db
 from features.help_feature import HelpFeature
 from features.inactivity import InactivityFeature
@@ -15,9 +23,6 @@ from features.scraping import ScrapingFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
-from logger import setup_logger
-
-logger = setup_logger("discord_bot", "bot.log")
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
