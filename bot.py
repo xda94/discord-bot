@@ -643,112 +643,6 @@ def format_price_with_conversions(price, currency):
     
     return base_str
 
-@tree.command(name="scrape-item", description="Add a link to track price and stock")
-@app_commands.describe(url="The URL of the item to track")
-async def scrape_item(interaction: discord.Interaction, url: str):
-    logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    price, stock, title, currency = get_price_and_stock(url)
-    item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock, currency)
-    
-    if item_id:
-        if price is not None:
-            db.add_price_history(item_id, price)
-        price_str = format_price_with_conversions(price, currency)
-        await interaction.followup.send(f"✅ Adăugat: **{title or url}**\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`", ephemeral=True)
-    else:
-        await interaction.followup.send("Acest link este deja în lista ta de monitorizare.", ephemeral=True)
-
-@tree.command(name="scrape-item-delete", description="Remove a link from tracking")
-@app_commands.describe(url="The URL to remove")
-async def scrape_item_delete(interaction: discord.Interaction, url: str):
-    logger.info(f"Command /scrape-item-delete called by {interaction.user} for {url}")
-    success = db.delete_scraped_item(interaction.user.id, url)
-    if success:
-        await interaction.response.send_message(f"Link removed and data cleared.", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"Link not found in your list.", ephemeral=True)
-
-@tree.command(name="scrape-show", description="Show your tracked items and their current prices")
-async def scrape_show(interaction: discord.Interaction):
-    logger.info(f"Command /scrape-show called by {interaction.user}")
-    items = db.get_user_scraped_items(interaction.user.id)
-    
-    if not items:
-        await interaction.response.send_message("You are not tracking any items.", ephemeral=True)
-        return
-
-    lines = ["**Your tracked items:**"]
-    for url, price, stock, title, currency in items:
-        status = "✅ In stock" if stock else "❌ Out of stock"
-        price_display = f"`{format_price_with_conversions(price, currency)}`" if price is not None else "N/A"
-        item_name = f"**{title}**" if title else f"🔗 {url}"
-        lines.append(f"{item_name}\nURL: {url}\n💰 Price: {price_display} | {status}")
-
-    await interaction.response.send_message("\n\n".join(lines), ephemeral=True)
-
-@tree.command(name="scrape-graph", description="Generate a price history graph for a tracked item")
-@app_commands.describe(url="The URL of the item")
-async def scrape_graph(interaction: discord.Interaction, url: str):
-    logger.info(f"Command /scrape-graph called by {interaction.user} for {url}")
-    await interaction.response.defer(ephemeral=True)
-    
-    history = db.get_price_history(interaction.user.id, url)
-    
-    if not history:
-        await interaction.followup.send("No price history found for this URL in your list.", ephemeral=True)
-        return
-
-    prices = [h[0] for h in history]
-    # Convert timestamps to readable hours/days
-    timestamps = [datetime.fromtimestamp(h[1]).strftime('%d/%m %H:%M') for h in history]
-    title = history[0][2] or "Price History"
-    
-    # Fetch the currency for the item to label the Y-axis
-    item_info = next((item for item in db.get_user_scraped_items(interaction.user.id) if item[0] == url), None)
-    item_currency = item_info[4] if item_info and len(item_info) > 4 else "N/A"
-
-    # Prepare conversion for the graph if you later decide to plot it
-    prices_converted = []
-    if item_currency and item_currency.upper() != "DKK":
-        for p in prices:
-            prices_converted.append(convert_currency(p, item_currency, "DKK"))
-    
-    # Create the plot
-    plt.figure(figsize=(10, 6))
-    plt.plot(timestamps, prices, marker='o', linestyle='-', color='#7289da', linewidth=2)
-    
-    plt.title(f"Price Evolution: {title[:50]}...", color='white', fontsize=14)
-    plt.xlabel("Date & Time", color='white')
-    
-    # Label Y-axis with the item's currency
-    plt.ylabel(f"Price ({item_currency})", color='white')
-    
-    plt.xticks(rotation=45, color='white')
-    plt.yticks(color='white')
-    plt.grid(True, linestyle='--', alpha=0.3)
-    
-    # Dark theme styling for Discord
-    fig = plt.gcf()
-    fig.patch.set_facecolor('#2c2f33')
-    ax = plt.gca()
-    ax.set_facecolor('#2c2f33')
-    for spine in ax.spines.values():
-        spine.set_color('white')
-
-    plt.tight_layout()
-
-    # Save plot to a bytes buffer
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', facecolor=fig.get_facecolor())
-    buf.seek(0)
-    plt.close()
-
-    file = discord.File(buf, filename="price_graph.png")
-    await interaction.followup.send(content=f"📈 Price history for: **{title}**", file=file, ephemeral=True)
-
 def get_price_and_stock(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
@@ -852,6 +746,140 @@ def get_price_and_stock(url):
         logger.error(f"Scraping error for {url}: {e}")
         return None, False, None, None
 
+@tree.command(name="scrape-item", description="Add a link to track price and stock")
+@app_commands.describe(url="The URL of the item to track")
+async def scrape_item(interaction: discord.Interaction, url: str):
+    logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    price, stock, title, currency = get_price_and_stock(url)
+    item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock, currency)
+    
+    if item_id:
+        if price is not None:
+            db.add_price_history(item_id, price)
+        price_str = format_price_with_conversions(price, currency)
+        
+        # Wrapped the fallback URL in < > just in case the title is missing
+        display_name = f"**{title}**" if title else f"**<{url}>**"
+        await interaction.followup.send(f"✅ Adăugat: {display_name}\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`", ephemeral=True)
+    else:
+        await interaction.followup.send("Acest link este deja în lista ta de monitorizare.", ephemeral=True)
+
+@tree.command(name="scrape-item-delete", description="Remove a link from tracking")
+@app_commands.describe(url="The URL to remove")
+async def scrape_item_delete(interaction: discord.Interaction, url: str):
+    logger.info(f"Command /scrape-item-delete called by {interaction.user} for {url}")
+    success = db.delete_scraped_item(interaction.user.id, url)
+    if success:
+        await interaction.response.send_message(f"Link removed and data cleared.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Link not found in your list.", ephemeral=True)
+
+@tree.command(name="scrape-show", description="Show your tracked items and their current prices")
+async def scrape_show(interaction: discord.Interaction):
+    logger.info(f"Command /scrape-show called by {interaction.user}")
+    items = db.get_user_scraped_items(interaction.user.id)
+    
+    if not items:
+        await interaction.response.send_message("You are not tracking any items.", ephemeral=True)
+        return
+
+    # 1. Format each item into its own string block
+    item_blocks = []
+    for url, price, stock, title, currency in items:
+        status = "✅ In stock" if stock else "❌ Out of stock"
+        price_display = f"`{format_price_with_conversions(price, currency)}`" if price is not None else "N/A"
+        item_name = f"**{title}**" if title else f"🔗 <{url}>"
+        
+        # Wrapping the URL in < > prevents Discord from auto-embedding link previews
+        item_blocks.append(f"{item_name}\nURL: <{url}>\n💰 Price: {price_display} | {status}")
+
+    # 2. Group items into chunks of < 2000 characters
+    chunks = []
+    current_chunk = "**Your tracked items:**\n\n"
+    
+    for block in item_blocks:
+        # Check if adding this block would push us over a safe limit (1900 chars)
+        if len(current_chunk) + len(block) + 2 > 1900:
+            chunks.append(current_chunk.strip())
+            current_chunk = block + "\n\n"  # Start a new chunk
+        else:
+            current_chunk += block + "\n\n"
+            
+    # Add the final piece
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    # 3. Send the chunks safely
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            # The first message must be a direct response to the interaction
+            await interaction.response.send_message(chunk, ephemeral=True)
+        else:
+            # Any subsequent messages must be sent as follow-ups
+            await interaction.followup.send(chunk, ephemeral=True)
+
+@tree.command(name="scrape-graph", description="Generate a price history graph for a tracked item")
+@app_commands.describe(url="The URL of the item")
+async def scrape_graph(interaction: discord.Interaction, url: str):
+    logger.info(f"Command /scrape-graph called by {interaction.user} for {url}")
+    await interaction.response.defer(ephemeral=True)
+    
+    history = db.get_price_history(interaction.user.id, url)
+    
+    if not history:
+        await interaction.followup.send("No price history found for this URL in your list.", ephemeral=True)
+        return
+
+    prices = [h[0] for h in history]
+    # Convert timestamps to readable hours/days
+    timestamps = [datetime.fromtimestamp(h[1]).strftime('%d/%m %H:%M') for h in history]
+    title = history[0][2] or "Price History"
+    
+    # Fetch the currency for the item to label the Y-axis
+    item_info = next((item for item in db.get_user_scraped_items(interaction.user.id) if item[0] == url), None)
+    item_currency = item_info[4] if item_info and len(item_info) > 4 else "N/A"
+
+    # Prepare conversion for the graph if you later decide to plot it
+    prices_converted = []
+    if item_currency and item_currency.upper() != "DKK":
+        for p in prices:
+            prices_converted.append(convert_currency(p, item_currency, "DKK"))
+    
+    # Create the plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(timestamps, prices, marker='o', linestyle='-', color='#7289da', linewidth=2)
+    
+    plt.title(f"Price Evolution: {title[:50]}...", color='white', fontsize=14)
+    plt.xlabel("Date & Time", color='white')
+    
+    # Label Y-axis with the item's currency
+    plt.ylabel(f"Price ({item_currency})", color='white')
+    
+    plt.xticks(rotation=45, color='white')
+    plt.yticks(color='white')
+    plt.grid(True, linestyle='--', alpha=0.3)
+    
+    # Dark theme styling for Discord
+    fig = plt.gcf()
+    fig.patch.set_facecolor('#2c2f33')
+    ax = plt.gca()
+    ax.set_facecolor('#2c2f33')
+    for spine in ax.spines.values():
+        spine.set_color('white')
+
+    plt.tight_layout()
+
+    # Save plot to a bytes buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor())
+    buf.seek(0)
+    plt.close()
+
+    file = discord.File(buf, filename="price_graph.png")
+    await interaction.followup.send(content=f"📈 Price history for: **{title}**", file=file, ephemeral=True)
 
 @tasks.loop(hours=12)
 async def scrape_price_task():
@@ -875,8 +903,9 @@ async def scrape_price_task():
             try:
                 user = await client.fetch_user(user_id)
                 if user:
-                    disp_name = new_title or old_title or url
-                    msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
+                    disp_name = new_title or old_title or f"<{url}>"
+                    # Wrapped the URL in < > right here to stop the DM preview
+                    msg = f"🔔 **Update: {disp_name}**\nLink: <{url}>\n"
                     if back_in_stock:
                         msg += "✅ Item is now **BACK IN STOCK**!\n"
                     if price_changed:
