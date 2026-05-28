@@ -83,6 +83,19 @@ pm2 start api.py --interpreter python3 --name discord-api
 
 ---
 
+## 🧪 Running Tests
+
+The repo ships with a small `pytest` suite focused on the highest-risk surfaces: `db.py` (CRUD, `COALESCE` semantics, response cache, tri-state stock, FK cascade), the pure scraping helpers (`_extract_from_json_ld`, meta extractors, TLD currency fallback, URL validation), the `CurrencyConverter`, and the `_pick_response` helper that fixed the keyword infinite-loop bug.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Each test that touches the database uses a temporary SQLite file (via the `tmp_db` fixture in `tests/conftest.py`), so the suite never reads or writes your real `responses.db`. The bot's runtime deps (`requirements.txt`) must also be installed because the test modules import from `features/`.
+
+---
+
 ## 🤖 Bot Commands
 
 | Command | Description |
@@ -116,7 +129,10 @@ pm2 start api.py --interpreter python3 --name discord-api
 | `api.py` | Flask REST API for managing responses, reminders, and jokes externally. |
 | `db.py` | Database layer — all SQLite queries and a shared connection context manager. |
 | `logger.py` | Shared logging setup used by both the bot and the API. |
-| `requirements.txt` | Python dependencies. |
+| `requirements.txt` | Python runtime dependencies. |
+| `requirements-dev.txt` | Test-only dependencies (pytest). |
+| `pytest.ini` | Pytest configuration (test discovery rooted at `tests/`). |
+| `tests/` | Pytest suite — see [Running Tests](#-running-tests). |
 | `.env` | Environment variables (ignored by git). |
 | `responses.db` | SQLite database file (auto-created on first run). |
 

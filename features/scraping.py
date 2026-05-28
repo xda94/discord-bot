@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import logging
@@ -224,6 +225,24 @@ def _domain(url: str) -> str:
         return urlparse(url).hostname or url
     except Exception:
         return url
+
+
+def _is_valid_http_url(url: str) -> bool:
+    """Cheap sanity check before we spend a network round-trip on a URL.
+
+    Rejects:
+      - non-strings / empty input
+      - non-`http(s)` schemes (incl. `javascript:`, `file:`, `data:`, …)
+      - URLs with no hostname (`http://`, `https:///foo`)
+      - anything `urlparse` can't make sense of at all
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
 def _effective_currency(stored_currency: str | None, url: str) -> str | None:
@@ -504,7 +523,19 @@ class ScrapingFeature:
             logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
             await interaction.response.defer(ephemeral=True)
 
-            result = feature.scraper.fetch(url)
+            # Reject obvious nonsense before we burn a network round-trip.
+            if not _is_valid_http_url(url):
+                await interaction.followup.send(
+                    "❌ That doesn't look like a valid HTTP(S) URL. "
+                    "Expected something like `https://example.com/product/123`.",
+                    ephemeral=True,
+                )
+                return
+
+            # `fetch` does a synchronous HTTP round-trip (up to 15s timeout)
+            # plus HTML parsing. Run it in a worker thread so the bot's event
+            # loop is free to handle other commands/messages while we wait.
+            result = await asyncio.to_thread(feature.scraper.fetch, url)
 
             if result.failure == FAILURE_BLOCKED:
                 await interaction.followup.send(
@@ -893,73 +924,101 @@ class ScrapingFeature:
         buf.seek(0)
         return discord.File(buf, filename="price_history_all.png")
 
+    # Politeness delay between item fetches so we're not hammering a host
+    # when a user has multiple URLs on the same domain in one pass.
+    SCRAPE_LOOP_GAP_SECONDS = 1.0
+
+    async def _process_scrape_item(self, item) -> None:
+        """Run one full per-item scrape: fetch → diff → DM → persist.
+
+        Raises nothing on its own — `_scrape_loop` wraps the whole call in a
+        catch-all so an unexpected error in any single item is logged and
+        skipped, never killing the whole 12-hour pass.
+        """
+        item_id, user_id, url, old_price, old_stock_status, old_title, old_currency = item
+
+        # Each `fetch` is up to ~15s of blocking I/O. Running it in a worker
+        # thread keeps the bot responsive to slash commands and messages
+        # during the scrape pass.
+        result = await asyncio.to_thread(self.scraper.fetch, url)
+
+        # Transport-level failure (timeout, anti-bot block, 5xx): trust
+        # nothing, change nothing. Try again next pass.
+        if result.failure == FAILURE_BLOCKED:
+            return
+        # Page reachable but literally nothing useful was parsed — same
+        # outcome. Don't overwrite known-good state with empty data.
+        if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
+            return
+
+        # Detect what changed against the previously-persisted state.
+        #   - `price_changed`  requires both an old and a new price.
+        #   - `back_in_stock`  requires that we *previously knew* it was OOS
+        #     (old_stock_status is a concrete 0, not NULL/unknown) and that
+        #     we *now know* it's in stock (result.in_stock is literally True,
+        #     not None).
+        price_changed = (
+            old_price is not None
+            and result.price is not None
+            and result.price != old_price
+        )
+        back_in_stock = (
+            old_stock_status is not None
+            and not old_stock_status
+            and result.in_stock is True
+        )
+
+        if result.price is not None:
+            db.add_price_history(item_id, result.price)
+
+        if price_changed or back_in_stock:
+            try:
+                user = await self.client.fetch_user(user_id)
+                if user:
+                    disp_name = result.title or old_title or url
+                    msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
+                    if back_in_stock:
+                        msg += "✅ Item is now **BACK IN STOCK**!\n"
+                    if price_changed:
+                        # Apply the same TLD currency fallback `/scrape-show`
+                        # uses, so old rows with currency = NULL render in the
+                        # right unit instead of as a bare number.
+                        old_src = _effective_currency(old_currency, url)
+                        new_src = _effective_currency(result.currency, url)
+                        old_str = self.converter.format_with_conversions(old_price, old_src)
+                        new_str = self.converter.format_with_conversions(result.price, new_src)
+                        msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
+                    await user.send(msg, suppress_embeds=True)
+                    logger.info(f"Price alert sent to user {user_id} for {url}")
+            except Exception as e:
+                logger.error(f"Could not send DM to user {user_id}: {e}")
+
+        # Persist whatever signals we extracted. COALESCE inside the SQL means
+        # passing None for any field leaves the previous value intact — so a
+        # price-less stock-only scrape doesn't wipe the last-known price, and
+        # an unknown stock read doesn't flip the status to OOS.
+        db.update_scraped_item_status(
+            item_id, result.price, result.in_stock, result.title, result.currency,
+        )
+
     @tasks.loop(hours=12)
     async def _scrape_loop(self):
         logger.info("Starting scheduled price scrape task...")
         items = db.get_all_scraped_items()
 
-        for item_id, user_id, url, old_price, old_stock_status, old_title, old_currency in items:
-            result = self.scraper.fetch(url)
-
-            # Transport-level failure (timeout, anti-bot block, 5xx): trust
-            # nothing, change nothing. Try again next pass.
-            if result.failure == FAILURE_BLOCKED:
-                continue
-            # Page reachable but literally nothing useful was parsed — same
-            # outcome. Don't overwrite known-good state with empty data.
-            if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
-                continue
-
-            # Detect what changed against the previously-persisted state.
-            #   - `price_changed`  requires both an old and a new price.
-            #   - `back_in_stock`  requires that we *previously knew* it was
-            #     OOS (old_stock_status is a concrete 0, not NULL/unknown)
-            #     and that we *now know* it's in stock (result.in_stock is
-            #     literally True, not None).
-            price_changed = (
-                old_price is not None
-                and result.price is not None
-                and result.price != old_price
-            )
-            back_in_stock = (
-                old_stock_status is not None
-                and not old_stock_status
-                and result.in_stock is True
-            )
-
-            if result.price is not None:
-                db.add_price_history(item_id, result.price)
-
-            if price_changed or back_in_stock:
-                try:
-                    user = await self.client.fetch_user(user_id)
-                    if user:
-                        disp_name = result.title or old_title or url
-                        msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
-                        if back_in_stock:
-                            msg += "✅ Item is now **BACK IN STOCK**!\n"
-                        if price_changed:
-                            # Apply the same TLD currency fallback `/scrape-show`
-                            # uses, so old rows with currency = NULL render in
-                            # the right unit instead of as a bare number.
-                            old_src = _effective_currency(old_currency, url)
-                            new_src = _effective_currency(result.currency, url)
-                            old_str = self.converter.format_with_conversions(old_price, old_src)
-                            new_str = self.converter.format_with_conversions(result.price, new_src)
-                            msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
-                        await user.send(msg, suppress_embeds=True)
-                        logger.info(f"Price alert sent to user {user_id} for {url}")
-                except Exception as e:
-                    logger.error(f"Could not send DM to user {user_id}: {e}")
-
-            # Persist whatever signals we extracted. COALESCE inside the SQL
-            # means passing None for any field leaves the previous value
-            # intact — so a price-less stock-only scrape doesn't wipe the
-            # last-known price, and an unknown stock read doesn't flip the
-            # status to OOS.
-            db.update_scraped_item_status(
-                item_id, result.price, result.in_stock, result.title, result.currency,
-            )
+        for item in items:
+            try:
+                await self._process_scrape_item(item)
+            except Exception:
+                # Catch-all so one bad row never kills the whole pass. Logged
+                # with full traceback + URL context so we can investigate.
+                url = item[2] if len(item) > 2 else "<unknown>"
+                logger.exception(f"Unexpected error scraping {url}; skipping")
+            # Politeness sleep between fetches — even with `to_thread` we
+            # don't want to flood a host that has multiple tracked URLs in
+            # one pass. The bot's event loop stays responsive during the
+            # await regardless.
+            await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
 
         db.clean_old_price_history(days=5)
         logger.info("Finished price scrape task and cleaned history.")

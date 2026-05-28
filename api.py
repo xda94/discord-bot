@@ -1,6 +1,7 @@
 import hmac
 import logging
 import os
+import sys
 import threading
 from functools import wraps
 
@@ -34,6 +35,23 @@ load_dotenv()
 HOST = os.getenv("HOST")
 PORT = os.getenv("PORT")
 API_TOKEN = os.getenv("API_TOKEN")
+
+# Fail loud and early on missing/invalid required config. Without this you get
+# a `TypeError: int() argument must be a string` (PORT) or an opaque
+# `socket.gaierror` (HOST) from `app.run()` instead of a clear actionable
+# message in `api.log`.
+_missing = [name for name, val in (("HOST", HOST), ("PORT", PORT)) if not val]
+if _missing:
+    logger.critical(
+        f"Required env var(s) missing: {', '.join(_missing)}. "
+        f"Set them in your .env file and restart. Refusing to start."
+    )
+    sys.exit(1)
+try:
+    int(PORT)
+except (TypeError, ValueError):
+    logger.critical(f"PORT is not a valid integer (got {PORT!r}). Refusing to start.")
+    sys.exit(1)
 
 app = Flask(__name__)
 

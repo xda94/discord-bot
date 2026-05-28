@@ -1,0 +1,4 @@
+# Test-only dependencies. Install separately from runtime so production
+# deploys (esp. the Pi) don't pay for them:
+#     pip install -r requirements-dev.txt
+pytest>=8.0,<9.0

@@ -79,7 +79,9 @@ class SponsorsFeature:
         tier = db.get_setting("sponsor_tier")
         self.sponsor_tier: str = tier if tier in SPONSOR_TIERS else "standard"
         self.sponsor_custom_message: str | None = db.get_setting("sponsor_custom_message") or None
-        self.sponsor_warned = False
+        # Persisted so we don't re-announce the "expires in 1 day" warning on
+        # every bot restart that lands inside the final-day window.
+        self.sponsor_warned: bool = db.get_setting("sponsor_warned") == "1"
 
         self._register_commands()
 
@@ -106,6 +108,7 @@ class SponsorsFeature:
             db.set_setting("sponsor_set_at", str(self.sponsor_set_at))
             db.set_setting("sponsor_tier", tier)
             db.set_setting("sponsor_custom_message", custom_message or "")
+            db.set_setting("sponsor_warned", "0")
         else:
             self.sponsor_set_at = None
             self.sponsor_warned = False
@@ -115,6 +118,7 @@ class SponsorsFeature:
             db.set_setting("sponsor_set_at", "")
             db.set_setting("sponsor_tier", "")
             db.set_setting("sponsor_custom_message", "")
+            db.set_setting("sponsor_warned", "0")
 
     async def start_tasks(self) -> None:
         if not self._check_expiry.is_running():
@@ -184,7 +188,10 @@ class SponsorsFeature:
             one_day_before = ONE_YEAR_SECONDS - ONE_DAY_SECONDS
 
             if elapsed >= one_day_before and not self.sponsor_warned:
+                # Persist *before* sending so a crash mid-broadcast still
+                # prevents a duplicate warning on the next bot start.
                 self.sponsor_warned = True
+                db.set_setting("sponsor_warned", "1")
                 for guild in self.client.guilds:
                     channel = guild.system_channel or next(
                         (ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages),
