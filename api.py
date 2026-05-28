@@ -385,15 +385,23 @@ def api_remove_scrape():
 def api_get_all_scrapes():
     try:
         items = get_all_scraped_items()
+        # `get_all_scraped_items` returns a 9-tuple:
+        #   (id, user_id, url, last_price, last_stock_status, title,
+        #    currency, last_alert_kind, last_alert_price)
+        # `len(i) > N` guards are belt-and-braces in case an older
+        # schema (pre-alerts migration) is queried before init_db has
+        # had a chance to ALTER the table.
         result = [
             {
                 "id": i[0],
                 "user_id": i[1],
                 "url": i[2],
                 "last_price": i[3],
-                "in_stock": bool(i[4]),
+                "in_stock": bool(i[4]) if i[4] is not None else None,
                 "title": i[5] if len(i) > 5 else None,
-                "currency": i[6] if len(i) > 6 else None
+                "currency": i[6] if len(i) > 6 else None,
+                "last_alert_kind": i[7] if len(i) > 7 else None,
+                "last_alert_price": i[8] if len(i) > 8 else None,
             } for i in items
         ]
         return jsonify(result)

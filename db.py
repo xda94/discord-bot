@@ -85,6 +85,15 @@ def init_db():
                 c.execute("ALTER TABLE scraped_items ADD COLUMN title TEXT")
             if "currency" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN currency TEXT")
+            # Alert state used by the LOW / HIGH buy-signal DMs in
+            # `_process_scrape_item`. `last_alert_kind` is "low" / "high" /
+            # NULL; `last_alert_price` records the price at the time of the
+            # alert so the LOW re-alert threshold (≥1% lower than the
+            # previous alert) can be evaluated without re-scanning history.
+            if "last_alert_kind" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN last_alert_kind TEXT")
+            if "last_alert_price" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN last_alert_price REAL")
 
             c.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -95,6 +104,21 @@ def init_db():
                     FOREIGN KEY(item_id) REFERENCES scraped_items(id) ON DELETE CASCADE
                 )
             """)
+            # Indexes for the two access patterns that grow with retention:
+            #   - `get_price_history` filters by item_id (via JOIN) and orders
+            #     by timestamp. Without an index this becomes a full table
+            #     scan as the table grows toward ~36k rows at 6-month retention.
+            #   - `clean_old_price_history` does `WHERE timestamp < ?` every
+            #     12 h, which also benefits from the timestamp index.
+            # Both are `IF NOT EXISTS` so they're free to re-run on each boot.
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_price_history_item_id "
+                "ON price_history(item_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_price_history_timestamp "
+                "ON price_history(timestamp)"
+            )
             c.execute("""
                 CREATE TABLE IF NOT EXISTS exchange_rates (
                     currency TEXT PRIMARY KEY,
@@ -450,9 +474,19 @@ def delete_scraped_item(user_id, url):
         return False
 
 def get_all_scraped_items():
+    """Return every tracked item across all users.
+
+    Tuple shape: `(id, user_id, url, last_price, last_stock_status, title,
+    currency, last_alert_kind, last_alert_price)` — 9 fields. The two
+    `last_alert_*` columns are the LOW/HIGH alert state used by the
+    scrape loop's DM logic; they're NULL until an alert fires.
+    """
     try:
         with _connect() as c:
-            c.execute("SELECT id, user_id, url, last_price, last_stock_status, title, currency FROM scraped_items")
+            c.execute(
+                "SELECT id, user_id, url, last_price, last_stock_status, title, "
+                "currency, last_alert_kind, last_alert_price FROM scraped_items"
+            )
             return c.fetchall()
     except Exception:
         logger.exception("Failed to fetch all scraped items")
@@ -491,6 +525,27 @@ def update_scraped_item_status(item_id, price, in_stock, title=None, currency=No
     except Exception:
         logger.exception(f"Failed to update scraped item status for ID {item_id}")
 
+def update_item_alert_state(item_id, kind, price):
+    """Persist the LOW/HIGH alert state for an item.
+
+    `kind` is "low" / "high" / None — the zone the item's price is in
+    after the latest scrape. `price` is the price at the moment of the
+    last alert (used for the LOW re-alert threshold) or None when state
+    is being cleared back to neutral.
+
+    Called from `_process_scrape_item` after every scrape pass, so kept
+    as a single fast UPDATE.
+    """
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE scraped_items SET last_alert_kind = ?, last_alert_price = ? WHERE id = ?",
+                (kind, price, item_id),
+            )
+    except Exception:
+        logger.exception(f"Failed to update alert state for item {item_id}")
+
+
 def add_price_history(item_id, price):
     try:
         with _connect(commit=True) as c:
@@ -501,7 +556,32 @@ def add_price_history(item_id, price):
     except Exception:
         logger.exception(f"Failed to add price history for item {item_id}")
 
-def clean_old_price_history(days=5):
+def clean_old_price_history(days=180):
+    """Trim `price_history` to a rolling `days`-long window per item.
+
+    Called once per scrape pass (every 12 h from `_scrape_loop`). Each call
+    deletes rows whose timestamp is older than `now - days`, so the table
+    size stabilises at roughly
+    `(scrape passes per day) × days × (tracked items)` rows once the bot
+    has been running longer than the retention window. At the default of
+    180 days, 12 h cadence, and 100 tracked items that's ~36 k rows /
+    ~2.5 MB — well within SQLite and the Pi Zero W's resources.
+
+    **This is a sliding window, not a hard cutoff.** An item tracked for
+    two years always shows its most recent `days` of price changes; it
+    does NOT get wiped on its 180-day anniversary. Each day, the oldest
+    day's snapshots quietly drop off as the newest day's arrive — the
+    user-visible behaviour is equivalent to a circular buffer of the
+    most recent `days` of history, kept fresh on every scrape pass.
+
+    History is only lost when:
+      - the item is deleted via `/scrape-item-delete` (FK cascade), or
+      - the bot is offline longer than `days` (catch-up scrape's cleanup
+        legitimately drops everything older than the new cutoff).
+
+    Backed by `idx_price_history_timestamp` (see `init_db`) so the DELETE
+    stays O(log n + k) even when the table holds many months of history.
+    """
     try:
         cutoff = time.time() - (days * 86400)
         with _connect(commit=True) as c:
