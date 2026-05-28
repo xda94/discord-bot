@@ -10,6 +10,7 @@ from flask import Flask, jsonify, request
 
 from db import (
     add_joke,
+    add_price_history,
     add_reminder,
     add_response,
     add_scraped_item,
@@ -27,6 +28,12 @@ from db import (
     update_joke,
 )
 from logger import setup_logger
+from scraper import (
+    FAILURE_BLOCKED,
+    FAILURE_UNSUPPORTED,
+    PriceScraper,
+    _is_valid_http_url,
+)
 
 logger = setup_logger("flask_api", "api.log")
 
@@ -274,17 +281,90 @@ def api_reset_jokes():
 
 # --- Scrape Routes ---
 
+# Single shared scraper instance — `PriceScraper` is stateless beyond its
+# class-level config, so reusing one across requests saves a per-request
+# allocation. `fetch()` itself is synchronous and blocking; that's fine
+# under Flask's `threaded=True` because each request gets its own worker
+# thread.
+_price_scraper = PriceScraper()
+
+
 @app.route("/scrape/add", methods=["POST"])
 @require_token
 def api_add_scrape():
+    """Add a URL to a user's tracking list, *only if* it can actually be
+    scraped right now.
+
+    The previous version of this endpoint inserted a row with no title /
+    price / currency / stock and relied on the bot's 12-hour loop to
+    populate it later. That created "dead" rows for unscrapeable URLs
+    (typos, JS-rendered SPAs, perma-blocked sites) that the user then
+    had to discover and remove manually. We now run the scrape inline
+    and reject the request if it fails, so the DB only ever holds rows
+    we've successfully extracted at least one signal from.
+
+    Note: `_price_scraper.fetch()` can take up to ~15s (HTTP timeout).
+    That's acceptable here because `/scrape/add` is an admin endpoint,
+    not a hot path — and a long-but-honest response is much better than
+    a fast success that becomes a silent failure 12 hours later.
+    """
     data = request.get_json()
     if not data or "user_id" not in data or "url" not in data:
         logger.warning(f"BadRequest: Missing fields in /scrape/add. IP: {request.remote_addr}")
         return jsonify({"error": "Missing user_id or url"}), 400
 
-    add_scraped_item(data["user_id"], data["url"])
-    logger.info(f"Scrape item added via API for User {data['user_id']}: {data['url']}")
-    return jsonify({"status": "ok"})
+    user_id = data["user_id"]
+    url = data["url"]
+
+    if not _is_valid_http_url(url):
+        logger.warning(f"BadRequest: Invalid URL in /scrape/add: {url!r}")
+        return jsonify({"error": "Invalid URL"}), 400
+
+    result = _price_scraper.fetch(url)
+
+    if result.failure == FAILURE_BLOCKED:
+        logger.warning(f"/scrape/add rejected (blocked) for {url}")
+        return jsonify({
+            "error": "blocked",
+            "detail": (
+                "The target domain blocked the scraper (timeout or anti-bot "
+                "protection). The link was not added."
+            ),
+        }), 502
+    if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
+        logger.warning(f"/scrape/add rejected (unsupported) for {url}")
+        return jsonify({
+            "error": "unsupported",
+            "detail": (
+                "Reached the page but couldn't extract any price/stock data "
+                "in the supported formats (JSON-LD, meta tags, plain text). "
+                "Most likely a JavaScript-rendered SPA. The link was not added."
+            ),
+        }), 422
+
+    item_id = add_scraped_item(
+        user_id, url,
+        title=result.title, price=result.price,
+        stock=result.in_stock, currency=result.currency,
+    )
+    if not item_id:
+        return jsonify({"error": "Already tracked"}), 409
+
+    if result.price is not None:
+        add_price_history(item_id, result.price)
+
+    logger.info(
+        f"Scrape item added via API for User {user_id}: {url} "
+        f"(price={result.price} {result.currency}, in_stock={result.in_stock})"
+    )
+    return jsonify({
+        "status": "ok",
+        "id": item_id,
+        "title": result.title,
+        "price": result.price,
+        "currency": result.currency,
+        "in_stock": result.in_stock,
+    }), 201
 
 @app.route("/scrape/remove", methods=["DELETE"])
 @require_token
