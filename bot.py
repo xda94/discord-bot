@@ -860,26 +860,49 @@ async def scrape_graph(interaction: discord.Interaction, url: str):
     
     plt.xticks(rotation=45, color='white')
     plt.yticks(color='white')
-    plt.grid(True, linestyle='--', alpha=0.3)
+@tree.command(name="scrape-show", description="Show your tracked items and their current prices")
+async def scrape_show(interaction: discord.Interaction):
+    logger.info(f"Command /scrape-show called by {interaction.user}")
     
-    # Dark theme styling for Discord
-    fig = plt.gcf()
-    fig.patch.set_facecolor('#2c2f33')
-    ax = plt.gca()
-    ax.set_facecolor('#2c2f33')
-    for spine in ax.spines.values():
-        spine.set_color('white')
+    # 1. DEFER IMMEDIATELY to prevent the 3-second timeout
+    await interaction.response.defer(ephemeral=True)
+    
+    items = db.get_user_scraped_items(interaction.user.id)
+    
+    if not items:
+        # Use followup since we deferred
+        await interaction.followup.send("You are not tracking any items.", ephemeral=True)
+        return
 
-    plt.tight_layout()
+    # 2. Format each item into its own string block
+    item_blocks = []
+    for url, price, stock, title, currency in items:
+        status = "✅ In stock" if stock else "❌ Out of stock"
+        price_display = f"`{format_price_with_conversions(price, currency)}`" if price is not None else "N/A"
+        item_name = f"**{title}**" if title else f"🔗 <{url}>"
+        
+        # Wrapping the URL in < > prevents Discord from auto-embedding link previews
+        item_blocks.append(f"{item_name}\nURL: <{url}>\n💰 Price: {price_display} | {status}")
 
-    # Save plot to a bytes buffer
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', facecolor=fig.get_facecolor())
-    buf.seek(0)
-    plt.close()
+    # 3. Group items into chunks of < 2000 characters
+    chunks = []
+    current_chunk = "**Your tracked items:**\n\n"
+    
+    for block in item_blocks:
+        # Check if adding this block would push us over a safe limit (1900 chars)
+        if len(current_chunk) + len(block) + 2 > 1900:
+            chunks.append(current_chunk.strip())
+            current_chunk = block + "\n\n"  # Start a new chunk
+        else:
+            current_chunk += block + "\n\n"
+            
+    # Add the final piece
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
 
-    file = discord.File(buf, filename="price_graph.png")
-    await interaction.followup.send(content=f"📈 Price history for: **{title}**", file=file, ephemeral=True)
+    # 4. Send the chunks safely using followup
+    for chunk in chunks:
+        await interaction.followup.send(chunk, ephemeral=True)
 
 @tasks.loop(hours=12)
 async def scrape_price_task():
