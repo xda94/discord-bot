@@ -79,17 +79,21 @@ pm2 start api.py --interpreter python3 --name discord-api
 
 | Command | Description |
 |---|---|
-| `/add <keyword> <response>` | Add a keyword-response pair. Multiple responses per keyword are supported — the bot picks one at random. |
+| `/keyword_add <keyword> <response>` | Add a keyword-response pair. Multiple responses per keyword are supported — the bot picks one at random. |
 | `/remind <when> <who> <what>` | Set a timed reminder. Format: `30m`, `2h`, `1d`. |
 | `/topkeywords [user]` | Show the most triggered keywords in the server, optionally filtered by user. |
 | `/mood <mood>` | Set the bot's tease mood. Available moods are loaded dynamically from `features/teases.py`, plus `random`. |
-| `/joke <text>` | Add a joke to the daily joke rotation. |
+| `/joke_add <text>` | Add a joke to the daily joke rotation. |
 | `/joke_activation <time>` | Activate the daily joke in the current channel at a given time (e.g. `14:00`). |
+| `/sponsor_set [user] [plan]` | Set or clear the active sponsor. Opens a password-gated modal; the optional `plan` picks one of the four tiers and unlocks a custom message on the Ultra Pro Max tier. |
+| `/sponsor_plans` | List the available sponsorship plans, prices and per-tier chance of appending a sponsor tag to a keyword response. |
+| `/sponsor_who` | Show the current sponsor, their plan, and time remaining until the 1-year expiry. |
 | `/stats` | Show system hardware stats (CPU, RAM, disk, temperature, network, uptime). |
 | `/scrape-item <url>` | Add a link to track price and stock. Checked every 12 hours. |
-| `/scrape-show` | Show your tracked items and their current prices. |
-| `/scrape-graph <url>` | Show a price evolution graph for the last 5 days. |
 | `/scrape-item-delete <url>` | Remove a link and its history from tracking. |
+| `/scrape-show` | Show your tracked items and their current prices. |
+| `/scrape-graph <url>` | Show a price evolution graph for one tracked URL. |
+| `/scrape-graph-all` | Combined price evolution graph for **all** your tracked items, normalized to DKK so cross-currency items share one Y-axis. |
 | `/help` | Show the help message. |
 
 ---
