@@ -17,6 +17,24 @@ logger = logging.getLogger("discord_bot")
 # Non-interactive matplotlib backend, safe inside an async bot process.
 plt.switch_backend("Agg")
 
+# `curl_cffi` mimics a real Chrome TLS+HTTP/2 fingerprint, which bypasses the
+# bot-detection used by most Romanian e-commerce sites (Altex, eMag, Cel.ro).
+# If it isn't installed we fall back to plain `requests` so the bot still
+# starts, just with the original "blocked by Cloudflare" limitation for those
+# sites. Install with `pip install curl_cffi`.
+try:
+    from curl_cffi import requests as impersonated_http
+
+    _IMPERSONATION_AVAILABLE = True
+except ImportError:
+    impersonated_http = None
+    _IMPERSONATION_AVAILABLE = False
+    logger.warning(
+        "curl_cffi not installed — falling back to plain requests for scraping. "
+        "Bot-protected sites (Altex/eMag/etc.) will likely time out. "
+        "Install with: pip install curl_cffi"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Currency conversion
@@ -104,12 +122,21 @@ class CurrencyConverter:
 
 class PriceScraper:
     """Fetches a product page and tries JSON-LD → meta → text-fallback for
-    price, currency, stock status, and title."""
+    price, currency, stock status, and title.
+
+    `fetch` returns a 4-tuple `(price, in_stock, title, currency)`. When all of
+    `price`, `title`, and `currency` are None the caller should treat the page
+    as "unusable" — either the request was blocked at the transport layer or
+    none of the three extraction strategies (JSON-LD, meta, text) matched.
+    """
 
     USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
+    # Chrome version to impersonate via curl_cffi. Bumping this occasionally
+    # keeps the fingerprint fresh.
+    IMPERSONATE_TARGET = "chrome124"
     OUT_OF_STOCK_KEYWORDS = (
         "stoc epuizat", "indisponibil", "nu este in stoc",
         "lipsa stoc", "out of stock", "momentan indisponibil",
@@ -123,7 +150,7 @@ class PriceScraper:
         """Return (price, in_stock, title, currency). Any field may be None on
         failure; in_stock defaults to False if no signal is found."""
         try:
-            response = requests.get(url, headers={"User-Agent": self.USER_AGENT}, timeout=15)
+            response = self._http_get(url)
             if response.status_code != 200:
                 return None, False, None, None
 
@@ -151,6 +178,16 @@ class PriceScraper:
             logger.error(f"Scraping error for {url}: {e}")
             return None, False, None, None
 
+    def _http_get(self, url: str):
+        """Perform the HTTP GET. Prefer curl_cffi's Chrome impersonation so we
+        can pass bot-detection on protected sites; fall back to plain requests
+        when curl_cffi is unavailable."""
+        if _IMPERSONATION_AVAILABLE:
+            return impersonated_http.get(
+                url, impersonate=self.IMPERSONATE_TARGET, timeout=15
+            )
+        return requests.get(url, headers={"User-Agent": self.USER_AGENT}, timeout=15)
+
     @staticmethod
     def _extract_from_json_ld(soup, price, title, currency, in_stock):
         for script in soup.find_all("script", type="application/ld+json"):
@@ -172,13 +209,24 @@ class PriceScraper:
                     for offer in offer_list:
                         if not isinstance(offer, dict):
                             continue
-                        if price is None and offer.get("price") is not None:
+                        # Price may sit directly on the offer or inside a nested
+                        # PriceSpecification object (Schema.org's more formal
+                        # form used by Altex, eMag, and others).
+                        spec = offer.get("priceSpecification") or {}
+                        if isinstance(spec, list):
+                            spec = spec[0] if spec else {}
+                        raw_price = offer.get("price")
+                        if raw_price is None and isinstance(spec, dict):
+                            raw_price = spec.get("price")
+                        if price is None and raw_price is not None:
                             try:
-                                price = float(str(offer["price"]).replace(",", "."))
+                                price = float(str(raw_price).replace(",", "."))
                             except ValueError:
                                 pass
                         if currency is None:
                             currency = offer.get("priceCurrency")
+                            if currency is None and isinstance(spec, dict):
+                                currency = spec.get("priceCurrency")
                         availability = offer.get("availability", "")
                         if availability:
                             in_stock = "InStock" in availability or "PreOrder" in availability
@@ -268,22 +316,37 @@ class ScrapingFeature:
             await interaction.response.defer(ephemeral=True)
 
             price, stock, title, currency = feature.scraper.fetch(url)
-            item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock, currency)
 
-            if item_id:
-                if price is not None:
-                    db.add_price_history(item_id, price)
-                price_str = feature.converter.format_with_conversions(price, currency)
-                display_name = f"**{title}**" if title else f"**{url}**"
+            # Refuse to insert dead entries. If the scrape returned nothing
+            # extractable at all, the URL is either anti-bot-blocked or the
+            # page format is unsupported — adding it would create a permanent
+            # "N/A" row that never recovers.
+            if price is None and title is None and currency is None:
                 await interaction.followup.send(
-                    f"✅ Adăugat: {display_name}\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`",
+                    "❌ Nu am putut extrage informații de pe acest link.\n"
+                    "Cauze posibile: site-ul blochează scraperul (anti-bot), pagina necesită "
+                    "JavaScript, sau formatul ei nu este suportat. Linkul **nu** a fost adăugat.",
                     ephemeral=True,
                     suppress_embeds=True,
                 )
-            else:
+                return
+
+            item_id = db.add_scraped_item(interaction.user.id, url, title, price, stock, currency)
+            if not item_id:
                 await interaction.followup.send(
                     "Acest link este deja în lista ta de monitorizare.", ephemeral=True
                 )
+                return
+
+            if price is not None:
+                db.add_price_history(item_id, price)
+            price_str = feature.converter.format_with_conversions(price, currency)
+            display_name = f"**{title}**" if title else f"**{url}**"
+            await interaction.followup.send(
+                f"✅ Adăugat: {display_name}\nPreț actual: `{price_str}` | Stoc: `{'Da' if stock else 'Nu'}`",
+                ephemeral=True,
+                suppress_embeds=True,
+            )
 
         @self.tree.command(name="scrape-item-delete", description="Remove a link from tracking")
         @app_commands.describe(url="The URL to remove")
