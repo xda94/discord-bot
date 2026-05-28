@@ -211,6 +211,17 @@ def _domain(url: str) -> str:
         return url
 
 
+def _effective_currency(stored_currency: str | None, url: str) -> str | None:
+    """Pick the currency to display a tracked item in: the value persisted by
+    `PriceScraper.fetch`, or — if that's missing — the TLD-based guess (`.dk`
+    → DKK, `.ro` → RON, …).
+
+    Lets DB rows that pre-date the TLD fallback in `PriceScraper.fetch` still
+    render and convert correctly in `/scrape-show`, `/scrape-graph`, and
+    `/scrape-graph-all` without needing a migration."""
+    return stored_currency or PriceScraper._currency_from_tld(url)
+
+
 class PriceScraper:
     """Fetches a product page and tries JSON-LD → meta → text-fallback for
     price, currency, stock status, and title.
@@ -533,8 +544,11 @@ class ScrapingFeature:
             blocks = []
             for url, price, stock, title, item_currency in items:
                 status = "✅ In stock" if stock else "❌ Out of stock"
+                # Resolve currency the same way the scraper does: prefer the
+                # value persisted at scrape-time, fall back to a TLD guess.
+                source_currency = _effective_currency(item_currency, url)
                 price_display = (
-                    f"`{feature.converter.format_in_currency(price, item_currency, target_currency)}`"
+                    f"`{feature.converter.format_in_currency(price, source_currency, target_currency)}`"
                     if price is not None else "N/A"
                 )
                 item_name = f"**{title}**" if title else f"🔗 {url}"
@@ -590,9 +604,10 @@ class ScrapingFeature:
                 (item for item in db.get_user_scraped_items(interaction.user.id) if item[0] == url),
                 None,
             )
-            item_currency = (
+            stored_currency = (
                 item_info[4] if item_info and len(item_info) > 4 else None
             )
+            item_currency = _effective_currency(stored_currency, url)
 
             # Convert each point to the requested display currency. If a point
             # can't be converted we drop it — better an honest gap than a misleading
@@ -655,12 +670,13 @@ class ScrapingFeature:
             skipped_no_history = 0
             skipped_no_currency = 0
 
-            for url, _last_price, _stock, title, item_currency in items:
+            for url, _last_price, _stock, title, stored_currency in items:
                 history = db.get_price_history(interaction.user.id, url)
                 if not history:
                     skipped_no_history += 1
                     continue
 
+                item_currency = _effective_currency(stored_currency, url)
                 points: list[tuple[datetime, float]] = []
                 for price, ts, _row_title in history:
                     converted = feature.converter.to_currency(
