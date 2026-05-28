@@ -5,6 +5,34 @@ from discord import app_commands
 
 logger = logging.getLogger("discord_bot")
 
+# Discord rejects any single slash-command response > 2000 chars (the
+# interaction silently times out, which looks like a broken command from
+# the user's side). 1900 leaves a small safety margin for invisible
+# formatting overhead.
+DISCORD_MESSAGE_LIMIT = 1900
+
+
+def _chunk_text(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+    """Split `text` into chunks <= `limit` chars, breaking on paragraph
+    boundaries (`\\n\\n`) so a command's description never gets cut in half.
+
+    Falls back to emitting an oversized chunk verbatim if a single
+    paragraph already exceeds `limit` — Discord will then reject just that
+    chunk, which is louder than silently truncating it."""
+    paragraphs = text.split("\n\n")
+    chunks: list[str] = []
+    current = ""
+    for para in paragraphs:
+        candidate = f"{current}\n\n{para}" if current else para
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = para
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
 HELP_TEXT = (
     "**Available Commands**\n\n"
     "**/keyword_add** `<keyword>` `<response>`\n"
@@ -70,4 +98,9 @@ class HelpFeature:
         )
         async def help_cmd(interaction: discord.Interaction):
             logger.info(f"Command /help called by {interaction.user}")
-            await interaction.response.send_message(HELP_TEXT, ephemeral=True)
+            chunks = _chunk_text(HELP_TEXT)
+            # First chunk satisfies Discord's initial interaction-response
+            # contract; the rest go through follow-ups on the same token.
+            await interaction.response.send_message(chunks[0], ephemeral=True)
+            for chunk in chunks[1:]:
+                await interaction.followup.send(chunk, ephemeral=True)

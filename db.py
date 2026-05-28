@@ -290,6 +290,9 @@ def get_all_jokes():
             return c.fetchall()
     except Exception:
         logger.exception("Failed to fetch all jokes")
+        # Return an empty list instead of None so callers (e.g. the Flask
+        # API's `/jokes` route) can iterate the result unconditionally.
+        return []
 
 
 # --- Settings functions ---
@@ -482,8 +485,6 @@ def get_exchange_rate(currency):
     except Exception:
         logger.exception(f"Failed to get exchange rate for {currency}")
         return None
-    except Exception:
-        logger.exception("Failed to clean old price history")
 
 def get_price_history(user_id, url):
     try:

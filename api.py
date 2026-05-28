@@ -1,33 +1,110 @@
+import hmac
+import logging
 import os
+import threading
+from functools import wraps
+
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
+
 from db import (
-    init_db, add_response, remove_response, get_all_responses,
-    add_reminder, delete_reminder, get_all_reminders,
-    add_joke, get_all_jokes, get_joke_by_id, update_joke, delete_joke, reset_jokes,
-    add_scraped_item, delete_scraped_item, get_all_scraped_items
+    add_joke,
+    add_reminder,
+    add_response,
+    add_scraped_item,
+    delete_joke,
+    delete_reminder,
+    delete_scraped_item,
+    get_all_jokes,
+    get_all_reminders,
+    get_all_responses,
+    get_all_scraped_items,
+    get_joke_by_id,
+    init_db,
+    remove_response,
+    reset_jokes,
+    update_joke,
 )
 from logger import setup_logger
-import logging
 
 logger = setup_logger("flask_api", "api.log")
 
 load_dotenv()
 
-HOST = os.getenv('HOST')
-PORT = os.getenv('PORT')
+HOST = os.getenv("HOST")
+PORT = os.getenv("PORT")
+API_TOKEN = os.getenv("API_TOKEN")
 
 app = Flask(__name__)
 
 # Reduce Flask's default verbose logging
-log = logging.getLogger('werkzeug')
+log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
-init_db()
+# --- Authentication ---------------------------------------------------------
+#
+# When `API_TOKEN` is set, every route requires `Authorization: Bearer <token>`
+# matching it. Token comparison uses `hmac.compare_digest` to dodge timing
+# attacks. When the env var is unset the API runs OPEN — backward-compatible
+# with existing deployments — but logs a critical warning at startup so the
+# state is unambiguous in `api.log`.
+
+if not API_TOKEN:
+    logger.critical(
+        "API_TOKEN is not set — the Flask API is running UNAUTHENTICATED. "
+        "Set API_TOKEN in .env to require a bearer token on every request."
+    )
+
+
+def require_token(f):
+    """Reject any request whose Authorization header doesn't carry the
+    configured bearer token. No-op when `API_TOKEN` is unset."""
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not API_TOKEN:
+            return f(*args, **kwargs)
+        auth = request.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if not auth.startswith(prefix) or not hmac.compare_digest(
+            auth[len(prefix):], API_TOKEN
+        ):
+            logger.warning(
+                f"Unauthorized request to {request.path} from {request.remote_addr}"
+            )
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+# --- Lazy DB init -----------------------------------------------------------
+#
+# Initialise the DB on the first request rather than at import time. This:
+#   - Keeps `import api` (e.g. in tests) cheap and side-effect-free.
+#   - Still works when the app is hosted under a WSGI server like gunicorn
+#     (where the `if __name__ == "__main__"` block never runs).
+#   - Is safe under `threaded=True`: double-checked locking with an
+#     idempotent `init_db()` (it's all `CREATE TABLE IF NOT EXISTS`).
+
+_db_initialized = False
+_db_init_lock = threading.Lock()
+
+
+@app.before_request
+def _ensure_db_initialized():
+    global _db_initialized
+    if _db_initialized:
+        return
+    with _db_init_lock:
+        if not _db_initialized:
+            init_db()
+            _db_initialized = True
 
 # --- Response Routes ---
 
 @app.route("/add", methods=["POST"])
+@require_token
 def add():
     data = request.get_json()
     if not data or "keyword" not in data or "response" not in data:
@@ -39,6 +116,7 @@ def add():
     return jsonify({"status": "ok"})
 
 @app.route("/remove", methods=["DELETE"])
+@require_token
 def remove():
     data = request.get_json()
     if not data or "keyword" not in data:
@@ -56,6 +134,7 @@ def remove():
         return jsonify({"error": "Keyword or response not found"}), 404
 
 @app.route("/all", methods=["GET"])
+@require_token
 def all_responses():
     logger.info(f"Fetching all responses. Requested by {request.remote_addr}")
     responses = get_all_responses()
@@ -64,6 +143,7 @@ def all_responses():
 # --- Reminder Routes ---
 
 @app.route("/reminders/add", methods=["POST"])
+@require_token
 def api_add_reminder():
     data = request.get_json()
     required = ["user_id", "channel_id", "remind_at", "message"]
@@ -81,12 +161,14 @@ def api_add_reminder():
     return jsonify({"status": "reminder_set"})
 
 @app.route("/reminders/delete/<int:reminder_id>", methods=["DELETE"])
+@require_token
 def api_delete_reminder(reminder_id):
     delete_reminder(reminder_id)
     logger.info(f"Reminder {reminder_id} deleted via API")
     return jsonify({"status": "deleted", "id": reminder_id})
 
 @app.route("/reminders/all", methods=["GET"]) 
+@require_token
 def api_get_all_reminders(): 
     try: 
         reminders = get_all_reminders() 
@@ -110,6 +192,7 @@ def api_get_all_reminders():
 # --- Joke Routes ---
 
 @app.route("/jokes", methods=["GET"])
+@require_token
 def api_get_all_jokes():
     try:
         jokes = get_all_jokes()
@@ -121,6 +204,7 @@ def api_get_all_jokes():
         return jsonify({"error": "Internal server error"}), 500
 
 @app.route("/jokes/<int:joke_id>", methods=["GET"])
+@require_token
 def api_get_joke(joke_id):
     joke = get_joke_by_id(joke_id)
     if joke is None:
@@ -128,6 +212,7 @@ def api_get_joke(joke_id):
     return jsonify({"id": joke[0], "text": joke[1], "sent": bool(joke[2])})
 
 @app.route("/jokes", methods=["POST"])
+@require_token
 def api_add_joke():
     data = request.get_json()
     if not data or "text" not in data:
@@ -139,6 +224,7 @@ def api_add_joke():
     return jsonify({"status": "ok"}), 201
 
 @app.route("/jokes/<int:joke_id>", methods=["PUT"])
+@require_token
 def api_update_joke(joke_id):
     data = request.get_json()
     if not data or "text" not in data:
@@ -152,6 +238,7 @@ def api_update_joke(joke_id):
         return jsonify({"error": "Joke not found"}), 404
 
 @app.route("/jokes/<int:joke_id>", methods=["DELETE"])
+@require_token
 def api_delete_joke(joke_id):
     success = delete_joke(joke_id)
     if success:
@@ -161,6 +248,7 @@ def api_delete_joke(joke_id):
         return jsonify({"error": "Joke not found"}), 404
 
 @app.route("/jokes/reset", methods=["POST"])
+@require_token
 def api_reset_jokes():
     reset_jokes()
     logger.info("All jokes reset to unsent via API")
@@ -169,6 +257,7 @@ def api_reset_jokes():
 # --- Scrape Routes ---
 
 @app.route("/scrape/add", methods=["POST"])
+@require_token
 def api_add_scrape():
     data = request.get_json()
     if not data or "user_id" not in data or "url" not in data:
@@ -180,6 +269,7 @@ def api_add_scrape():
     return jsonify({"status": "ok"})
 
 @app.route("/scrape/remove", methods=["DELETE"])
+@require_token
 def api_remove_scrape():
     data = request.get_json()
     if not data or "user_id" not in data or "url" not in data:
@@ -193,6 +283,7 @@ def api_remove_scrape():
         return jsonify({"error": "Item not found"}), 404
 
 @app.route("/scrape/all", methods=["GET"])
+@require_token
 def api_get_all_scrapes():
     try:
         items = get_all_scraped_items()
