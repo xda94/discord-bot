@@ -51,7 +51,14 @@ class CurrencyConverter:
     """
 
     EXCHANGE_API = "https://open.er-api.com/v6/latest/EUR"
+    # Rates we actively fetch and persist. DKK and EUR are always set during
+    # `refresh()`; these are the additional ones we pull from the API.
     TARGET_CURRENCIES = ("RON", "USD", "GBP")
+    # Currencies offered as `/scrape-*` display options. Must be a subset of the
+    # currencies we have rates for (i.e. DKK, EUR, plus everything in
+    # TARGET_CURRENCIES).
+    SUPPORTED_DISPLAY_CURRENCIES = ("RON", "DKK", "EUR", "USD", "GBP")
+    DEFAULT_DISPLAY_CURRENCY = "RON"
 
     def refresh(self) -> None:
         logger.info("Starting scheduled exchange rate update task...")
@@ -93,6 +100,48 @@ class CurrencyConverter:
         price_in_dkk = price * from_rate
         return price_in_dkk / to_rate
 
+    def to_currency(self, price, source_currency, target_currency) -> float | None:
+        """Best-effort conversion of `price` from source to target. Returns the
+        converted float or None when conversion isn't possible (unknown source,
+        missing rates, non-numeric input)."""
+        if price is None or not source_currency or not target_currency:
+            return None
+        try:
+            price = float(price)
+        except (ValueError, TypeError):
+            return None
+        if source_currency.upper() == target_currency.upper():
+            return price
+        return self.convert(price, source_currency, target_currency)
+
+    def format_in_currency(self, price, source_currency, target_currency) -> str:
+        """Format `price` (in `source_currency`) as a display string in
+        `target_currency`. Falls back gracefully when conversion isn't
+        possible:
+
+        - Unknown source currency  → "<price> (?)"   (we don't know the unit)
+        - Missing exchange rate    → "<price> SRC*"  (asterisk = unconverted)
+        - Same source as target    → "<price> TGT"
+        - Successful conversion    → "<converted> TGT"
+        """
+        if price is None:
+            return "N/A"
+        try:
+            price = float(price)
+        except (ValueError, TypeError):
+            return "N/A"
+
+        target = target_currency.upper()
+        if not source_currency:
+            return f"{price:.2f} (?)"
+        source = source_currency.upper()
+        if source == target:
+            return f"{price:.2f} {target}"
+        converted = self.convert(price, source, target)
+        if converted is None:
+            return f"{price:.2f} {source}*"
+        return f"{converted:.2f} {target}"
+
     def format_with_conversions(self, price, currency) -> str:
         if price is None:
             return "N/A"
@@ -120,6 +169,14 @@ class CurrencyConverter:
 # ---------------------------------------------------------------------------
 # Price scraper
 # ---------------------------------------------------------------------------
+
+
+# Slash-command currency picker. Built from `CurrencyConverter`'s supported
+# set so this stays in sync with the conversion code automatically.
+CURRENCY_CHOICES = [
+    app_commands.Choice(name=c, value=c)
+    for c in CurrencyConverter.SUPPORTED_DISPLAY_CURRENCIES
+]
 
 
 # Possible values for ScrapeResult.failure.
@@ -181,6 +238,14 @@ class PriceScraper:
         "in stoc", "în stoc", "disponibil",
         "adauga in cos", "adaugă în coș", "add to cart",
     )
+    # Last-resort currency guess from the hostname's TLD. Only consulted when
+    # the page returned no JSON-LD currency and no og:price:currency meta tag.
+    # Keep this conservative — only TLDs that are unambiguously tied to one
+    # currency belong here. Avoid `.com`, multi-currency domains, etc.
+    TLD_CURRENCY_FALLBACKS = {
+        "dk": "DKK",
+        "ro": "RON",
+    }
 
     def fetch(self, url: str) -> ScrapeResult:
         """Fetch `url` and try to extract price/title/currency/stock from it."""
@@ -209,6 +274,10 @@ class PriceScraper:
             title = title or self._extract_meta_title(soup)
             price = price or self._extract_meta_price(soup)
             currency = currency or self._extract_meta_currency(soup)
+            # Last-resort: if the page didn't tell us its currency, fall back to
+            # the TLD-based guess (e.g. .dk → DKK, .ro → RON). Only kicks in
+            # when both JSON-LD and meta tags were silent.
+            currency = currency or self._currency_from_tld(url)
             if in_stock is None:
                 in_stock = self._extract_meta_availability(soup)
             if in_stock is None:
@@ -314,6 +383,23 @@ class PriceScraper:
             "meta", property="og:price:currency"
         )
         return tag["content"] if tag else None
+
+    @classmethod
+    def _currency_from_tld(cls, url: str) -> str | None:
+        """Guess a currency from the URL's hostname TLD using
+        `TLD_CURRENCY_FALLBACKS`. Returns None when the TLD isn't mapped or
+        the URL can't be parsed."""
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            return None
+        if not host:
+            return None
+        tld = host.rsplit(".", 1)[-1].lower()
+        guess = cls.TLD_CURRENCY_FALLBACKS.get(tld)
+        if guess:
+            logger.debug(f"TLD fallback currency {guess} for {host}")
+        return guess
 
     @staticmethod
     def _extract_meta_availability(soup):
@@ -423,8 +509,20 @@ class ScrapingFeature:
         @self.tree.command(
             name="scrape-show", description="Show your tracked items and their current prices"
         )
-        async def scrape_show(interaction: discord.Interaction):
-            logger.info(f"Command /scrape-show called by {interaction.user}")
+        @app_commands.describe(
+            currency=f"Display currency (default: {CurrencyConverter.DEFAULT_DISPLAY_CURRENCY})"
+        )
+        @app_commands.choices(currency=CURRENCY_CHOICES)
+        async def scrape_show(
+            interaction: discord.Interaction,
+            currency: app_commands.Choice[str] | None = None,
+        ):
+            target_currency = (
+                currency.value if currency else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+            )
+            logger.info(
+                f"Command /scrape-show called by {interaction.user} (currency={target_currency})"
+            )
             await interaction.response.defer(ephemeral=True)
 
             items = db.get_user_scraped_items(interaction.user.id)
@@ -433,10 +531,10 @@ class ScrapingFeature:
                 return
 
             blocks = []
-            for url, price, stock, title, currency in items:
+            for url, price, stock, title, item_currency in items:
                 status = "✅ In stock" if stock else "❌ Out of stock"
                 price_display = (
-                    f"`{feature.converter.format_with_conversions(price, currency)}`"
+                    f"`{feature.converter.format_in_currency(price, item_currency, target_currency)}`"
                     if price is not None else "N/A"
                 )
                 item_name = f"**{title}**" if title else f"🔗 {url}"
@@ -444,7 +542,7 @@ class ScrapingFeature:
 
             # Group items into chunks under Discord's 2000-char message limit.
             chunks = []
-            current = "**Your tracked items:**\n\n"
+            current = f"**Your tracked items** (prices in **{target_currency}**):\n\n"
             for block in blocks:
                 if len(current) + len(block) + 2 > 1900:
                     chunks.append(current.strip())
@@ -460,9 +558,23 @@ class ScrapingFeature:
         @self.tree.command(
             name="scrape-graph", description="Generate a price history graph for a tracked item"
         )
-        @app_commands.describe(url="The URL of the item")
-        async def scrape_graph(interaction: discord.Interaction, url: str):
-            logger.info(f"Command /scrape-graph called by {interaction.user} for {url}")
+        @app_commands.describe(
+            url="The URL of the item",
+            currency=f"Display currency (default: {CurrencyConverter.DEFAULT_DISPLAY_CURRENCY})",
+        )
+        @app_commands.choices(currency=CURRENCY_CHOICES)
+        async def scrape_graph(
+            interaction: discord.Interaction,
+            url: str,
+            currency: app_commands.Choice[str] | None = None,
+        ):
+            target_currency = (
+                currency.value if currency else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+            )
+            logger.info(
+                f"Command /scrape-graph called by {interaction.user} for {url} "
+                f"(currency={target_currency})"
+            )
             await interaction.response.defer(ephemeral=True)
 
             history = db.get_price_history(interaction.user.id, url)
@@ -472,8 +584,6 @@ class ScrapingFeature:
                 )
                 return
 
-            prices = [h[0] for h in history]
-            timestamps = [datetime.fromtimestamp(h[1]).strftime("%d/%m %H:%M") for h in history]
             title = history[0][2] or "Price History"
 
             item_info = next(
@@ -481,18 +591,54 @@ class ScrapingFeature:
                 None,
             )
             item_currency = (
-                item_info[4] if item_info and len(item_info) > 4 else "N/A"
+                item_info[4] if item_info and len(item_info) > 4 else None
             )
 
-            file = feature._render_price_graph(timestamps, prices, title, item_currency)
+            # Convert each point to the requested display currency. If a point
+            # can't be converted we drop it — better an honest gap than a misleading
+            # number labelled in the wrong unit.
+            timestamps: list[str] = []
+            prices: list[float] = []
+            for raw_price, ts, _ in history:
+                converted = feature.converter.to_currency(
+                    raw_price, item_currency, target_currency
+                )
+                if converted is None:
+                    continue
+                timestamps.append(datetime.fromtimestamp(ts).strftime("%d/%m %H:%M"))
+                prices.append(converted)
+
+            if not prices:
+                await interaction.followup.send(
+                    f"Couldn't render this graph in **{target_currency}** — the item's "
+                    f"currency is unknown or no exchange rate is available. "
+                    f"Try a different currency.",
+                    ephemeral=True,
+                )
+                return
+
+            file = feature._render_price_graph(timestamps, prices, title, target_currency)
             await interaction.followup.send(file=file, ephemeral=True)
 
         @self.tree.command(
             name="scrape-graph-all",
-            description="Combined price history graph for ALL your tracked items (normalized to DKK)",
+            description="Combined price history graph for ALL your tracked items",
         )
-        async def scrape_graph_all(interaction: discord.Interaction):
-            logger.info(f"Command /scrape-graph-all called by {interaction.user}")
+        @app_commands.describe(
+            currency=f"Display currency (default: {CurrencyConverter.DEFAULT_DISPLAY_CURRENCY})"
+        )
+        @app_commands.choices(currency=CURRENCY_CHOICES)
+        async def scrape_graph_all(
+            interaction: discord.Interaction,
+            currency: app_commands.Choice[str] | None = None,
+        ):
+            target_currency = (
+                currency.value if currency else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+            )
+            logger.info(
+                f"Command /scrape-graph-all called by {interaction.user} "
+                f"(currency={target_currency})"
+            )
             await interaction.response.defer(ephemeral=True)
 
             items = db.get_user_scraped_items(interaction.user.id)
@@ -502,13 +648,14 @@ class ScrapingFeature:
                 )
                 return
 
-            # Build one (label, [(datetime, price_in_dkk), ...]) series per item.
-            # All series share a DKK Y-axis so cross-currency comparisons are valid.
+            # Build one (label, [(datetime, price_in_target), ...]) series per item.
+            # All series share a single Y-axis in `target_currency` so
+            # cross-currency comparisons are valid.
             series: list[tuple[str, list[tuple[datetime, float]]]] = []
             skipped_no_history = 0
             skipped_no_currency = 0
 
-            for url, _last_price, _stock, title, currency in items:
+            for url, _last_price, _stock, title, item_currency in items:
                 history = db.get_price_history(interaction.user.id, url)
                 if not history:
                     skipped_no_history += 1
@@ -516,15 +663,11 @@ class ScrapingFeature:
 
                 points: list[tuple[datetime, float]] = []
                 for price, ts, _row_title in history:
-                    if not currency:
-                        # Unknown unit — can't safely place it on a DKK axis.
-                        continue
-                    if currency.upper() == "DKK":
-                        points.append((datetime.fromtimestamp(ts), float(price)))
-                    else:
-                        price_dkk = feature.converter.convert(price, currency, "DKK")
-                        if price_dkk is not None:
-                            points.append((datetime.fromtimestamp(ts), price_dkk))
+                    converted = feature.converter.to_currency(
+                        price, item_currency, target_currency
+                    )
+                    if converted is not None:
+                        points.append((datetime.fromtimestamp(ts), converted))
 
                 if not points:
                     skipped_no_currency += 1
@@ -534,21 +677,23 @@ class ScrapingFeature:
 
             if not series:
                 await interaction.followup.send(
-                    "No price history available yet for any of your tracked items.",
+                    f"No price history available yet for any of your tracked items "
+                    f"(in **{target_currency}**).",
                     ephemeral=True,
                 )
                 return
 
-            file = feature._render_multi_price_graph(series)
+            file = feature._render_multi_price_graph(series, target_currency)
             parts = [
                 f"Combined price history for **{len(series)}** tracked item"
-                f"{'s' if len(series) != 1 else ''} (normalized to DKK).",
+                f"{'s' if len(series) != 1 else ''} (normalized to **{target_currency}**).",
             ]
             if skipped_no_history:
                 parts.append(f"_Skipped (no history yet): {skipped_no_history}._")
             if skipped_no_currency:
                 parts.append(
-                    f"_Skipped (no known currency to normalize): {skipped_no_currency}._"
+                    f"_Skipped (no rate to convert into {target_currency}): "
+                    f"{skipped_no_currency}._"
                 )
             await interaction.followup.send("\n".join(parts), file=file, ephemeral=True)
 
@@ -577,11 +722,13 @@ class ScrapingFeature:
     @staticmethod
     def _render_multi_price_graph(
         series: list[tuple[str, list[tuple[datetime, float]]]],
+        currency_label: str,
     ) -> discord.File:
         """Render a multi-line price chart.
 
-        `series` is a list of `(label, [(datetime, price_in_dkk), ...])` tuples,
-        one per tracked item. All Y-values must already be in DKK.
+        `series` is a list of `(label, [(datetime, price), ...])` tuples, one
+        per tracked item. All Y-values must already be in the same currency,
+        named by `currency_label` (used only for the axis title).
         """
         fig, ax = plt.subplots(figsize=(12, 7), facecolor="#2f3136")
         ax.set_facecolor("#36393f")
@@ -601,7 +748,7 @@ class ScrapingFeature:
             "Price Evolution — All Tracked Items", color="white", fontsize=14,
         )
         ax.set_xlabel("Date & Time", color="white")
-        ax.set_ylabel("Price (DKK)", color="white")
+        ax.set_ylabel(f"Price ({currency_label})", color="white")
         ax.tick_params(axis="x", colors="white")
         ax.tick_params(axis="y", colors="white")
         for spine in ax.spines.values():
