@@ -116,6 +116,16 @@ def _classify_price(
       - HIGH fires only when we *enter* the high zone (one alert per
         elevated period; the state resets back to neutral once the
         price drops to/below the median, re-arming the next HIGH alert).
+
+    Guardrails (return silently before any zone logic runs):
+      - `current` must not be None.
+      - History must hold at least `ALERT_MIN_DATA_POINTS` numeric prices.
+      - All observations (history + current) must span a window at least
+        `ALERT_LOW_REALERT_DROP_PCT` wide. Otherwise the data is too flat
+        for any zone signal to be meaningful — common case is a freshly-
+        tracked stable-price item, where without this check the inclusive
+        `current <= all_time_low` comparison would fire one LOW alert on
+        the first pass to cross the minimum-data-points threshold.
     """
     # Not enough info to say anything.
     if current is None:
@@ -127,6 +137,31 @@ def _classify_price(
 
     all_time_low = min(numeric_history)
     median_price = statistics.median(numeric_history)
+
+    # Variance guard: if every observation we've seen (history + the price
+    # we just scraped) sits inside a window narrower than the LOW re-alert
+    # threshold (~1 %), there isn't enough spread to derive a meaningful
+    # zone signal. Suppress alerts in that case.
+    #
+    # We deliberately include `current` in the spread calculation: a
+    # perfectly flat history followed by a real drop should still alert
+    # (the drop itself creates the spread), while a perfectly flat
+    # history followed by another flat-floor reading should not.
+    #
+    # This prevents the stable-item false positive where a flat history
+    # would otherwise fire one LOW alert per item on the first pass to
+    # cross `ALERT_MIN_DATA_POINTS` (or right after a rollout that adds
+    # the alerts feature to existing rows with stale prices).
+    all_observations = numeric_history + [current]
+    observed_max = max(all_observations)
+    observed_min = min(all_observations)
+    if observed_max < observed_min * (1 + ALERT_LOW_REALERT_DROP_PCT):
+        return AlertDecision(
+            None, last_alert_kind, last_alert_price,
+            all_time_low=all_time_low,
+            median_price=median_price,
+            prev_alert_price=last_alert_price,
+        )
 
     # Which zone is `current` in right now?
     if current <= all_time_low:

@@ -68,14 +68,49 @@ def test_low_fires_on_first_entry_below_history_min():
     assert decision.all_time_low == 11.0
 
 
-def test_low_fires_when_current_equals_all_time_low_first_time():
-    """`current <= all_time_low` is inclusive — exact-tie also fires
-    once on first entry. After that the re-alert threshold gates further
-    DMs, so this only spams on the very first pass for a stable item."""
-    history = [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+def test_low_fires_when_current_matches_existing_low_with_real_variance():
+    """`current <= all_time_low` is inclusive — a price that returns to
+    a historical floor (after having moved away from it) still triggers
+    a LOW alert. The variance guard does NOT suppress this case because
+    the history actually shows movement (max meaningfully above min)."""
+    # min=10, max=12 — 20% spread, well above the 1% variance floor.
+    history = [10.0, 12.0, 11.0, 12.0, 10.0, 11.0, 12.0]
     decision = _classify_price(10.0, history, None, None)
     assert decision.alert_kind == "low"
     assert decision.new_state == "low"
+
+
+def test_no_alert_when_history_is_essentially_flat():
+    """Variance guard: a perfectly flat history (max == min) yields no
+    meaningful zone signal. Must not fire LOW on first crossing of the
+    minimum-data-points threshold (the stable-item bootstrap bug).
+
+    The guard kicks in whenever the spread is below the LOW re-alert
+    threshold (~1 %), so sub-percent noise also doesn't trigger."""
+    history = [164.78] * 7  # perfectly flat — the real-world Piper Heidsieck case
+    decision = _classify_price(164.78, history, None, None)
+    assert decision.alert_kind is None
+    # State stays neutral too — we're not in any zone we can reason about.
+    assert decision.new_state is None
+
+
+def test_no_alert_when_history_spread_below_variance_threshold():
+    """Spread is non-zero but below the 1 % floor → still considered flat."""
+    history = [100.0, 100.5, 100.3, 100.2, 100.4, 100.1, 100.5]
+    # max(100.5) < min(100.0) * 1.01 = 101.0 → flat
+    decision = _classify_price(100.0, history, None, None)
+    assert decision.alert_kind is None
+
+
+def test_variance_check_unlocks_once_price_moves_meaningfully():
+    """Once a single scrape returns a price ≥1 % away from the flat
+    floor, the variance guard releases and normal LOW/HIGH logic resumes
+    on the very next pass."""
+    # First 7 readings flat at 100, then one big drop to 90 → history now
+    # has real spread (max=100, min=90, well over 1 %).
+    history = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0]
+    decision = _classify_price(90.0, history, None, None)
+    assert decision.alert_kind == "low"
 
 
 def test_low_fires_when_transitioning_from_high():
