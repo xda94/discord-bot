@@ -18,12 +18,14 @@ from features.scraping import (
 
 @pytest.fixture
 def seeded_rates(tmp_db):
-    """Seed a minimal DKK-pivoted rate table. Numbers are illustrative,
-    not market-accurate — tests only assert relative correctness."""
-    db.set_exchange_rate("DKK", 1.0)
-    db.set_exchange_rate("EUR", 7.45)  # 1 EUR = 7.45 DKK
-    db.set_exchange_rate("USD", 6.90)
-    db.set_exchange_rate("RON", 1.50)
+    """Seed a minimal EUR-pivoted rate table. Each value is "units of
+    <currency> per 1 EUR" — matching the format the live API returns.
+    Numbers are illustrative, not market-accurate — tests only assert
+    relative correctness."""
+    db.set_exchange_rate("EUR", 1.0)        # pivot
+    db.set_exchange_rate("DKK", 7.45)       # 1 EUR = 7.45 DKK
+    db.set_exchange_rate("USD", 1.10)       # 1 EUR = 1.10 USD
+    db.set_exchange_rate("RON", 4.95)       # 1 EUR = 4.95 RON
     return tmp_db
 
 
@@ -110,10 +112,20 @@ def test_convert_same_currency_returns_input(seeded_rates):
     assert cv.convert(100, "EUR", "EUR") == pytest.approx(100)
 
 
-def test_convert_via_dkk_pivot(seeded_rates):
+def test_convert_via_eur_pivot(seeded_rates):
     cv = CurrencyConverter()
-    # 100 EUR → 745 DKK → 745 / 1.50 = ~496.67 RON
-    assert cv.convert(100, "EUR", "RON") == pytest.approx(745 / 1.5, rel=1e-6)
+    # Stored rates are "units per 1 EUR", so 100 EUR → RON is just the
+    # multiplication by the RON rate: 100 × 4.95 = 495 RON.
+    assert cv.convert(100, "EUR", "RON") == pytest.approx(495.0, rel=1e-6)
+
+
+def test_convert_cross_currency_lifts_through_eur(seeded_rates):
+    """Non-EUR source: lift to EUR (divide by source rate), then drop
+    into target (multiply by target rate). 100 DKK → 100/7.45 EUR ≈
+    13.42 EUR → ×1.10 USD ≈ 14.77 USD."""
+    cv = CurrencyConverter()
+    expected = (100 / 7.45) * 1.10
+    assert cv.convert(100, "DKK", "USD") == pytest.approx(expected, rel=1e-6)
 
 
 def test_convert_missing_source_rate_returns_none(seeded_rates):

@@ -197,10 +197,13 @@ def test_guild_activity_returns_empty_when_unset(tmp_db):
 # ---------------------------------------------------------------------------
 
 def test_exchange_rate_round_trip(tmp_db):
-    db.set_exchange_rate("EUR", 7.45)
-    assert db.get_exchange_rate("EUR") == 7.45
+    # Stored rate is "units of <currency> per 1 EUR" — for DKK that's
+    # roughly 7.45. The round-trip just confirms persistence and the
+    # case-normalisation behaviour.
+    db.set_exchange_rate("DKK", 7.45)
+    assert db.get_exchange_rate("DKK") == 7.45
     # Lookup is case-insensitive (storage normalises to upper).
-    assert db.get_exchange_rate("eur") == 7.45
+    assert db.get_exchange_rate("dkk") == 7.45
     assert db.get_exchange_rate("XYZ") is None
 
 
