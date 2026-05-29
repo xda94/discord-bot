@@ -289,7 +289,7 @@ def api_reset_jokes():
 _price_scraper = PriceScraper()
 
 
-@app.route("/scrape/add", methods=["POST"])
+@app.route("/wishlist/add", methods=["POST"])
 @require_token
 def api_add_scrape():
     """Add a URL to a user's tracking list, *only if* it can actually be
@@ -304,26 +304,26 @@ def api_add_scrape():
     we've successfully extracted at least one signal from.
 
     Note: `_price_scraper.fetch()` can take up to ~15s (HTTP timeout).
-    That's acceptable here because `/scrape/add` is an admin endpoint,
+    That's acceptable here because `/wishlist/add` is an admin endpoint,
     not a hot path — and a long-but-honest response is much better than
     a fast success that becomes a silent failure 12 hours later.
     """
     data = request.get_json()
     if not data or "user_id" not in data or "url" not in data:
-        logger.warning(f"BadRequest: Missing fields in /scrape/add. IP: {request.remote_addr}")
+        logger.warning(f"BadRequest: Missing fields in /wishlist/add. IP: {request.remote_addr}")
         return jsonify({"error": "Missing user_id or url"}), 400
 
     user_id = data["user_id"]
     url = data["url"]
 
     if not _is_valid_http_url(url):
-        logger.warning(f"BadRequest: Invalid URL in /scrape/add: {url!r}")
+        logger.warning(f"BadRequest: Invalid URL in /wishlist/add: {url!r}")
         return jsonify({"error": "Invalid URL"}), 400
 
     result = _price_scraper.fetch(url)
 
     if result.failure == FAILURE_BLOCKED:
-        logger.warning(f"/scrape/add rejected (blocked) for {url}")
+        logger.warning(f"/wishlist/add rejected (blocked) for {url}")
         return jsonify({
             "error": "blocked",
             "detail": (
@@ -332,7 +332,7 @@ def api_add_scrape():
             ),
         }), 502
     if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
-        logger.warning(f"/scrape/add rejected (unsupported) for {url}")
+        logger.warning(f"/wishlist/add rejected (unsupported) for {url}")
         return jsonify({
             "error": "unsupported",
             "detail": (
@@ -366,7 +366,7 @@ def api_add_scrape():
         "in_stock": result.in_stock,
     }), 201
 
-@app.route("/scrape/remove", methods=["DELETE"])
+@app.route("/wishlist/remove", methods=["DELETE"])
 @require_token
 def api_remove_scrape():
     data = request.get_json()
@@ -380,7 +380,7 @@ def api_remove_scrape():
     else:
         return jsonify({"error": "Item not found"}), 404
 
-@app.route("/scrape/all", methods=["GET"])
+@app.route("/wishlist/all", methods=["GET"])
 @require_token
 def api_get_all_scrapes():
     try:
@@ -406,7 +406,7 @@ def api_get_all_scrapes():
         ]
         return jsonify(result)
     except Exception:
-        logger.exception("Error in /scrape/all")
+        logger.exception("Error in /wishlist/all")
         return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == "__main__":

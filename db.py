@@ -575,7 +575,7 @@ def clean_old_price_history(days=180):
     most recent `days` of history, kept fresh on every scrape pass.
 
     History is only lost when:
-      - the item is deleted via `/scrape-item-delete` (FK cascade), or
+      - the item is deleted via `/wishlist-item-delete` (FK cascade), or
       - the bot is offline longer than `days` (catch-up scrape's cleanup
         legitimately drops everything older than the new cutoff).
 

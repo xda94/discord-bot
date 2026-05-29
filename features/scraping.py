@@ -194,7 +194,7 @@ class CurrencyConverter:
     # Rates we actively fetch and persist. DKK and EUR are always set during
     # `refresh()`; these are the additional ones we pull from the API.
     TARGET_CURRENCIES = ("RON", "USD", "GBP")
-    # Currencies offered as `/scrape-*` display options. Must be a subset of the
+    # Currencies offered as `/wishlist-*` display options. Must be a subset of the
     # currencies we have rates for (i.e. DKK, EUR, plus everything in
     # TARGET_CURRENCIES).
     SUPPORTED_DISPLAY_CURRENCIES = ("RON", "DKK", "EUR", "USD", "GBP")
@@ -325,8 +325,8 @@ def _effective_currency(stored_currency: str | None, url: str) -> str | None:
     → DKK, `.ro` → RON, …).
 
     Lets DB rows that pre-date the TLD fallback in `PriceScraper.fetch` still
-    render and convert correctly in `/scrape-show`, `/scrape-graph`, and
-    `/scrape-graph-all` without needing a migration."""
+    render and convert correctly in `/wishlist-show`, `/wishlist-graph`, and
+    `/wishlist-graph-all` without needing a migration."""
     return stored_currency or PriceScraper._currency_from_tld(url)
 
 
@@ -340,7 +340,7 @@ def _majority_currency(url_currency_pairs) -> str:
 
     Returns `CurrencyConverter.DEFAULT_DISPLAY_CURRENCY` (RON) when none of
     the pairs have a known currency. Used as the default for
-    `/scrape-graph-all` (over the user's full list) so the chart shows the
+    `/wishlist-graph-all` (over the user's full list) so the chart shows the
     largest number of items without conversion."""
     counts: Counter[str] = Counter()
     for url, stored in url_currency_pairs:
@@ -377,10 +377,10 @@ class ScrapingFeature:
     def _register_commands(self) -> None:
         feature = self
 
-        @self.tree.command(name="scrape-item", description="Add a link to track price and stock")
+        @self.tree.command(name="wishlist-item", description="Add a link to track price and stock")
         @app_commands.describe(url="The URL of the item to track")
         async def scrape_item(interaction: discord.Interaction, url: str):
-            logger.info(f"Command /scrape-item called by {interaction.user} for {url}")
+            logger.info(f"Command /wishlist-item called by {interaction.user} for {url}")
             await interaction.response.defer(ephemeral=True)
 
             # Reject obvious nonsense before we burn a network round-trip.
@@ -442,17 +442,17 @@ class ScrapingFeature:
                 suppress_embeds=True,
             )
 
-        @self.tree.command(name="scrape-item-delete", description="Remove a link from tracking")
+        @self.tree.command(name="wishlist-item-delete", description="Remove a link from tracking")
         @app_commands.describe(url="The URL to remove")
         async def scrape_item_delete(interaction: discord.Interaction, url: str):
-            logger.info(f"Command /scrape-item-delete called by {interaction.user} for {url}")
+            logger.info(f"Command /wishlist-item-delete called by {interaction.user} for {url}")
             if db.delete_scraped_item(interaction.user.id, url):
                 await interaction.response.send_message("Link removed and data cleared.", ephemeral=True)
             else:
                 await interaction.response.send_message("Link not found in your list.", ephemeral=True)
 
         @self.tree.command(
-            name="scrape-show", description="Show your tracked items and their current prices"
+            name="wishlist-show", description="Show your tracked items and their current prices"
         )
         @app_commands.describe(
             currency="Convert every row to this currency (default: show each item in its own currency)"
@@ -467,7 +467,7 @@ class ScrapingFeature:
             # a currency from the dropdown, every row is converted into it.
             target_currency = currency.value if currency else None
             logger.info(
-                f"Command /scrape-show called by {interaction.user} "
+                f"Command /wishlist-show called by {interaction.user} "
                 f"(currency={target_currency or 'native'})"
             )
             await interaction.response.defer(ephemeral=True)
@@ -515,7 +515,7 @@ class ScrapingFeature:
                 await interaction.followup.send(chunk, ephemeral=True, suppress_embeds=True)
 
         @self.tree.command(
-            name="scrape-graph", description="Generate a price history graph for a tracked item"
+            name="wishlist-graph", description="Generate a price history graph for a tracked item"
         )
         @app_commands.describe(
             url="The URL of the item",
@@ -559,7 +559,7 @@ class ScrapingFeature:
                 auto_chosen = True
 
             logger.info(
-                f"Command /scrape-graph called by {interaction.user} for {url} "
+                f"Command /wishlist-graph called by {interaction.user} for {url} "
                 f"(currency={target_currency}{' [auto]' if auto_chosen else ''})"
             )
 
@@ -596,7 +596,7 @@ class ScrapingFeature:
             await interaction.followup.send(file=file, ephemeral=True)
 
         @self.tree.command(
-            name="scrape-graph-all",
+            name="wishlist-graph-all",
             description="Combined price history graph for ALL your tracked items",
         )
         @app_commands.describe(
@@ -629,7 +629,7 @@ class ScrapingFeature:
                 auto_chosen = True
 
             logger.info(
-                f"Command /scrape-graph-all called by {interaction.user} "
+                f"Command /wishlist-graph-all called by {interaction.user} "
                 f"(currency={target_currency}{' [auto]' if auto_chosen else ''})"
             )
 
@@ -689,7 +689,7 @@ class ScrapingFeature:
         source_currency: str | None,
         target_currency: str | None,
     ) -> str:
-        """Render the price column for one `/scrape-show` row.
+        """Render the price column for one `/wishlist-show` row.
 
         - `target_currency=None`        → show in `source_currency` as-is.
         - `target_currency=<picked>`    → convert source → target via
@@ -882,7 +882,7 @@ class ScrapingFeature:
                     if back_in_stock:
                         msg += "✅ Item is now **BACK IN STOCK**!\n"
                     if price_changed:
-                        # Apply the same TLD currency fallback `/scrape-show`
+                        # Apply the same TLD currency fallback `/wishlist-show`
                         # uses, so old rows with currency = NULL render in the
                         # right unit instead of as a bare number.
                         old_src = _effective_currency(old_currency, url)

@@ -103,18 +103,14 @@ TEASE_MOODS = {
         "I... I have no opinion on this. honest.",
         "n-no thoughts. head empty. sorry, {user}",
     ],
-    # Parody of Ionuț Lenghel — Romanian food YouTuber whose catchphrase
-    # is "îmi place să mănânc". Earnest, food-obsessed, slightly deadpan.
-    # The "tease" is gentle redirection: your message is fine, I'm just
-    # thinking about lunch.
     "lenghel": [
-        "îmi place să mănânc, {user}",
+        "Ciau! îmi place să mănânc aicia, {user}",
         "{user}, ai mâncat azi?",
         "porție mare, {user}, hai!",
-        "băi {user}, eu am venit aici să mănânc",
+        "băi {user}, eu am venit aci să mănânc",
         "lasă vorba, hai la masă, {user}",
         "{user}, asta-i porție de copil",
-        "deliciooos, {user}",
+        "{user} întreabă daca am gagica... lasă astea.. întreaba-mă de o șaormă",
         "am venit, am văzut, am mâncat",
         "rețeta mea? îmi place să mănânc",
         "{user}, hai la o șaormă, lasă vorbele",
@@ -122,6 +118,10 @@ TEASE_MOODS = {
         "vorbești mult, {user}, eu mănânc mult",
         "ai zis ceva, {user}? eram cu gura plină",
         "porția ta de cuvinte e cam mică, {user}",
+        "{user} ,ai șaorma stau, n-ai șaorma ciau!",
+        "{user}, oare cate straturi are hartia asta igienica?",
+        "Da du-te {user}, lasa-ma!"
+        "Bibol... da {user} asta e bibol!"
     ],
 }
 
@@ -165,8 +165,6 @@ class TeasesFeature:
         logger.info(
             f"Tease #{self.teases_today} triggered on {message.author} in #{message.channel}"
         )
-        # Teases historically did NOT consume the cooldown gate, so return False
-        # so any other handlers (if added later) can still observe the message.
         return False
 
     def _register_commands(self) -> None:
