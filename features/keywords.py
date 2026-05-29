@@ -69,7 +69,7 @@ class KeywordsFeature:
                 new_response += suffix
 
             try:
-                await message.reply(new_response, mention_author=False, suppress_embeds=True)
+                await message.reply(new_response, mention_author=False, suppress_embeds=False)
             except Exception:
                 logger.exception(f"Failed to send keyword reply for '{keyword}'")
                 return False
