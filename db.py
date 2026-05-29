@@ -119,10 +119,23 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_price_history_timestamp "
                 "ON price_history(timestamp)"
             )
+            # Migration: older builds stored rates relative to DKK
+            # (`rate_to_dkk` column). We now pivot through EUR — drop the
+            # legacy table so the daily refresh re-populates it with the
+            # new semantics. Safe because `exchange_rates` is a
+            # regenerable cache, not source-of-truth data.
+            c.execute("PRAGMA table_info(exchange_rates)")
+            existing_cols = {row[1] for row in c.fetchall()}
+            if existing_cols and "rate_to_eur" not in existing_cols:
+                logger.info(
+                    "Migrating exchange_rates table from DKK-pivoted to "
+                    "EUR-pivoted schema (dropping cache for repopulation)."
+                )
+                c.execute("DROP TABLE exchange_rates")
             c.execute("""
                 CREATE TABLE IF NOT EXISTS exchange_rates (
                     currency TEXT PRIMARY KEY,
-                    rate_to_dkk REAL NOT NULL,
+                    rate_to_eur REAL NOT NULL,
                     last_updated REAL NOT NULL
                 )
             """)
@@ -591,20 +604,24 @@ def clean_old_price_history(days=180):
 
 # --- Exchange Rate functions ---
 
-def set_exchange_rate(currency, rate_to_dkk):
+def set_exchange_rate(currency, rate_to_eur):
+    """Persist `rate_to_eur` for `currency` (the API's native format:
+    "how many units of `currency` are in 1 EUR")."""
     try:
         with _connect(commit=True) as c:
             c.execute(
-                "INSERT OR REPLACE INTO exchange_rates (currency, rate_to_dkk, last_updated) VALUES (?, ?, ?)",
-                (currency.upper(), rate_to_dkk, time.time())
+                "INSERT OR REPLACE INTO exchange_rates (currency, rate_to_eur, last_updated) VALUES (?, ?, ?)",
+                (currency.upper(), rate_to_eur, time.time())
             )
     except Exception:
         logger.exception(f"Failed to set exchange rate for {currency}")
 
 def get_exchange_rate(currency):
+    """Return how many units of `currency` make 1 EUR, or None if we
+    don't have a stored rate for it."""
     try:
         with _connect() as c:
-            c.execute("SELECT rate_to_dkk FROM exchange_rates WHERE currency = ?", (currency.upper(),))
+            c.execute("SELECT rate_to_eur FROM exchange_rates WHERE currency = ?", (currency.upper(),))
             row = c.fetchone()
             return row[0] if row else None
     except Exception:

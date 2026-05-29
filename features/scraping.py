@@ -221,38 +221,47 @@ def _classify_price(
 class CurrencyConverter:
     """Keeps a fresh table of exchange rates in DB and converts between them.
 
-    All rates are stored relative to DKK, so to go from A → B we first convert
-    A → DKK then DKK → B.
+    Pivots through EUR because that's the API's native base — each stored
+    rate is "how many units of `currency` make 1 EUR", exactly as the
+    `/latest/EUR` endpoint returns. To go from A → B we convert A → EUR
+    (divide by `rate[A]`) then EUR → B (multiply by `rate[B]`).
     """
 
     EXCHANGE_API = "https://open.er-api.com/v6/latest/EUR"
-    # Rates we actively fetch and persist. DKK and EUR are always set during
-    # `refresh()`; these are the additional ones we pull from the API.
-    TARGET_CURRENCIES = ("RON", "USD", "GBP")
-    # Currencies offered as `/wishlist-*` display options. Must be a subset of the
-    # currencies we have rates for (i.e. DKK, EUR, plus everything in
-    # TARGET_CURRENCIES).
+    # Currencies offered as `/wishlist-*` display options. Drives both the
+    # slash-command picker and which rates we persist on `refresh()`.
     SUPPORTED_DISPLAY_CURRENCIES = ("RON", "DKK", "EUR", "USD", "GBP")
     DEFAULT_DISPLAY_CURRENCY = "RON"
 
     def refresh(self) -> None:
+        """Fetch the latest EUR-relative rates and persist the subset we
+        actually display in `/wishlist-*` commands.
+
+        The API returns rates for ~150 currencies, but we only need the
+        five in `SUPPORTED_DISPLAY_CURRENCIES`. Each is stored as
+        "units of <currency> per 1 EUR" — EUR itself is the pivot at 1.0.
+        """
         logger.info("Starting scheduled exchange rate update task...")
         try:
             response = requests.get(self.EXCHANGE_API, timeout=10)
             response.raise_for_status()
             data = response.json()
             rates = data.get("rates")
-            if not rates or "DKK" not in rates:
-                logger.error("Failed to fetch DKK rate from exchange rate API.")
+            if not rates:
+                logger.error("Exchange rate API returned no rates table.")
                 return
 
-            eur_to_dkk = rates["DKK"]
-            db.set_exchange_rate("DKK", 1.0)
-            db.set_exchange_rate("EUR", eur_to_dkk)
-            for currency in self.TARGET_CURRENCIES:
+            db.set_exchange_rate("EUR", 1.0)
+            for currency in self.SUPPORTED_DISPLAY_CURRENCIES:
+                if currency == "EUR":
+                    continue
                 if currency in rates:
-                    currency_to_dkk = eur_to_dkk / rates[currency]
-                    db.set_exchange_rate(currency, currency_to_dkk)
+                    db.set_exchange_rate(currency, rates[currency])
+                else:
+                    logger.warning(
+                        f"Currency {currency} missing from exchange rate "
+                        f"API response — keeping previously stored rate."
+                    )
             logger.info("Exchange rates updated successfully.")
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch exchange rates from API: {e}")
@@ -260,6 +269,12 @@ class CurrencyConverter:
             logger.exception("Error in update_exchange_rates_task")
 
     def convert(self, price, from_currency, to_currency):
+        """Convert `price` from `from_currency` to `to_currency`.
+
+        Stored rates are "units per 1 EUR", so `price / rate_from` lifts
+        the amount into EUR, and multiplying by `rate_to` projects it
+        back out into the target currency.
+        """
         if price is None or not from_currency or not to_currency:
             return None
         try:
@@ -272,8 +287,8 @@ class CurrencyConverter:
         if not from_rate or not to_rate:
             return None
 
-        price_in_dkk = price * from_rate
-        return price_in_dkk / to_rate
+        price_in_eur = price / from_rate
+        return price_in_eur * to_rate
 
     def to_currency(self, price, source_currency, target_currency) -> float | None:
         """Best-effort conversion of `price` from source to target. Returns the
@@ -330,7 +345,7 @@ class CurrencyConverter:
             return base_str
 
         conversions = []
-        for target in ("DKK", "EUR", "USD"):
+        for target in ("DKK", "EUR", "USD", "GBP"):
             if currency.upper() != target:
                 val = self.convert(price, currency, target)
                 if val:
