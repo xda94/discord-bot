@@ -77,12 +77,28 @@ curl -H "Authorization: Bearer $API_TOKEN" http://localhost:$PORT/all
 This project runs as two separate processes (the bot and the API). Use PM2 to keep them running in the background.
 
 **Starting the Bot**
+Without venv
 ```bash
 pm2 start bot.py --interpreter python3 --name discord-bot
 ```
 **Starting the API**
 ```bash
 pm2 start api.py --interpreter python3 --name discord-api
+```
+
+With venv
+**Starting the Bot**
+```bash
+pm2 start bot.py --interpreter ./venv/bin/python3 --name discord-bot
+```
+**Starting the API**
+```bash
+pm2 start api.py --interpreter ./venv/bin/python3 --name discord-api
+```
+
+Saving the startup
+```bash
+pm2 startup
 ```
 
 **Useful PM2 Commands**
