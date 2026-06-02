@@ -66,6 +66,14 @@ API_TOKEN=any_long_random_string
 
 `API_TOKEN` gates every Flask route via `Authorization: Bearer <token>`. Generate one with e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`. If you omit it the API still runs but is **unauthenticated** — `api.log` will record a `CRITICAL` line at startup announcing the open state. Set it before exposing the API to anything beyond `localhost`.
 
+**Optional: relocate the database.** By default the bot stores all persistent state in `responses.db` in the working directory. Override with `DB_FILE` when you want the database to live outside the code checkout (so `git pull` / clean re-clones can never touch it):
+
+```env
+DB_FILE=/var/lib/discord-bot/responses.db
+```
+
+The value is a full path **including the filename**, not just a directory. The parent directory is auto-created on first start, and SQLite itself creates the file, so the path can point at something that doesn't exist yet. Make sure the user running `bot.py` has write permission to that directory. `responses.db` and its `-wal` / `-shm` sidecars are gitignored regardless of where they live.
+
 Example authenticated request:
 ```bash
 curl -H "Authorization: Bearer $API_TOKEN" http://localhost:$PORT/all
@@ -162,7 +170,7 @@ Each test that touches the database uses a temporary SQLite file (via the `tmp_d
 | `pytest.ini` | Pytest configuration (test discovery rooted at `tests/`). |
 | `tests/` | Pytest suite — see [Running Tests](#-running-tests). |
 | `.env` | Environment variables (ignored by git). |
-| `responses.db` | SQLite database file (auto-created on first run). |
+| `responses.db` | SQLite database file. Auto-created on first run, **gitignored** (not tracked), and relocatable via the `DB_FILE` env var — see [Configuration](#3-configuration). |
 
 ### `features/` — one class per domain
 
