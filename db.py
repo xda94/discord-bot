@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import random
 import time
@@ -6,7 +7,22 @@ from contextlib import contextmanager
 
 logger = logging.getLogger("database")
 
-DB_FILE = "responses.db"
+# Configurable so the DB can live outside the code checkout — typical
+# layouts on the host:
+#   - In-repo (default):     ./responses.db                     (gitignored)
+#   - Sibling data dir:      DB_FILE=../discord-bot-data/responses.db
+#   - System-wide:           DB_FILE=/var/lib/discord-bot/responses.db
+# Tests override this directly via `monkeypatch.setattr(db, "DB_FILE", ...)`
+# in the `tmp_db` fixture, so the env-var indirection is invisible to them.
+DB_FILE = os.getenv("DB_FILE", "responses.db")
+
+# `sqlite3.connect()` creates the file itself, but raises if the parent
+# directory is missing. This matters the first time the bot starts after
+# DB_FILE has been pointed at a fresh location (e.g. a sibling data dir
+# that doesn't exist yet). No-op when `DB_FILE` has no directory part.
+_db_dir = os.path.dirname(DB_FILE)
+if _db_dir:
+    os.makedirs(_db_dir, exist_ok=True)
 
 
 @contextmanager

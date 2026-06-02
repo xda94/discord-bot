@@ -61,6 +61,15 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Live SQLite database — runtime state, not source. The `-wal` and `-shm`
+# sidecars are SQLite's write-ahead log and shared-memory files; they
+# must move (or not move) atomically with the main DB, so they're
+# ignored together. Backups happen via `scripts/backup-db.sh`, not git.
+responses.db
+responses.db-wal
+responses.db-shm
+backups/
+
 # Flask stuff:
 instance/
 .webassets-cache
