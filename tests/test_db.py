@@ -216,3 +216,194 @@ def test_get_all_jokes_empty_when_no_data(tmp_db):
     route iterates the result and would crash on None."""
     result = db.get_all_jokes()
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Per-guild joke schedule (guild_joke_config)
+# ---------------------------------------------------------------------------
+
+def test_guild_joke_config_round_trip(tmp_db):
+    """Activate one guild, read it back, verify field shape."""
+    db.set_guild_joke_config(guild_id=111, channel_id=222, send_time="09:00")
+    cfg = db.get_guild_joke_config(111)
+    assert cfg == {
+        "guild_id": 111,
+        "channel_id": 222,
+        "send_time": "09:00",
+        "last_sent_date": None,
+    }
+
+
+def test_guild_joke_config_upsert_overwrites_channel_and_time(tmp_db):
+    """A second /joke_activation in the same guild should replace the
+    schedule, not append a new row."""
+    db.set_guild_joke_config(111, 222, "09:00")
+    db.set_guild_joke_config(111, 333, "18:30")
+    cfg = db.get_guild_joke_config(111)
+    assert cfg["channel_id"] == 333
+    assert cfg["send_time"] == "18:30"
+
+
+def test_guild_joke_config_upsert_preserves_last_sent_date(tmp_db):
+    """Re-activating on the same day must not clear `last_sent_date` —
+    otherwise a guild that re-runs /joke_activation after the day's
+    joke fired would get a duplicate the next time the loop ticks."""
+    db.set_guild_joke_config(111, 222, "09:00")
+    db.set_guild_joke_last_sent(111, "2026-06-02")
+    # Re-activate with a different time but same day.
+    db.set_guild_joke_config(111, 222, "11:00")
+    cfg = db.get_guild_joke_config(111)
+    assert cfg["last_sent_date"] == "2026-06-02"
+    assert cfg["send_time"] == "11:00"
+
+
+def test_get_guild_joke_config_returns_none_when_missing(tmp_db):
+    assert db.get_guild_joke_config(99999) is None
+
+
+def test_get_all_guild_joke_configs_returns_each_guild_once(tmp_db):
+    db.set_guild_joke_config(111, 222, "09:00")
+    db.set_guild_joke_config(333, 444, "14:00")
+    db.set_guild_joke_config(555, 666, "20:00")
+    configs = db.get_all_guild_joke_configs()
+    by_guild = {c["guild_id"]: c for c in configs}
+    assert set(by_guild) == {111, 333, 555}
+    assert by_guild[333]["channel_id"] == 444
+    assert by_guild[333]["send_time"] == "14:00"
+
+
+def test_get_all_guild_joke_configs_empty_returns_list(tmp_db):
+    """Loop in JokesFeature._check iterates this unconditionally; must
+    be `[]`, not None, even when no guilds have activated."""
+    assert db.get_all_guild_joke_configs() == []
+
+
+def test_clear_guild_joke_config_returns_true_when_present(tmp_db):
+    db.set_guild_joke_config(111, 222, "09:00")
+    assert db.clear_guild_joke_config(111) is True
+    assert db.get_guild_joke_config(111) is None
+
+
+def test_clear_guild_joke_config_returns_false_when_missing(tmp_db):
+    """Used by /joke_deactivation to detect 'no-op' and message the
+    user differently."""
+    assert db.clear_guild_joke_config(99999) is False
+
+
+def test_clear_guild_joke_config_only_affects_target_guild(tmp_db):
+    db.set_guild_joke_config(111, 222, "09:00")
+    db.set_guild_joke_config(333, 444, "14:00")
+    db.clear_guild_joke_config(111)
+    assert db.get_guild_joke_config(111) is None
+    assert db.get_guild_joke_config(333) is not None
+
+
+def test_clear_guild_joke_config_preserves_sent_history(tmp_db):
+    """Deactivation should NOT wipe sent history — if the user
+    re-activates later, they shouldn't get repeats of jokes they
+    already saw. Use reset_guild_joke_sent for a clean slate."""
+    db.add_joke("joke 1")
+    db.set_guild_joke_config(111, 222, "09:00")
+    db.mark_guild_joke_sent(111, 1)
+    db.clear_guild_joke_config(111)
+    # Sent row still there.
+    with db._connect() as c:
+        c.execute("SELECT COUNT(*) FROM guild_joke_sent WHERE guild_id = ?", (111,))
+        assert c.fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-guild sent tracking (guild_joke_sent)
+# ---------------------------------------------------------------------------
+
+def test_get_unsent_joke_for_guild_returns_unsent(tmp_db):
+    db.add_joke("a")
+    db.add_joke("b")
+    result = db.get_unsent_joke_for_guild(111)
+    assert result is not None
+    assert result[1] in ("a", "b")
+
+
+def test_get_unsent_joke_for_guild_skips_already_sent_for_that_guild(tmp_db):
+    db.add_joke("a")
+    db.add_joke("b")
+    db.mark_guild_joke_sent(111, 1)  # mark "a" as sent in guild 111
+    # Repeatedly pick: must always return "b" (id=2) for guild 111.
+    for _ in range(10):
+        joke_id, text = db.get_unsent_joke_for_guild(111)
+        assert joke_id == 2
+        assert text == "b"
+
+
+def test_get_unsent_joke_for_guild_returns_none_when_exhausted(tmp_db):
+    """Caller (JokesFeature._send_joke_for_guild) relies on this None
+    signal to trigger reset_guild_joke_sent + retry."""
+    db.add_joke("a")
+    db.mark_guild_joke_sent(111, 1)
+    assert db.get_unsent_joke_for_guild(111) is None
+
+
+def test_get_unsent_joke_for_guild_returns_none_when_jokes_table_empty(tmp_db):
+    """No jokes at all — returns None regardless of guild."""
+    assert db.get_unsent_joke_for_guild(111) is None
+
+
+def test_sent_tracking_is_per_guild(tmp_db):
+    """Same joke can be sent in different guilds independently — the
+    whole reason guild_joke_sent exists instead of jokes.sent."""
+    db.add_joke("only joke")
+    db.mark_guild_joke_sent(111, 1)
+    # Guild 222 hasn't sent anything — joke is still available there.
+    result = db.get_unsent_joke_for_guild(222)
+    assert result is not None
+    assert result[0] == 1
+
+
+def test_mark_guild_joke_sent_is_idempotent(tmp_db):
+    """UPSERT on (guild_id, joke_id) — second mark just refreshes
+    sent_at, doesn't raise UNIQUE constraint."""
+    db.add_joke("a")
+    db.mark_guild_joke_sent(111, 1)
+    db.mark_guild_joke_sent(111, 1)  # must not raise
+    with db._connect() as c:
+        c.execute(
+            "SELECT COUNT(*) FROM guild_joke_sent WHERE guild_id = ? AND joke_id = ?",
+            (111, 1),
+        )
+        assert c.fetchone()[0] == 1
+
+
+def test_reset_guild_joke_sent_only_clears_target_guild(tmp_db):
+    db.add_joke("a")
+    db.mark_guild_joke_sent(111, 1)
+    db.mark_guild_joke_sent(222, 1)
+    db.reset_guild_joke_sent(111)
+    # Guild 111's pool is fresh; guild 222 still has the joke as sent.
+    assert db.get_unsent_joke_for_guild(111) is not None
+    assert db.get_unsent_joke_for_guild(222) is None
+
+
+def test_reset_all_guild_joke_sent_clears_every_guild(tmp_db):
+    """Used by `POST /jokes/reset` — must wipe sent history for every
+    guild simultaneously so all pools recycle at once."""
+    db.add_joke("a")
+    db.mark_guild_joke_sent(111, 1)
+    db.mark_guild_joke_sent(222, 1)
+    db.reset_all_guild_joke_sent()
+    assert db.get_unsent_joke_for_guild(111) is not None
+    assert db.get_unsent_joke_for_guild(222) is not None
+
+
+def test_deleting_a_joke_cascades_into_sent_history(tmp_db):
+    """ON DELETE CASCADE on guild_joke_sent.joke_id keeps the table
+    clean when /jokes/<id> DELETE is called. Without the cascade we'd
+    accumulate orphan sent-rows referencing dead joke IDs."""
+    db.add_joke("doomed")
+    db.add_joke("survivor")
+    db.mark_guild_joke_sent(111, 1)
+    db.mark_guild_joke_sent(111, 2)
+    db.delete_joke(1)
+    with db._connect() as c:
+        c.execute("SELECT joke_id FROM guild_joke_sent WHERE guild_id = ?", (111,))
+        remaining = [row[0] for row in c.fetchall()]
+    assert remaining == [2]
