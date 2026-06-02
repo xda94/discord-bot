@@ -76,6 +76,33 @@ def init_db():
                     sent INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            # Per-guild joke scheduling. Each guild that runs /joke_activation
+            # gets one row; missing row = no joke is sent for that guild.
+            # `last_sent_date` is the ISO date of the last successful send so
+            # the 30-second check loop fires exactly once per day per guild
+            # within the configured time window.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS guild_joke_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    send_time TEXT NOT NULL,
+                    last_sent_date TEXT
+                )
+            """)
+            # Per-guild record of which jokes have been sent in that guild.
+            # Preserves the "no repeats until pool exhausts" semantic per
+            # guild — the same joke can run in different guilds across time
+            # without one stealing it from the other. ON DELETE CASCADE on
+            # joke_id cleans up rows when /jokes/<id> DELETE is called.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS guild_joke_sent (
+                    guild_id INTEGER NOT NULL,
+                    joke_id INTEGER NOT NULL,
+                    sent_at REAL NOT NULL,
+                    PRIMARY KEY (guild_id, joke_id),
+                    FOREIGN KEY (joke_id) REFERENCES jokes(id) ON DELETE CASCADE
+                )
+            """)
             c.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -347,35 +374,70 @@ def add_joke(text):
         logger.exception("Failed to add joke")
 
 
-def get_unsent_joke():
+def get_unsent_joke_for_guild(guild_id):
+    """Pick a random joke that hasn't been sent in this guild yet.
+
+    Returns (joke_id, text) or None when the joke table is empty.
+    Callers handle pool exhaustion explicitly via `reset_guild_joke_sent`
+    + retry — keeps the no-result path unambiguous (truly no jokes vs.
+    "all already sent in this guild")."""
     try:
         with _connect() as c:
-            c.execute("SELECT id, text FROM jokes WHERE sent = 0")
+            c.execute(
+                """
+                SELECT j.id, j.text
+                FROM jokes j
+                WHERE j.id NOT IN (
+                    SELECT joke_id FROM guild_joke_sent WHERE guild_id = ?
+                )
+                """,
+                (guild_id,),
+            )
             rows = c.fetchall()
         if not rows:
             return None
         return random.choice(rows)
     except Exception:
-        logger.exception("Failed to get unsent joke")
+        logger.exception(f"Failed to get unsent joke for guild {guild_id}")
         return None
 
 
-def mark_joke_sent(joke_id):
+def mark_guild_joke_sent(guild_id, joke_id):
+    """Record that `joke_id` was sent in `guild_id`. UPSERT so a manual
+    re-send (e.g. via the API) just refreshes the timestamp instead of
+    raising a UNIQUE constraint."""
     try:
         with _connect(commit=True) as c:
-            c.execute("UPDATE jokes SET sent = 1 WHERE id = ?", (joke_id,))
-        logger.debug(f"Marked joke {joke_id} as sent")
+            c.execute(
+                "INSERT INTO guild_joke_sent (guild_id, joke_id, sent_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(guild_id, joke_id) DO UPDATE SET sent_at = excluded.sent_at",
+                (guild_id, joke_id, time.time()),
+            )
+        logger.debug(f"Marked joke {joke_id} as sent for guild {guild_id}")
     except Exception:
-        logger.exception(f"Failed to mark joke {joke_id} as sent")
+        logger.exception(f"Failed to mark joke {joke_id} as sent for guild {guild_id}")
 
 
-def reset_jokes():
+def reset_guild_joke_sent(guild_id):
+    """Wipe one guild's sent-joke history so its pool recycles."""
     try:
         with _connect(commit=True) as c:
-            c.execute("UPDATE jokes SET sent = 0")
-        logger.info("Reset all jokes to unsent")
+            c.execute("DELETE FROM guild_joke_sent WHERE guild_id = ?", (guild_id,))
+        logger.info(f"Reset joke sent history for guild {guild_id}")
     except Exception:
-        logger.exception("Failed to reset jokes")
+        logger.exception(f"Failed to reset joke history for guild {guild_id}")
+
+
+def reset_all_guild_joke_sent():
+    """Wipe every guild's sent-joke history. Used by `/jokes/reset` to
+    give all subscribed guilds a fresh pool simultaneously."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute("DELETE FROM guild_joke_sent")
+        logger.info("Reset joke sent history for all guilds")
+    except Exception:
+        logger.exception("Failed to reset joke history for all guilds")
 
 
 def get_all_jokes():
@@ -416,13 +478,108 @@ def set_setting(key, value):
         logger.exception(f"Failed to set setting '{key}'")
 
 
-def get_joke_settings():
-    channel_id = get_setting("joke_channel_id")
-    send_time = get_setting("joke_send_time")
-    return {
-        "channel_id": int(channel_id) if channel_id else None,
-        "send_time": send_time or "12:00",
-    }
+def set_guild_joke_config(guild_id, channel_id, send_time):
+    """Upsert one guild's joke schedule. Preserves `last_sent_date` on
+    re-activation so a guild that re-runs /joke_activation on the same
+    day doesn't get a duplicate joke."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                """
+                INSERT INTO guild_joke_config (guild_id, channel_id, send_time)
+                VALUES (?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    send_time = excluded.send_time
+                """,
+                (guild_id, channel_id, send_time),
+            )
+        logger.info(
+            f"Joke config set for guild {guild_id}: "
+            f"channel={channel_id} time={send_time}"
+        )
+    except Exception:
+        logger.exception(f"Failed to set joke config for guild {guild_id}")
+
+
+def get_guild_joke_config(guild_id):
+    """Return `{guild_id, channel_id, send_time, last_sent_date}` for a
+    single guild, or None if no row exists."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT guild_id, channel_id, send_time, last_sent_date "
+                "FROM guild_joke_config WHERE guild_id = ?",
+                (guild_id,),
+            )
+            row = c.fetchone()
+        if not row:
+            return None
+        return {
+            "guild_id": row[0],
+            "channel_id": row[1],
+            "send_time": row[2],
+            "last_sent_date": row[3],
+        }
+    except Exception:
+        logger.exception(f"Failed to fetch joke config for guild {guild_id}")
+        return None
+
+
+def get_all_guild_joke_configs():
+    """Return all per-guild joke configs as a list of dicts. Used by
+    the daily-joke check loop to iterate every subscribed guild."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT guild_id, channel_id, send_time, last_sent_date "
+                "FROM guild_joke_config"
+            )
+            rows = c.fetchall()
+        return [
+            {
+                "guild_id": r[0],
+                "channel_id": r[1],
+                "send_time": r[2],
+                "last_sent_date": r[3],
+            }
+            for r in rows
+        ]
+    except Exception:
+        logger.exception("Failed to fetch all guild joke configs")
+        # Return empty list (not None) so the check loop can iterate
+        # unconditionally.
+        return []
+
+
+def clear_guild_joke_config(guild_id):
+    """Remove a guild's joke schedule. Returns True if a row was
+    deleted, False if no config existed. Does NOT touch
+    `guild_joke_sent` history — re-activating later picks up where the
+    old sent-set left off, preserving the no-repeats contract."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute("DELETE FROM guild_joke_config WHERE guild_id = ?", (guild_id,))
+            deleted = c.rowcount
+        if deleted:
+            logger.info(f"Cleared joke config for guild {guild_id}")
+        return deleted > 0
+    except Exception:
+        logger.exception(f"Failed to clear joke config for guild {guild_id}")
+        return False
+
+
+def set_guild_joke_last_sent(guild_id, date_iso):
+    """Update `last_sent_date` for a guild. Assumes the row already
+    exists (caller goes through `set_guild_joke_config` first)."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE guild_joke_config SET last_sent_date = ? WHERE guild_id = ?",
+                (date_iso, guild_id),
+            )
+    except Exception:
+        logger.exception(f"Failed to set last_sent_date for guild {guild_id}")
 
 
 def get_joke_by_id(joke_id):

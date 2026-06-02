@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import threading
+from datetime import datetime
 from functools import wraps
 
 from dotenv import load_dotenv
@@ -14,17 +15,21 @@ from db import (
     add_reminder,
     add_response,
     add_scraped_item,
+    clear_guild_joke_config,
     delete_joke,
     delete_reminder,
     delete_scraped_item,
+    get_all_guild_joke_configs,
     get_all_jokes,
     get_all_reminders,
     get_all_responses,
     get_all_scraped_items,
+    get_guild_joke_config,
     get_joke_by_id,
     init_db,
     remove_response,
-    reset_jokes,
+    reset_all_guild_joke_sent,
+    set_guild_joke_config,
     update_joke,
 )
 from logger import setup_logger
@@ -275,9 +280,106 @@ def api_delete_joke(joke_id):
 @app.route("/jokes/reset", methods=["POST"])
 @require_token
 def api_reset_jokes():
-    reset_jokes()
-    logger.info("All jokes reset to unsent via API")
+    """Wipe per-guild sent-joke history for every guild so all pools
+    recycle simultaneously. The joke pool itself (the `jokes` table) is
+    untouched — this only clears the "which jokes has each guild
+    already received" tracking."""
+    reset_all_guild_joke_sent()
+    logger.info("All guild joke histories reset via API")
     return jsonify({"status": "reset"})
+
+
+# --- Per-Guild Joke Schedule Routes ---
+#
+# `GET /jokes/guilds` — list every guild that has /joke_activation set
+# `GET /jokes/guilds/<guild_id>` — one guild's config, or 404
+# `PUT /jokes/guilds/<guild_id>` — activate / update (body: channel_id, send_time)
+# `DELETE /jokes/guilds/<guild_id>` — deactivate that guild
+
+def _serialize_guild_joke_config(cfg):
+    """Public-facing shape for the per-guild config dicts the DB
+    returns (kept as a tiny helper so GET-one and GET-all stay
+    consistent if we ever add fields)."""
+    return {
+        "guild_id": cfg["guild_id"],
+        "channel_id": cfg["channel_id"],
+        "send_time": cfg["send_time"],
+        "last_sent_date": cfg["last_sent_date"],
+    }
+
+
+@app.route("/jokes/guilds", methods=["GET"])
+@require_token
+def api_get_all_guild_joke_configs():
+    try:
+        configs = get_all_guild_joke_configs()
+        result = [_serialize_guild_joke_config(c) for c in configs]
+        logger.info(f"Per-guild joke configs fetched. Count: {len(result)}")
+        return jsonify(result)
+    except Exception:
+        logger.exception("Error in GET /jokes/guilds")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route("/jokes/guilds/<int:guild_id>", methods=["GET"])
+@require_token
+def api_get_guild_joke_config(guild_id):
+    cfg = get_guild_joke_config(guild_id)
+    if cfg is None:
+        return jsonify({"error": "Guild not configured"}), 404
+    return jsonify(_serialize_guild_joke_config(cfg))
+
+
+@app.route("/jokes/guilds/<int:guild_id>", methods=["PUT"])
+@require_token
+def api_put_guild_joke_config(guild_id):
+    """Create or update a guild's daily-joke schedule.
+
+    Body: `{ "channel_id": int, "send_time": "HH:MM" }`.
+
+    Both fields are required because the upsert in the DB sets both
+    unconditionally — a partial PUT would silently drop the omitted
+    field on update. Use a fresh PUT to change either."""
+    data = request.get_json()
+    if not data or "channel_id" not in data or "send_time" not in data:
+        logger.warning(
+            f"BadRequest: PUT /jokes/guilds/{guild_id} missing channel_id "
+            f"or send_time. IP: {request.remote_addr}"
+        )
+        return jsonify({"error": "Missing channel_id or send_time"}), 400
+
+    channel_id = data["channel_id"]
+    send_time = data["send_time"]
+
+    if not isinstance(channel_id, int):
+        return jsonify({"error": "channel_id must be an integer"}), 400
+
+    try:
+        datetime.strptime(send_time, "%H:%M")
+    except (TypeError, ValueError):
+        return jsonify({"error": "send_time must match HH:MM (e.g. 14:00)"}), 400
+
+    set_guild_joke_config(guild_id, channel_id, send_time)
+    logger.info(
+        f"Guild {guild_id} joke config set via API: channel={channel_id} time={send_time}"
+    )
+    return jsonify({
+        "status": "ok",
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "send_time": send_time,
+    }), 200
+
+
+@app.route("/jokes/guilds/<int:guild_id>", methods=["DELETE"])
+@require_token
+def api_delete_guild_joke_config(guild_id):
+    removed = clear_guild_joke_config(guild_id)
+    if not removed:
+        return jsonify({"error": "Guild not configured"}), 404
+    logger.info(f"Guild {guild_id} joke config cleared via API")
+    return jsonify({"status": "deleted", "guild_id": guild_id})
+
 
 # --- Scrape Routes ---
 
