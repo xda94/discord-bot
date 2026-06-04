@@ -1,8 +1,15 @@
 import logging
+import os
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 
 def setup_logger(name, log_file):
+    log_dir = os.getenv("LOG_DIR")
+    if log_dir:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        log_file = str(Path(log_dir) / Path(log_file).name)
+
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
 

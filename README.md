@@ -69,7 +69,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | Variable | Required | Notes |
 |---|---|---|
 | `DISCORD_TOKEN` | Yes (bot) | Bot refuses to start without it. |
-| `HOST` | Yes (API) | Bind address. Use `0.0.0.0` to accept LAN/Tailscale connections, not only `127.0.0.1`. |
+| `HOST` | Yes (API) | Bind address. Use `0.0.0.0` for LAN/Tailscale or **Docker** (published ports). Use `127.0.0.1` only if the API should be local to the host (e.g. PM2, no remote access). |
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
@@ -96,7 +96,35 @@ curl -s -H "Authorization: Bearer $API_TOKEN" "http://localhost:$PORT/wishlist/a
 
 ---
 
-## Running the bot and API
+## Docker
+
+One image, **two containers**: `bot` (Discord) and `api` (Flask). They share the `bot-data` volume for the database and logs.
+
+```bash
+# Create .env first (see Configuration above), then:
+docker compose up -d --build
+docker compose logs -f
+```
+
+| Service | Role |
+|---|---|
+| `bot` | Discord client (`discord-bot`) |
+| `api` | Flask on `HOST`:`PORT` from `.env` — port published to the host (`discord-api`) |
+
+API URL: `http://localhost:9999` (or your `PORT`). For Docker, set **`HOST=0.0.0.0`** in `.env` so the published port is reachable; `127.0.0.1` only listens inside the container.
+
+Data persists in the `bot-data` volume (`/data/responses.db`, logs in `/data/logs/`). To back up:
+
+```bash
+docker compose exec bot sqlite3 /data/responses.db ".backup '/data/responses-backup.db'"
+docker cp discord-bot:/data/responses-backup.db ./responses-backup.db
+```
+
+Rebuild after code changes: `docker compose up -d --build`. Stop: `docker compose down` (volume kept unless you pass `-v`).
+
+---
+
+## Running the bot and API (PM2)
 
 Two separate PM2 processes:
 
@@ -116,7 +144,7 @@ With a venv, point `--interpreter` at `./venv/bin/python3`.
 | Command | Purpose |
 |---|---|
 | `pm2 status` | See if `discord-bot` and `discord-api` are online |
-| `pm2 logs` | Tail logs (`bot.log`, `api.log`) |
+| `pm2 logs` | Tail logs (`bot.log`, `api.log`, or `$LOG_DIR` if set) |
 | `pm2 restart discord-bot` | Restart bot only (e.g. after code pull) |
 | `pm2 restart discord-api` | Restart API only |
 | `pm2 restart all` | Restart both |
@@ -279,7 +307,8 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `api.py` | Flask API (lazy `init_db` on first request) |
 | `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** discord/matplotlib |
 | `db.py` | SQLite schema and queries |
-| `logger.py` | Rotating logs (5 MB × 2) for bot, API, `database`, `scraper` |
+| `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` env for log file location |
+| `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
 | `responses.db` | Runtime DB (gitignored); path overridable via `DB_FILE` |
 
 ### `features/`
