@@ -291,6 +291,8 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
+**CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
+
 Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascade, exchange rates, **per-guild joke** config/sent isolation), `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
