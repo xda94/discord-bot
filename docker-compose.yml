@@ -1,0 +1,32 @@
+# Two services, one image: Discord bot + Flask API.
+# Create a .env file in this directory before `docker compose up -d`.
+
+services:
+  bot:
+    build: .
+    container_name: discord-bot
+    command: ["python", "bot.py"]
+    env_file: .env
+    environment:
+      DB_FILE: /data/responses.db
+      LOG_DIR: /data/logs
+    volumes:
+      - bot-data:/data
+    restart: unless-stopped
+
+  api:
+    build: .
+    container_name: discord-api
+    command: ["python", "api.py"]
+    env_file: .env
+    environment:
+      DB_FILE: /data/responses.db
+      LOG_DIR: /data/logs
+    ports:
+      - "${PORT:-9999}:${PORT:-9999}"
+    volumes:
+      - bot-data:/data
+    restart: unless-stopped
+
+volumes:
+  bot-data:
