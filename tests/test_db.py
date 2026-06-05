@@ -15,26 +15,37 @@ Covers the surfaces most likely to silently regress on future refactors:
 
 import db
 
+GUILD_A = 111
+GUILD_B = 222
+
 
 # ---------------------------------------------------------------------------
-# Responses CRUD
+# Responses CRUD (per-guild)
 # ---------------------------------------------------------------------------
 
 def test_responses_add_get_remove(tmp_db):
-    db.add_response("hello", "world")
-    db.add_response("hello", "earth")
+    db.add_response("hello", "world", GUILD_A)
+    db.add_response("hello", "earth", GUILD_A)
 
-    assert db.get_all_responses() == {"hello": ["world", "earth"]}
+    assert db.get_all_responses(GUILD_A) == {"hello": ["world", "earth"]}
 
-    assert db.remove_response("hello", "world")
-    assert db.get_all_responses() == {"hello": ["earth"]}
+    assert db.remove_response("hello", GUILD_A, "world")
+    assert db.get_all_responses(GUILD_A) == {"hello": ["earth"]}
 
-    assert db.remove_response("hello")
-    assert db.get_all_responses() == {}
+    assert db.remove_response("hello", GUILD_A)
+    assert db.get_all_responses(GUILD_A) == {}
+
+
+def test_responses_are_isolated_per_guild(tmp_db):
+    db.add_response("ping", "guild-a", GUILD_A)
+    db.add_response("ping", "guild-b", GUILD_B)
+
+    assert db.get_all_responses(GUILD_A) == {"ping": ["guild-a"]}
+    assert db.get_all_responses(GUILD_B) == {"ping": ["guild-b"]}
 
 
 def test_remove_response_returns_false_when_missing(tmp_db):
-    assert db.remove_response("never_added") is False
+    assert db.remove_response("never_added", GUILD_A) is False
 
 
 # ---------------------------------------------------------------------------
@@ -44,37 +55,46 @@ def test_remove_response_returns_false_when_missing(tmp_db):
 def test_cache_invalidated_immediately_on_add(tmp_db):
     """An add in this process must be visible on the very next read,
     regardless of TTL — `add_response` calls `_invalidate_responses_cache`."""
-    db.get_all_responses()  # warm the cache (empty)
-    db.add_response("kw", "value")
-    assert db.get_all_responses() == {"kw": ["value"]}
+    db.get_all_responses(GUILD_A)  # warm the cache (empty)
+    db.add_response("kw", "value", GUILD_A)
+    assert db.get_all_responses(GUILD_A) == {"kw": ["value"]}
 
 
 def test_cache_invalidated_immediately_on_remove(tmp_db):
-    db.add_response("kw", "value")
-    db.get_all_responses()  # warm the cache
-    db.remove_response("kw")
-    assert db.get_all_responses() == {}
+    db.add_response("kw", "value", GUILD_A)
+    db.get_all_responses(GUILD_A)  # warm the cache
+    db.remove_response("kw", GUILD_A)
+    assert db.get_all_responses(GUILD_A) == {}
 
 
 def test_cache_hits_return_same_object_within_ttl(tmp_db):
     """Two consecutive reads inside the TTL window must hit the cache, not
     re-query SQLite. Use `is` to confirm we got the cached dict, not just
     an equal-valued copy."""
-    db.add_response("kw", "value")
-    first = db.get_all_responses()
-    second = db.get_all_responses()
+    db.add_response("kw", "value", GUILD_A)
+    first = db.get_all_responses(GUILD_A)
+    second = db.get_all_responses(GUILD_A)
     assert first is second
 
 
 def test_cache_miss_after_ttl_expires(tmp_db, monkeypatch):
     """When the TTL elapses we must re-read SQLite — same content but a
     fresh dict object."""
-    db.add_response("kw", "value")
-    first = db.get_all_responses()
+    db.add_response("kw", "value", GUILD_A)
+    first = db.get_all_responses(GUILD_A)
     monkeypatch.setattr(db, "_RESPONSES_CACHE_TTL", 0.0)
-    second = db.get_all_responses()
+    second = db.get_all_responses(GUILD_A)
     assert first == second
     assert first is not second
+
+
+def test_cache_is_per_guild(tmp_db):
+    """Mutating guild A must not invalidate guild B's cached snapshot."""
+    db.add_response("a", "1", GUILD_A)
+    db.add_response("b", "2", GUILD_B)
+    cached_b = db.get_all_responses(GUILD_B)
+    db.add_response("a", "2", GUILD_A)
+    assert db.get_all_responses(GUILD_B) is cached_b
 
 
 # ---------------------------------------------------------------------------

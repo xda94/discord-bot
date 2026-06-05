@@ -85,7 +85,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 Example API call (list keyword responses):
 
 ```bash
-curl -s -H "Authorization: Bearer $API_TOKEN" "http://localhost:$PORT/all"
+curl -s -H "Authorization: Bearer $API_TOKEN" "http://localhost:$PORT/keywords/get?guild_id=YOUR_GUILD_ID"
 ```
 
 List all wishlist items:
@@ -173,7 +173,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 
 | Command | Description |
 |---|---|
-| `/keyword_add <keyword> <response>` | Add a keyword → response pair (random pick when multiple). |
+| `/keyword_add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
 | `/topkeywords [user]` | Most triggered keywords in the server. |
 | `/mood <mood>` | Set tease mood (`features/teases.py` moods + `random`). |
 | `/help` | Full command list (chunked for Discord’s 2000-character limit). |
@@ -240,9 +240,9 @@ All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. 
 
 | Method | Path | Body / notes |
 |---|---|---|
-| `POST` | `/add` | `{ "keyword", "response" }` |
-| `DELETE` | `/remove` | `{ "keyword", "response"? }` — omit `response` to delete all for keyword |
-| `GET` | `/all` | Map of keyword → list of responses |
+| `POST` | `/keywords/add` | `{ "guild_id", "keyword", "response" }` |
+| `DELETE` | `/keywords/delete` | `{ "guild_id", "keyword", "response"? }` — omit `response` to delete all for keyword in that guild |
+| `GET` | `/keywords/get?guild_id=<id>` | Map of keyword → list of responses for one server |
 
 ### Reminders
 
@@ -318,7 +318,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | Module | Class | Role |
 |---|---|---|
 | `response_gate.py` | `ResponseGate` | Cooldown between keyword replies and teases |
-| `keywords.py` | `KeywordsFeature` | Keyword match, `/keyword_add`, `/topkeywords` |
+| `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword_add`, `/topkeywords` |
 | `teases.py` | `TeasesFeature` | Mood teases, `/mood` |
 | `inactivity.py` | `InactivityFeature` | Guild activity tracking, inactivity nudges |
 | `reminders.py` | `RemindersFeature` | `/remind`, delivery loop |

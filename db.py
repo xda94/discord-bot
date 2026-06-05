@@ -47,10 +47,29 @@ def init_db():
             c.execute("""
                 CREATE TABLE IF NOT EXISTS responses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
                     keyword TEXT NOT NULL,
                     response TEXT NOT NULL
                 )
             """)
+            # Per-guild keywords: each server has its own keyword → response
+            # map. Legacy DBs created before this column existed get it via
+            # ALTER below; rows left with NULL guild_id never match.
+            c.execute("PRAGMA table_info(responses)")
+            response_columns = {row[1] for row in c.fetchall()}
+            if "guild_id" not in response_columns:
+                c.execute("ALTER TABLE responses ADD COLUMN guild_id INTEGER")
+                c.execute("SELECT COUNT(*) FROM responses WHERE guild_id IS NULL")
+                legacy_count = c.fetchone()[0]
+                if legacy_count:
+                    logger.warning(
+                        f"{legacy_count} legacy keyword(s) have no guild_id and "
+                        f"will not match until re-added per server with /keyword_add."
+                    )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_responses_guild_id "
+                "ON responses(guild_id)"
+            )
             c.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,83 +218,112 @@ def init_db():
 
 # --- Response functions ---
 #
-# `get_all_responses()` runs on EVERY message the bot sees, doing a full
-# `SELECT * FROM responses`. To avoid hammering SQLite on a chatty server we
-# memoise the result for a short TTL and invalidate explicitly whenever
-# *this process* mutates the table (add/remove). Cross-process mutations
-# (e.g. via the Flask API in `api.py`) become visible at most TTL seconds
-# later — well below user-perceptible for "I just added a keyword".
+# `get_all_responses(guild_id)` runs on EVERY message the bot sees in that
+# guild. We memoise per guild for a short TTL and invalidate explicitly
+# whenever *this process* mutates that guild's rows (add/remove).
+# Cross-process mutations (e.g. via the Flask API) become visible at most
+# TTL seconds later.
 
 _RESPONSES_CACHE_TTL = 30.0  # seconds
-_responses_cache: dict | None = None
-_responses_cache_at: float = 0.0
+_responses_cache: dict[int, dict] = {}
+_responses_cache_at: dict[int, float] = {}
 
 
-def _invalidate_responses_cache():
-    global _responses_cache
-    _responses_cache = None
+def _invalidate_responses_cache(guild_id: int | None = None):
+    global _responses_cache, _responses_cache_at
+    if guild_id is None:
+        _responses_cache = {}
+        _responses_cache_at = {}
+    else:
+        _responses_cache.pop(guild_id, None)
+        _responses_cache_at.pop(guild_id, None)
 
 
-def add_response(keyword, response):
+def add_response(keyword, response, guild_id: int):
     try:
         with _connect(commit=True) as c:
-            c.execute("INSERT INTO responses (keyword, response) VALUES (?, ?)",
-                      (keyword.lower(), response))
-        logger.info(f"Inserted new response for keyword: '{keyword}'")
-        _invalidate_responses_cache()
+            c.execute(
+                "INSERT INTO responses (guild_id, keyword, response) VALUES (?, ?, ?)",
+                (guild_id, keyword.lower(), response),
+            )
+        logger.info(
+            f"Inserted new response for keyword '{keyword}' in guild {guild_id}"
+        )
+        _invalidate_responses_cache(guild_id)
     except Exception:
-        logger.exception(f"Failed to add response for '{keyword}'")
+        logger.exception(f"Failed to add response for '{keyword}' in guild {guild_id}")
 
 
-def remove_response(keyword, response=None):
+def remove_response(keyword, guild_id: int, response=None):
     try:
         with _connect(commit=True) as c:
             if response is None:
-                c.execute("DELETE FROM responses WHERE keyword = ?", (keyword.lower(),))
+                c.execute(
+                    "DELETE FROM responses WHERE guild_id = ? AND keyword = ?",
+                    (guild_id, keyword.lower()),
+                )
             else:
-                c.execute("DELETE FROM responses WHERE keyword = ? AND response = ?",
-                          (keyword.lower(), response))
+                c.execute(
+                    "DELETE FROM responses WHERE guild_id = ? AND keyword = ? AND response = ?",
+                    (guild_id, keyword.lower(), response),
+                )
             deleted = c.rowcount
-        logger.info(f"Deleted {deleted} response(s) for keyword: '{keyword}'")
+        logger.info(
+            f"Deleted {deleted} response(s) for keyword '{keyword}' in guild {guild_id}"
+        )
         if deleted:
-            _invalidate_responses_cache()
+            _invalidate_responses_cache(guild_id)
         return deleted > 0
     except Exception:
-        logger.exception(f"Failed to remove response for '{keyword}'")
+        logger.exception(
+            f"Failed to remove response for '{keyword}' in guild {guild_id}"
+        )
         return False
 
 
-def get_all_responses():
+def get_all_responses(guild_id: int):
     global _responses_cache, _responses_cache_at
     now = time.time()
-    if _responses_cache is not None and (now - _responses_cache_at) < _RESPONSES_CACHE_TTL:
-        return _responses_cache
+    cached_at = _responses_cache_at.get(guild_id)
+    if (
+        guild_id in _responses_cache
+        and cached_at is not None
+        and (now - cached_at) < _RESPONSES_CACHE_TTL
+    ):
+        return _responses_cache[guild_id]
     try:
         with _connect() as c:
-            c.execute("SELECT keyword, response FROM responses")
+            c.execute(
+                "SELECT keyword, response FROM responses WHERE guild_id = ?",
+                (guild_id,),
+            )
             data = c.fetchall()
         result: dict = {}
         for keyword, response in data:
             result.setdefault(keyword.lower(), []).append(response)
-        _responses_cache = result
-        _responses_cache_at = now
+        _responses_cache[guild_id] = result
+        _responses_cache_at[guild_id] = now
         return result
     except Exception:
-        logger.exception("Failed to fetch all responses")
-        # Don't poison the cache with an empty dict — let the next call retry.
+        logger.exception(f"Failed to fetch responses for guild {guild_id}")
         return {}
 
 
-def get_random_response(keyword):
+def get_random_response(keyword, guild_id: int):
     try:
         with _connect() as c:
-            c.execute("SELECT response FROM responses WHERE keyword = ?", (keyword.lower(),))
+            c.execute(
+                "SELECT response FROM responses WHERE guild_id = ? AND keyword = ?",
+                (guild_id, keyword.lower()),
+            )
             rows = c.fetchall()
         if not rows:
             return None
         return random.choice(rows)[0]
     except Exception:
-        logger.exception(f"Error retrieving random response for '{keyword}'")
+        logger.exception(
+            f"Error retrieving random response for '{keyword}' in guild {guild_id}"
+        )
         return None
 
 

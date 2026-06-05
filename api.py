@@ -131,43 +131,65 @@ def _ensure_db_initialized():
             init_db()
             _db_initialized = True
 
-# --- Response Routes ---
+# --- Keywords Routes ---
 
-@app.route("/add", methods=["POST"])
+@app.route("/keywords/add", methods=["POST"])
 @require_token
-def add():
+def api_keywords_add():
     data = request.get_json()
-    if not data or "keyword" not in data or "response" not in data:
-        logger.warning(f"BadRequest: Missing fields in /add. IP: {request.remote_addr}")
-        return jsonify({"error": "Invalid payload"}), 400
+    if not data or "keyword" not in data or "response" not in data or "guild_id" not in data:
+        logger.warning(
+            f"BadRequest: Missing fields in POST /keywords/add. IP: {request.remote_addr}"
+        )
+        return jsonify({"error": "Missing keyword, response, or guild_id"}), 400
 
-    add_response(data["keyword"], data["response"])
-    logger.info(f"Keyword added via API: '{data['keyword']}' from {request.remote_addr}")
+    guild_id = data["guild_id"]
+    if not isinstance(guild_id, int):
+        return jsonify({"error": "guild_id must be an integer"}), 400
+
+    add_response(data["keyword"], data["response"], guild_id)
+    logger.info(
+        f"Keyword added via API: '{data['keyword']}' for guild {guild_id} "
+        f"from {request.remote_addr}"
+    )
     return jsonify({"status": "ok"})
 
-@app.route("/remove", methods=["DELETE"])
+
+@app.route("/keywords/delete", methods=["DELETE"])
 @require_token
-def remove():
+def api_keywords_delete():
     data = request.get_json()
-    if not data or "keyword" not in data:
-        return jsonify({"error": "Invalid payload"}), 400
+    if not data or "keyword" not in data or "guild_id" not in data:
+        return jsonify({"error": "Missing keyword or guild_id"}), 400
+
+    guild_id = data["guild_id"]
+    if not isinstance(guild_id, int):
+        return jsonify({"error": "guild_id must be an integer"}), 400
 
     keyword = data["keyword"]
-    response = data.get("response") 
+    response = data.get("response")
 
-    success = remove_response(keyword, response)
+    success = remove_response(keyword, guild_id, response)
     if success:
-        logger.info(f"Keyword removed via API: '{keyword}'")
-        return jsonify({"status": "removed"})
+        logger.info(f"Keyword removed via API: '{keyword}' in guild {guild_id}")
+        return jsonify({"status": "deleted"})
     else:
-        logger.warning(f"Failed remove request: '{keyword}' not found.")
+        logger.warning(
+            f"DELETE /keywords/delete: '{keyword}' not found in guild {guild_id}."
+        )
         return jsonify({"error": "Keyword or response not found"}), 404
 
-@app.route("/all", methods=["GET"])
+
+@app.route("/keywords/get", methods=["GET"])
 @require_token
-def all_responses():
-    logger.info(f"Fetching all responses. Requested by {request.remote_addr}")
-    responses = get_all_responses()
+def api_keywords_get():
+    guild_id = request.args.get("guild_id", type=int)
+    if guild_id is None:
+        return jsonify({"error": "Missing guild_id query parameter"}), 400
+    logger.info(
+        f"Fetching keywords for guild {guild_id}. Requested by {request.remote_addr}"
+    )
+    responses = get_all_responses(guild_id)
     return jsonify(responses)
 
 # --- Reminder Routes ---
