@@ -39,6 +39,8 @@ class KeywordsFeature:
         self.tree = tree
         self.gate = gate
         self.sponsors = sponsors
+        # Per (guild_id, keyword) so the same keyword in two servers doesn't
+        # share the "don't repeat last response" state.
         self._last_used: dict[str, str] = {}
         self._register_commands()
 
@@ -48,9 +50,13 @@ class KeywordsFeature:
         if not self.gate.can_respond():
             return False
 
+        if not message.guild:
+            return False
+
+        guild_id = message.guild.id
         content = message.content.lower()
         try:
-            responses_data = db.get_all_responses()
+            responses_data = db.get_all_responses(guild_id)
         except Exception:
             logger.exception("Error fetching responses for keyword match")
             return False
@@ -61,8 +67,9 @@ class KeywordsFeature:
             if not re.search(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", content):
                 continue
 
-            new_response = _pick_response(options, self._last_used.get(keyword))
-            self._last_used[keyword] = new_response
+            last_key = f"{guild_id}:{keyword}"
+            new_response = _pick_response(options, self._last_used.get(last_key))
+            self._last_used[last_key] = new_response
 
             suffix = self.sponsors.maybe_get_sponsor_suffix()
             if suffix:
@@ -75,9 +82,10 @@ class KeywordsFeature:
                 return False
 
             self.gate.mark_responded()
-            if message.guild:
-                db.log_keyword_usage(keyword, message.author.id, message.guild.id)
-            logger.info(f"Triggered response for '{keyword}' in #{message.channel}")
+            db.log_keyword_usage(keyword, message.author.id, guild_id)
+            logger.info(
+                f"Triggered response for '{keyword}' in guild {guild_id} #{message.channel}"
+            )
             return True
 
         return False
@@ -87,8 +95,16 @@ class KeywordsFeature:
         @app_commands.describe(keyword="The keyword", response="The response")
         async def keyword_add(interaction: discord.Interaction, keyword: str, response: str):
             logger.info(f"Command /keyword_add called by {interaction.user} for '{keyword}'")
-            db.add_response(keyword, response)
-            await interaction.response.send_message(f"Added keyword: **{keyword}**")
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "This command must be run inside a server, not in DMs.",
+                    ephemeral=True,
+                )
+                return
+            db.add_response(keyword, response, interaction.guild.id)
+            await interaction.response.send_message(
+                f"Added keyword **{keyword}** for this server."
+            )
 
         @self.tree.command(name="topkeywords", description="Show the most used keywords")
         @app_commands.describe(user="Optional: see a specific user's top keywords")

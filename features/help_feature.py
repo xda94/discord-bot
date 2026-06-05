@@ -36,9 +36,9 @@ def _chunk_text(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
 HELP_TEXT = (
     "**Available Commands**\n\n"
     "**/keyword_add** `<keyword>` `<response>`\n"
-    "Add a keyword-response pair. When someone types a message containing the keyword, "
-    "the bot replies with the response. Multiple responses can be added to the same keyword — "
-    "the bot picks one at random.\n\n"
+    "Add a keyword-response pair **for this server only** (not shared across servers). "
+    "When someone types a message containing the keyword, the bot replies with the response. "
+    "Multiple responses can be added to the same keyword — the bot picks one at random.\n\n"
     "**/remind** `<when>` `<who>` `<what>`\n"
     "Set a reminder. The bot will ping the specified user after the given time. "
     "Time format: `30m` (minutes), `2h` (hours), `1d` (days).\n\n"
