@@ -20,8 +20,10 @@ def test_format_question_messages():
 
 
 def test_format_answer_messages():
-    messages = format_answer_messages("A programming language.")
-    assert messages == ["**A:** A programming language."]
+    user = MagicMock()
+    user.mention = "<@123>"
+    messages = format_answer_messages(user, "A programming language.")
+    assert messages == ["<@123>\n**A:** A programming language."]
 
 
 def test_requests_ahead():

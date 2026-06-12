@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import discord
 from discord import app_commands
 
-from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
+from ollama_client import DEFAULT_MODEL, OllamaError, get_ollama_timeout, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
@@ -68,8 +68,11 @@ def format_question_messages(model: str, question: str) -> list[str]:
     return split_discord_messages(question, first_prefix=f"**{model}**\n**Q:** ")
 
 
-def format_answer_messages(answer: str) -> list[str]:
-    return split_discord_messages(answer, first_prefix="**A:** ")
+def format_answer_messages(user: discord.abc.User, answer: str) -> list[str]:
+    return split_discord_messages(
+        answer,
+        first_prefix=f"{user.mention}\n**A:** ",
+    )
 
 
 def requests_ahead(*, processing: bool, queue_size: int) -> int:
@@ -83,6 +86,7 @@ class AskJob:
     question: str
     model: str
     question_shown: bool = field(default=False)
+    thinking_message: discord.Message | None = field(default=None, compare=False)
 
 
 class AskFeature:
@@ -133,31 +137,60 @@ class AskFeature:
             for part in messages[1:]:
                 await job.interaction.followup.send(part)
 
+    async def _post_thinking(self, job: AskJob) -> None:
+        job.thinking_message = await job.interaction.followup.send("⏳ **Thinking...**")
+
+    async def _clear_thinking(self, job: AskJob) -> None:
+        if job.thinking_message is None:
+            return
+        try:
+            await job.thinking_message.delete()
+        except discord.HTTPException:
+            pass
+        job.thinking_message = None
+
     async def _process_job(self, job: AskJob) -> None:
         self._processing = True
         if not job.question_shown:
             await self._post_question(job)
 
+        await self._post_thinking(job)
+        timeout = get_ollama_timeout()
         try:
-            answer = await asyncio.to_thread(
-                query_ollama, job.question, model=job.model
+            answer = await asyncio.wait_for(
+                asyncio.to_thread(
+                    query_ollama,
+                    job.question,
+                    model=job.model,
+                    timeout=timeout,
+                ),
+                timeout=timeout + 10,
             )
+        except asyncio.TimeoutError:
+            await self._clear_thinking(job)
+            await job.interaction.followup.send(
+                f"Ollama did not respond within **{timeout}s**.",
+                ephemeral=True,
+            )
+            return
         except OllamaError as exc:
+            await self._clear_thinking(job)
             await job.interaction.followup.send(str(exc), ephemeral=True)
             return
         except Exception:
             logger.exception("Unexpected error in /ask")
+            await self._clear_thinking(job)
             await job.interaction.followup.send(
                 "Something went wrong while asking Ollama.", ephemeral=True
             )
             return
 
-        for part in format_answer_messages(answer):
+        await self._clear_thinking(job)
+        allowed = discord.AllowedMentions(users=[job.interaction.user])
+        parts = format_answer_messages(job.interaction.user, answer)
+        await job.interaction.followup.send(parts[0], allowed_mentions=allowed)
+        for part in parts[1:]:
             await job.interaction.followup.send(part)
-        await job.interaction.followup.send(
-            job.interaction.user.mention,
-            allowed_mentions=discord.AllowedMentions(users=[job.interaction.user]),
-        )
 
     def _register_commands(self) -> None:
         @self.tree.command(
@@ -203,6 +236,7 @@ class AskFeature:
                     ephemeral=True,
                 )
             else:
+                await interaction.response.defer(thinking=True)
                 await self._post_question(job)
                 job.question_shown = True
 

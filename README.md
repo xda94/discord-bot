@@ -235,7 +235,7 @@ Flat prices do not trigger spurious “all-time low” messages.
 | Command | Description |
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
-| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Posts your question immediately; answer follows when Ollama finishes, then pings you. Queued if the bot is busy. Long replies split across messages. 60s per-user cooldown. Default model: `llama3.2:3b`. |
+| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Posts your question immediately; answer follows with a mention on the first line. Queued if busy. Respects `OLLAMA_TIMEOUT`. Default model: `llama3.2:3b`. |
 
 ---
 
