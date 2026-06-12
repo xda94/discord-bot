@@ -1,9 +1,12 @@
 import os
 import sys
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import discord
 from discord import app_commands
-from dotenv import load_dotenv
 
 # IMPORTANT: configure logging BEFORE importing any feature module. Some
 # feature modules (e.g. scraping) emit `logger.warning` at import time to
@@ -26,7 +29,6 @@ from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
 
-load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Fail loud and early when required env vars are missing. discord.py raises an

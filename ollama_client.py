@@ -21,14 +21,20 @@ class OllamaError(Exception):
     pass
 
 
+def get_ollama_timeout() -> int:
+    return int(os.getenv("OLLAMA_TIMEOUT", "180"))
+
+
 def query_ollama(
     prompt: str,
     model: str = DEFAULT_MODEL,
     *,
     base_url: str = OLLAMA_BASE_URL,
-    timeout: int = OLLAMA_TIMEOUT,
+    timeout: int | None = None,
 ) -> str:
     """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
+    if timeout is None:
+        timeout = get_ollama_timeout()
     if model not in ALLOWED_MODELS:
         raise OllamaError(f"Model not allowed: {model}")
 
@@ -40,7 +46,11 @@ def query_ollama(
         "keep_alive": 0,
     }
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=(10, timeout),
+        )
     except requests.exceptions.Timeout as exc:
         raise OllamaError(
             f"Ollama did not respond within {timeout}s. "
