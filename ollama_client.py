@@ -11,7 +11,7 @@ OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
 
 ALLOWED_MODELS = {
     "llama3.2:3b",
-    "deepseek-r1:1.5b-qwen-distil-q8_0",
+    "deepseek-r1:1.5b-qwen-distill-q8_0",
     "qwen3:4b",
     "qwen2.5-coder:3b",
 }
