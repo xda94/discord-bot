@@ -90,6 +90,11 @@ HELP_TEXT = (
     "normalizes every series to that single currency. History retention: up to 6 months.\n\n"
     "**/stats**\n"
     "Show hardware stats: CPU, RAM, disk, temperature, network, uptime, and bot memory usage.\n\n"
+    "**/ask** `<question>` `[model]`\n"
+    "Ask a question to a local Ollama model on the homeserver. The model is loaded on demand "
+    "and unloaded after answering (`keep_alive: 0`). Default model: `llama3.2:3b`. "
+    "Optional models: `llama3.2:3b`, `deepseek-r1:1.5b-qwen-distil-q8_0`, `qwen3:4b`, "
+    "`qwen2.5-coder:3b`.\n\n"
     "**/help**\n"
     "Show this message."
 )

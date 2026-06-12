@@ -73,6 +73,8 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
+| `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for `/ask`. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
+| `OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for an Ollama reply. Default: `180`. |
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
 
@@ -229,6 +231,7 @@ Flat prices do not trigger spurious “all-time low” messages.
 | Command | Description |
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
+| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Default: `llama3.2:3b`. |
 
 ---
 
@@ -326,4 +329,5 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
 | `stats.py` | `StatsFeature` | `/stats` |
+| `ask.py` | `AskFeature` | `/ask` — Ollama on the homeserver |
 | `help_feature.py` | `HelpFeature` | `/help` |

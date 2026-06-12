@@ -14,6 +14,7 @@ from logger import setup_logger
 logger = setup_logger("discord_bot", "bot.log")
 
 import db
+from features.ask import AskFeature
 from features.help_feature import HelpFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
@@ -60,6 +61,7 @@ reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
 scraping = ScrapingFeature(client, tree)
 stats = StatsFeature(client, tree)
+ask = AskFeature(client, tree)
 help_feature = HelpFeature(client, tree)
 
 # Features that observe every message. Ordering reflects the original on_message
