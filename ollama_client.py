@@ -7,7 +7,7 @@ logger = logging.getLogger("discord_bot")
 
 DEFAULT_MODEL = "llama3.2:3b"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))
 
 ALLOWED_MODELS = {
     "llama3.2:3b",
