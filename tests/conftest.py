@@ -18,6 +18,13 @@ sys.path.insert(0, str(ROOT))
 import db  # noqa: E402  (sys.path tweak needs to happen first)
 
 
+@pytest.fixture(autouse=True)
+def ollama_env(monkeypatch):
+    """Ollama model config is required from .env in production; set for tests."""
+    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "llama3.2:3b,other-model")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "llama3.2:3b")
+
+
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     """Isolated SQLite database for one test, with the full schema applied.

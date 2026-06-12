@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import discord
 from discord import app_commands
 
-from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
+from ollama_client import OllamaError, get_allowed_models, get_default_model, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
@@ -16,12 +16,12 @@ def get_ask_cooldown_seconds() -> float:
     return float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
 
 
-MODEL_CHOICES: list[tuple[str, str]] = [
-    ("Llama 3.2 3B", "llama3.2:3b"),
-    ("DeepSeek R1 1.5B", "deepseek-r1:1.5b-qwen-distill-q8_0"),
-    ("Qwen3 4B", "qwen3:4b"),
-    ("Qwen2.5 Coder 3B", "qwen2.5-coder:3b"),
-]
+
+def get_model_choices() -> list[app_commands.Choice[str]]:
+    return [
+        app_commands.Choice(name=model, value=model)
+        for model in get_allowed_models()
+    ]
 
 # Discord hard limit is 2000; stay below it for markdown / invisible overhead.
 DISCORD_MESSAGE_LIMIT = 2000
@@ -186,21 +186,21 @@ class AskFeature:
             await job.interaction.followup.send(part)
 
     def _register_commands(self) -> None:
+        default_model = get_default_model()
+
         @self.tree.command(
             name="ask",
             description="Ask a question to a local Ollama model on the homeserver",
         )
         @app_commands.describe(
             question="Your question or prompt",
-            model="Ollama model (default: llama3.2:3b)",
+            model=f"Ollama model (default: {default_model})",
         )
-        @app_commands.choices(
-            model=[app_commands.Choice(name=label, value=value) for label, value in MODEL_CHOICES]
-        )
+        @app_commands.choices(model=get_model_choices())
         async def ask(
             interaction: discord.Interaction,
             question: str,
-            model: str = DEFAULT_MODEL,
+            model: str = default_model,
         ):
             logger.info(
                 f"Command /ask called by {interaction.user} "

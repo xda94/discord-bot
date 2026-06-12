@@ -98,9 +98,8 @@ HELP_TEXT = (
     "notice and your turn runs after earlier requests. Long replies are split across multiple "
     "messages. The answer pings you on the first line, then the reply below. "
     "One `/ask` per user at a time; **60s cooldown** after your answer finishes. "
-    "Default model: `llama3.2:3b`. "
-    "Optional models: `llama3.2:3b`, `deepseek-r1:1.5b-qwen-distil-q8_0`, `qwen3:4b`, "
-    "`qwen2.5-coder:3b`.\n\n"
+    "Default and optional models are configured in `.env` (`OLLAMA_DEFAULT_MODEL`, "
+    "`OLLAMA_ALLOWED_MODELS`).\n\n"
     "**/help**\n"
     "Show this message."
 )

@@ -1,12 +1,11 @@
 import logging
 import os
 
-from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
+from ollama_client import OllamaError, get_default_model, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
 TEASE_LLM_ENABLED = os.getenv("TEASE_LLM_ENHANCE", "true").lower() in ("1", "true", "yes")
-TEASE_OLLAMA_MODEL = os.getenv("TEASE_OLLAMA_MODEL", DEFAULT_MODEL)
 TEASE_OLLAMA_TIMEOUT = int(os.getenv("TEASE_OLLAMA_TIMEOUT", "45"))
 TEASE_LLM_MAX_CHARS = 280
 
@@ -20,6 +19,13 @@ MOOD_STYLE: dict[str, str] = {
     "shy": "timid, stuttering, awkward, bashful",
     "lenghel": "obsessed with food and şaormă, casual Romanian eating humor",
 }
+
+
+def get_tease_model() -> str:
+    override = os.getenv("TEASE_OLLAMA_MODEL", "").strip()
+    if override:
+        return override
+    return get_default_model()
 
 
 def build_tease_enhance_prompt(mood: str, line: str) -> str:
@@ -59,7 +65,7 @@ def enhance_tease(mood: str, line: str, *, username: str = "") -> str:
     try:
         raw = query_ollama(
             build_tease_enhance_prompt(mood, line),
-            model=TEASE_OLLAMA_MODEL,
+            model=get_tease_model(),
             timeout=TEASE_OLLAMA_TIMEOUT,
         )
         return normalize_tease_response(raw, fallback=line, username=username)
