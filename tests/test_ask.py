@@ -5,18 +5,45 @@ import requests
 
 from features.ask import (
     DEFAULT_MODEL,
-    _chunk_message,
+    DISCORD_MESSAGE_LIMIT,
+    DISCORD_SAFE_LIMIT,
+    format_ask_messages,
+    split_discord_messages,
     query_ollama,
     OllamaError,
 )
 
 
-def test_chunk_message_splits_long_text():
-    text = "line\n" * 500
-    chunks = _chunk_message(text, limit=100)
+def test_format_ask_messages_shows_question():
+    messages = format_ask_messages("llama3.2:3b", "What is Python?", "A programming language.")
+    assert messages[0].startswith("**llama3.2:3b**\n**Q:** What is Python?\n\n")
+    assert "A programming language." in messages[0]
+
+
+def test_split_discord_messages_splits_long_text():
+    text = "word " * 800
+    chunks = split_discord_messages(text)
     assert len(chunks) > 1
-    assert all(len(c) <= 100 for c in chunks)
-    assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+    assert all(len(c) <= DISCORD_SAFE_LIMIT for c in chunks)
+    assert "".join(chunks).replace(" ", "") == text.replace(" ", "")
+
+
+def test_split_discord_messages_includes_prefix_in_first_chunk_only():
+    text = "x" * 5000
+    prefix = "**llama3.2:3b**\n"
+    chunks = split_discord_messages(text, first_prefix=prefix)
+    assert chunks[0].startswith(prefix)
+    assert all(len(c) <= DISCORD_SAFE_LIMIT for c in chunks)
+    assert prefix not in "".join(chunks[1:])
+    assert len("".join(chunks)) == len(prefix) + len(text)
+
+
+def test_split_discord_messages_respects_limit_with_prefix():
+    text = "a" * DISCORD_MESSAGE_LIMIT
+    prefix = "**model**\n"
+    chunks = split_discord_messages(text, first_prefix=prefix)
+    assert all(len(c) <= DISCORD_SAFE_LIMIT for c in chunks)
+    assert len(chunks) > 1
 
 
 def test_query_ollama_rejects_unknown_model():
