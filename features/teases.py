@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 from datetime import date
@@ -5,8 +6,9 @@ from datetime import date
 import discord
 from discord import app_commands
 
-logger = logging.getLogger("discord_bot")
+from tease_llm import enhance_tease
 
+logger = logging.getLogger("discord_bot")
 TEASE_BASE_CHANCE = 0.10
 
 TEASE_MOODS = {
@@ -120,9 +122,8 @@ TEASE_MOODS = {
         "porția ta de cuvinte e cam mică, {user}",
         "{user} ,ai șaorma stau, n-ai șaorma ciau!",
         "{user}, oare cate straturi are hartia asta igienica?",
-        "Da du-te {user}, lasa-ma!"
-        "Bibol... da {user} asta e bibol!"
-    ],
+        "Da du-te {user}, lasa-ma!",
+        "Bibol... da {user} asta e bibol!",    ],
 }
 
 MOOD_CHOICES = [
@@ -154,6 +155,12 @@ class TeasesFeature:
 
         tease = random.choice(TEASE_MOODS[self.current_mood]).format(
             user=message.author.display_name
+        )
+        tease = await asyncio.to_thread(
+            enhance_tease,
+            self.current_mood,
+            tease,
+            username=message.author.display_name,
         )
         try:
             await message.reply(tease, mention_author=False)

@@ -3,21 +3,32 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
+from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
 from features.ask import (
-    DEFAULT_MODEL,
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
-    format_ask_messages,
+    format_answer_messages,
+    format_question_messages,
+    requests_ahead,
     split_discord_messages,
-    query_ollama,
-    OllamaError,
 )
 
 
-def test_format_ask_messages_shows_question():
-    messages = format_ask_messages("llama3.2:3b", "What is Python?", "A programming language.")
-    assert messages[0].startswith("**llama3.2:3b**\n**Q:** What is Python?\n\n")
-    assert "A programming language." in messages[0]
+def test_format_question_messages():
+    messages = format_question_messages("llama3.2:3b", "What is Python?")
+    assert messages == ["**llama3.2:3b**\n**Q:** What is Python?"]
+
+
+def test_format_answer_messages():
+    messages = format_answer_messages("A programming language.")
+    assert messages == ["**A:** A programming language."]
+
+
+def test_requests_ahead():
+    assert requests_ahead(processing=False, queue_size=0) == 0
+    assert requests_ahead(processing=True, queue_size=0) == 1
+    assert requests_ahead(processing=True, queue_size=2) == 3
+    assert requests_ahead(processing=False, queue_size=2) == 2
 
 
 def test_split_discord_messages_splits_long_text():

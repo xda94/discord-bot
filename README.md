@@ -76,6 +76,9 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for `/ask`. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
 | `OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for an Ollama reply. Default: `180`. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for `/ask`. Default: `60` (1 minute). |
+| `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
+| `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Default: `llama3.2:3b`. |
+| `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
 
@@ -166,7 +169,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 | Reminders | 10 s | Delivers due reminders |
 | Inactivity nudge | 30 min | Nudges quiet guild channels |
 | Sponsors | 1 h | Expiry warning and cleanup |
-| Teases | On message | Random mood lines (shared cooldown with keywords) |
+| Teases | On message | Random mood lines rewritten via Ollama (shared cooldown with keywords) |
 
 ---
 
@@ -178,7 +181,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 |---|---|
 | `/keyword_add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
 | `/topkeywords [user]` | Most triggered keywords in the server. |
-| `/mood <mood>` | Set tease mood (`features/teases.py` moods + `random`). |
+| `/mood <mood>` | Set tease mood; random teases are rewritten via Ollama in that style. |
 | `/help` | Full command list (chunked for Discord’s 2000-character limit). |
 
 ### Reminders
@@ -232,7 +235,7 @@ Flat prices do not trigger spurious “all-time low” messages.
 | Command | Description |
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
-| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Default: `llama3.2:3b`. |
+| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Posts your question immediately; answer follows when Ollama finishes, then pings you. Queued if the bot is busy. Long replies split across messages. 60s per-user cooldown. Default model: `llama3.2:3b`. |
 
 ---
 
@@ -323,7 +326,9 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 |---|---|---|
 | `response_gate.py` | `ResponseGate` | Cooldown between keyword replies and teases |
 | `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword_add`, `/topkeywords` |
-| `teases.py` | `TeasesFeature` | Mood teases, `/mood` |
+| `teases.py` | `TeasesFeature` | Mood teases (LLM-enhanced), `/mood` |
+| `tease_llm.py` | — | Ollama prompts + rewrite for teases |
+| `ollama_client.py` | — | Shared Ollama `/api/generate` helper |
 | `inactivity.py` | `InactivityFeature` | Guild activity tracking, inactivity nudges |
 | `reminders.py` | `RemindersFeature` | `/remind`, delivery loop |
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
