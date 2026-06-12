@@ -75,6 +75,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
 | `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for `/ask`. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
 | `OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for an Ollama reply. Default: `180`. |
+| `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for `/ask`. Default: `60` (1 minute). |
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
 

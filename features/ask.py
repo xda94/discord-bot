@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 
 import discord
 import requests
@@ -11,6 +12,7 @@ logger = logging.getLogger("discord_bot")
 DEFAULT_MODEL = "llama3.2:3b"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
+ASK_COOLDOWN_SECONDS = float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
 
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("Llama 3.2 3B", "llama3.2:3b"),
@@ -20,24 +22,53 @@ MODEL_CHOICES: list[tuple[str, str]] = [
 ]
 ALLOWED_MODELS = {value for _, value in MODEL_CHOICES}
 
-DISCORD_MESSAGE_LIMIT = 1900
+# Discord hard limit is 2000; stay below it for markdown / invisible overhead.
+DISCORD_MESSAGE_LIMIT = 2000
+DISCORD_SAFE_LIMIT = 1990
 
 
-def _chunk_message(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
-    if len(text) <= limit:
-        return [text]
+def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
+    """Split `text` into messages that fit Discord's 2000-character limit."""
+    if not text and not first_prefix:
+        return []
+
     chunks: list[str] = []
     remaining = text
-    while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
+    prefix = first_prefix
+    while remaining or prefix:
+        cap = DISCORD_SAFE_LIMIT - len(prefix)
+        if cap < 1:
+            # Prefix alone is too long (shouldn't happen for model names).
+            chunks.append(prefix[:DISCORD_SAFE_LIMIT])
+            prefix = ""
+            continue
+
+        if not remaining:
+            chunks.append(prefix)
             break
-        split_at = remaining.rfind("\n", 0, limit)
+
+        if len(remaining) <= cap:
+            chunks.append(prefix + remaining)
+            break
+
+        split_at = remaining.rfind("\n\n", 0, cap)
         if split_at <= 0:
-            split_at = limit
-        chunks.append(remaining[:split_at])
-        remaining = remaining[split_at:].lstrip("\n")
+            split_at = remaining.rfind("\n", 0, cap)
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, cap)
+        if split_at <= 0:
+            split_at = cap
+
+        chunks.append(prefix + remaining[:split_at])
+        remaining = remaining[split_at:].lstrip()
+        prefix = ""
+
     return chunks
+
+
+def format_ask_messages(model: str, question: str, answer: str) -> list[str]:
+    intro = f"**{model}**\n**Q:** {question}\n\n"
+    return split_discord_messages(answer, first_prefix=intro)
 
 
 class OllamaError(Exception):
@@ -103,7 +134,12 @@ class AskFeature:
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
         self.client = client
         self.tree = tree
+        self._user_last_ask: dict[int, float] = {}
         self._register_commands()
+
+    def _cooldown_remaining(self, user_id: int) -> float:
+        last = self._user_last_ask.get(user_id, 0.0)
+        return max(0.0, ASK_COOLDOWN_SECONDS - (time.time() - last))
 
     def _register_commands(self) -> None:
         @self.tree.command(
@@ -126,6 +162,16 @@ class AskFeature:
                 f"Command /ask called by {interaction.user} "
                 f"(model={model}, len={len(question)})"
             )
+
+            remaining = self._cooldown_remaining(interaction.user.id)
+            if remaining > 0:
+                await interaction.response.send_message(
+                    f"Please wait **{int(remaining) + 1}s** before using `/ask` again.",
+                    ephemeral=True,
+                )
+                return
+
+            self._user_last_ask[interaction.user.id] = time.time()
             await interaction.response.defer()
 
             try:
@@ -142,11 +188,7 @@ class AskFeature:
                 )
                 return
 
-            header = f"**{model}**\n"
-            chunks = _chunk_message(answer)
-            first = header + chunks[0]
-            if len(first) > DISCORD_MESSAGE_LIMIT:
-                first = chunks[0]
-            await interaction.followup.send(first)
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk)
+            messages = format_ask_messages(model, question, answer)
+            await interaction.followup.send(messages[0])
+            for part in messages[1:]:
+                await interaction.followup.send(part)
