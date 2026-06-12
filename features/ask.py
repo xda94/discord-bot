@@ -18,7 +18,7 @@ def get_ask_cooldown_seconds() -> float:
 
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("Llama 3.2 3B", "llama3.2:3b"),
-    ("DeepSeek R1 1.5B", "deepseek-r1:1.5b-qwen-distil-q8_0"),
+    ("DeepSeek R1 1.5B", "deepseek-r1:1.5b-qwen-distill-q8_0"),
     ("Qwen3 4B", "qwen3:4b"),
     ("Qwen2.5 Coder 3B", "qwen2.5-coder:3b"),
 ]
