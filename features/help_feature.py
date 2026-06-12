@@ -97,7 +97,7 @@ HELP_TEXT = (
     "the answer follows when Ollama finishes. If the bot is already busy, you get a queue "
     "notice and your turn runs after earlier requests. Long replies are split across multiple "
     "messages. The answer pings you on the first line, then the reply below. "
-    "One use per user every 60 seconds. "
+    "One `/ask` per user at a time; **60s cooldown** after your answer finishes. "
     "Default model: `llama3.2:3b`. "
     "Optional models: `llama3.2:3b`, `deepseek-r1:1.5b-qwen-distil-q8_0`, `qwen3:4b`, "
     "`qwen2.5-coder:3b`.\n\n"

@@ -9,9 +9,15 @@ from features.ask import (
     DISCORD_SAFE_LIMIT,
     format_answer_messages,
     format_question_messages,
+    get_ask_cooldown_seconds,
     requests_ahead,
     split_discord_messages,
 )
+
+
+def test_get_ask_cooldown_seconds(monkeypatch):
+    monkeypatch.setenv("ASK_COOLDOWN_SECONDS", "90")
+    assert get_ask_cooldown_seconds() == 90.0
 
 
 def test_format_question_messages():
