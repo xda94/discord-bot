@@ -74,10 +74,12 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
 | `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for `/ask`. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
+| `OLLAMA_DEFAULT_MODEL` | Yes (bot) | Default model for `/ask` when none is chosen. Must be listed in `OLLAMA_ALLOWED_MODELS`. |
+| `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/ask` (e.g. `llama3.2:3b,qwen3:4b`). |
 | `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls (not a user-facing `/ask` limit). Default: `180`. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for `/ask` after each answer finishes. Default: `60` (1 minute). |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
-| `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Default: `llama3.2:3b`. |
+| `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Defaults to `OLLAMA_DEFAULT_MODEL`. |
 | `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
@@ -235,7 +237,7 @@ Flat prices do not trigger spurious “all-time low” messages.
 | Command | Description |
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
-| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Posts your question immediately; answer follows with a mention on the first line. Queued if busy. **60s cooldown per user** after each answer. Default model: `llama3.2:3b`. |
+| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Models come from `OLLAMA_ALLOWED_MODELS` in `.env`. **60s cooldown per user** after each answer. |
 
 ---
 

@@ -5,24 +5,45 @@ import requests
 
 logger = logging.getLogger("discord_bot")
 
-DEFAULT_MODEL = "llama3.2:3b"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
-
-ALLOWED_MODELS = {
-    "llama3.2:3b",
-    "deepseek-r1:1.5b-qwen-distill-q8_0",
-    "qwen3:4b",
-    "qwen2.5-coder:3b",
-}
 
 
 class OllamaError(Exception):
     pass
 
+
+def get_allowed_models() -> tuple[str, ...]:
+    raw = os.getenv("OLLAMA_ALLOWED_MODELS")
+    if raw is None or not raw.strip():
+        raise OllamaError(
+            "OLLAMA_ALLOWED_MODELS is not set. Add a comma-separated list to .env."
+        )
+    models = tuple(m.strip() for m in raw.split(",") if m.strip())
+    if not models:
+        raise OllamaError(
+            "OLLAMA_ALLOWED_MODELS is empty. Add at least one model to .env."
+        )
+    return models
+
+
+def get_default_model() -> str:
+    raw = os.getenv("OLLAMA_DEFAULT_MODEL")
+    if raw is None or not raw.strip():
+        raise OllamaError(
+            "OLLAMA_DEFAULT_MODEL is not set. Add it to .env."
+        )
+    default = raw.strip()
+    if default not in set(get_allowed_models()):
+        raise OllamaError(
+            f"OLLAMA_DEFAULT_MODEL {default!r} is not listed in OLLAMA_ALLOWED_MODELS."
+        )
+    return default
+
+
 def query_ollama(
     prompt: str,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     *,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int | None = None,
@@ -30,7 +51,11 @@ def query_ollama(
     """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
     if timeout is None:
         timeout = OLLAMA_TIMEOUT
-    if model not in ALLOWED_MODELS:
+    if model is None:
+        model = get_default_model()
+
+    allowed = set(get_allowed_models())
+    if model not in allowed:
         raise OllamaError(f"Model not allowed: {model}")
 
     url = f"{base_url}/api/generate"

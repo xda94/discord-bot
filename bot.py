@@ -29,6 +29,14 @@ from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
 
+from ollama_client import OllamaError, get_default_model
+
+try:
+    get_default_model()
+except OllamaError as exc:
+    logger.critical("%s Refusing to start.", exc)
+    sys.exit(1)
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Fail loud and early when required env vars are missing. discord.py raises an

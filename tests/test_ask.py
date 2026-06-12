@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
+from ollama_client import OllamaError, get_default_model, query_ollama
 from features.ask import (
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
@@ -78,13 +78,13 @@ def test_query_ollama_success(monkeypatch):
     mock_post = MagicMock(return_value=mock_response)
     monkeypatch.setattr(requests, "post", mock_post)
 
-    answer = query_ollama("hi", model=DEFAULT_MODEL, base_url="http://ollama:11434")
+    answer = query_ollama("hi", model=get_default_model(), base_url="http://ollama:11434")
 
     assert answer == "Hello from Ollama"
     mock_post.assert_called_once()
     args, kwargs = mock_post.call_args
     assert args[0] == "http://ollama:11434/api/generate"
-    assert kwargs["json"]["model"] == DEFAULT_MODEL
+    assert kwargs["json"]["model"] == get_default_model()
     assert kwargs["json"]["prompt"] == "hi"
     assert kwargs["json"]["keep_alive"] == 0
     assert kwargs["json"]["stream"] is False
@@ -99,4 +99,4 @@ def test_query_ollama_model_not_found(monkeypatch):
     monkeypatch.setattr(requests, "post", MagicMock(return_value=mock_response))
 
     with pytest.raises(OllamaError, match="not available"):
-        query_ollama("hi", model=DEFAULT_MODEL, base_url="http://ollama:11434")
+        query_ollama("hi", model=get_default_model(), base_url="http://ollama:11434")
