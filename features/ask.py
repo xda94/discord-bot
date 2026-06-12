@@ -7,11 +7,14 @@ from dataclasses import dataclass, field
 import discord
 from discord import app_commands
 
-from ollama_client import DEFAULT_MODEL, OllamaError, get_ollama_timeout, query_ollama
+from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
-ASK_COOLDOWN_SECONDS = float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
+
+def get_ask_cooldown_seconds() -> float:
+    return float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
+
 
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("Llama 3.2 3B", "llama3.2:3b"),
@@ -96,6 +99,7 @@ class AskFeature:
         self.client = client
         self.tree = tree
         self._user_last_ask: dict[int, float] = {}
+        self._user_pending: set[int] = set()
         self._queue: asyncio.Queue[AskJob] = asyncio.Queue()
         self._processing = False
         self._worker_task: asyncio.Task | None = None
@@ -103,7 +107,7 @@ class AskFeature:
 
     def _cooldown_remaining(self, user_id: int) -> float:
         last = self._user_last_ask.get(user_id, 0.0)
-        return max(0.0, ASK_COOLDOWN_SECONDS - (time.time() - last))
+        return max(0.0, get_ask_cooldown_seconds() - (time.time() - last))
 
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
@@ -125,6 +129,9 @@ class AskFeature:
             finally:
                 self._processing = False
                 self._queue.task_done()
+                user_id = job.interaction.user.id
+                self._user_pending.discard(user_id)
+                self._user_last_ask[user_id] = time.time()
 
     async def _post_question(self, job: AskJob) -> None:
         messages = format_question_messages(job.model, job.question)
@@ -155,24 +162,10 @@ class AskFeature:
             await self._post_question(job)
 
         await self._post_thinking(job)
-        timeout = get_ollama_timeout()
         try:
-            answer = await asyncio.wait_for(
-                asyncio.to_thread(
-                    query_ollama,
-                    job.question,
-                    model=job.model,
-                    timeout=timeout,
-                ),
-                timeout=timeout + 10,
+            answer = await asyncio.to_thread(
+                query_ollama, job.question, model=job.model
             )
-        except asyncio.TimeoutError:
-            await self._clear_thinking(job)
-            await job.interaction.followup.send(
-                f"Ollama did not respond within **{timeout}s**.",
-                ephemeral=True,
-            )
-            return
         except OllamaError as exc:
             await self._clear_thinking(job)
             await job.interaction.followup.send(str(exc), ephemeral=True)
@@ -214,7 +207,16 @@ class AskFeature:
                 f"(model={model}, len={len(question)})"
             )
 
-            remaining = self._cooldown_remaining(interaction.user.id)
+            user_id = interaction.user.id
+            if user_id in self._user_pending:
+                await interaction.response.send_message(
+                    "You already have a `/ask` in progress or queued. "
+                    "Wait for it to finish before asking again.",
+                    ephemeral=True,
+                )
+                return
+
+            remaining = self._cooldown_remaining(user_id)
             if remaining > 0:
                 await interaction.response.send_message(
                     f"Please wait **{int(remaining) + 1}s** before using `/ask` again.",
@@ -222,7 +224,7 @@ class AskFeature:
                 )
                 return
 
-            self._user_last_ask[interaction.user.id] = time.time()
+            self._user_pending.add(user_id)
 
             ahead = requests_ahead(
                 processing=self._processing, queue_size=self._queue.qsize()
