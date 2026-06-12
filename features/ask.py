@@ -2,16 +2,15 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 
 import discord
-import requests
 from discord import app_commands
+
+from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
-DEFAULT_MODEL = "llama3.2:3b"
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
 ASK_COOLDOWN_SECONDS = float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
 
 MODEL_CHOICES: list[tuple[str, str]] = [
@@ -20,7 +19,6 @@ MODEL_CHOICES: list[tuple[str, str]] = [
     ("Qwen3 4B", "qwen3:4b"),
     ("Qwen2.5 Coder 3B", "qwen2.5-coder:3b"),
 ]
-ALLOWED_MODELS = {value for _, value in MODEL_CHOICES}
 
 # Discord hard limit is 2000; stay below it for markdown / invisible overhead.
 DISCORD_MESSAGE_LIMIT = 2000
@@ -66,66 +64,25 @@ def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
     return chunks
 
 
-def format_ask_messages(model: str, question: str, answer: str) -> list[str]:
-    intro = f"**{model}**\n**Q:** {question}\n\n"
-    return split_discord_messages(answer, first_prefix=intro)
+def format_question_messages(model: str, question: str) -> list[str]:
+    return split_discord_messages(question, first_prefix=f"**{model}**\n**Q:** ")
 
 
-class OllamaError(Exception):
-    pass
+def format_answer_messages(answer: str) -> list[str]:
+    return split_discord_messages(answer, first_prefix="**A:** ")
 
 
-def query_ollama(
-    prompt: str,
-    model: str = DEFAULT_MODEL,
-    *,
-    base_url: str = OLLAMA_BASE_URL,
-    timeout: int = OLLAMA_TIMEOUT,
-) -> str:
-    """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
-    if model not in ALLOWED_MODELS:
-        raise OllamaError(f"Model not allowed: {model}")
+def requests_ahead(*, processing: bool, queue_size: int) -> int:
+    """How many /ask jobs must finish before a newly queued one starts."""
+    return queue_size + (1 if processing else 0)
 
-    url = f"{base_url}/api/generate"
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": 0,
-    }
-    try:
-        response = requests.post(url, json=payload, timeout=timeout)
-    except requests.exceptions.Timeout as exc:
-        raise OllamaError(
-            f"Ollama did not respond within {timeout}s. "
-            "The model may still be loading — try again in a moment."
-        ) from exc
-    except requests.exceptions.ConnectionError as exc:
-        raise OllamaError(
-            f"Could not reach Ollama at {base_url}. "
-            "Check that Ollama is running and OLLAMA_BASE_URL is set correctly."
-        ) from exc
-    except requests.exceptions.RequestException as exc:
-        raise OllamaError(f"Ollama request failed: {exc}") from exc
 
-    if response.status_code == 404:
-        raise OllamaError(
-            f"Model `{model}` is not available on Ollama. "
-            f"Pull it first: `ollama pull {model}`"
-        )
-    if not response.ok:
-        detail = response.text.strip() or response.reason
-        raise OllamaError(f"Ollama returned HTTP {response.status_code}: {detail}")
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise OllamaError("Ollama returned a non-JSON response.") from exc
-
-    answer = (data.get("response") or "").strip()
-    if not answer:
-        raise OllamaError("Ollama returned an empty response.")
-    return answer
+@dataclass
+class AskJob:
+    interaction: discord.Interaction
+    question: str
+    model: str
+    question_shown: bool = field(default=False)
 
 
 class AskFeature:
@@ -135,11 +92,72 @@ class AskFeature:
         self.client = client
         self.tree = tree
         self._user_last_ask: dict[int, float] = {}
+        self._queue: asyncio.Queue[AskJob] = asyncio.Queue()
+        self._processing = False
+        self._worker_task: asyncio.Task | None = None
         self._register_commands()
 
     def _cooldown_remaining(self, user_id: int) -> float:
         last = self._user_last_ask.get(user_id, 0.0)
         return max(0.0, ASK_COOLDOWN_SECONDS - (time.time() - last))
+
+    def _ensure_worker(self) -> None:
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(self._queue_worker())
+
+    async def _queue_worker(self) -> None:
+        while True:
+            job = await self._queue.get()
+            try:
+                await self._process_job(job)
+            except Exception:
+                logger.exception("Unhandled error processing /ask job")
+                try:
+                    await job.interaction.followup.send(
+                        "Something went wrong while asking Ollama.", ephemeral=True
+                    )
+                except discord.HTTPException:
+                    pass
+            finally:
+                self._processing = False
+                self._queue.task_done()
+
+    async def _post_question(self, job: AskJob) -> None:
+        messages = format_question_messages(job.model, job.question)
+        if job.interaction.response.is_done():
+            await job.interaction.followup.send(messages[0])
+            for part in messages[1:]:
+                await job.interaction.followup.send(part)
+        else:
+            await job.interaction.response.send_message(messages[0])
+            for part in messages[1:]:
+                await job.interaction.followup.send(part)
+
+    async def _process_job(self, job: AskJob) -> None:
+        self._processing = True
+        if not job.question_shown:
+            await self._post_question(job)
+
+        try:
+            answer = await asyncio.to_thread(
+                query_ollama, job.question, model=job.model
+            )
+        except OllamaError as exc:
+            await job.interaction.followup.send(str(exc), ephemeral=True)
+            return
+        except Exception:
+            logger.exception("Unexpected error in /ask")
+            await job.interaction.followup.send(
+                "Something went wrong while asking Ollama.", ephemeral=True
+            )
+            return
+
+        for part in format_answer_messages(answer):
+            await job.interaction.followup.send(part)
+        await job.interaction.followup.send(
+            job.interaction.user.mention,
+            allowed_mentions=discord.AllowedMentions(users=[job.interaction.user]),
+        )
 
     def _register_commands(self) -> None:
         @self.tree.command(
@@ -172,23 +190,21 @@ class AskFeature:
                 return
 
             self._user_last_ask[interaction.user.id] = time.time()
-            await interaction.response.defer()
 
-            try:
-                answer = await asyncio.to_thread(
-                    query_ollama, question, model=model
-                )
-            except OllamaError as exc:
-                await interaction.followup.send(str(exc), ephemeral=True)
-                return
-            except Exception:
-                logger.exception("Unexpected error in /ask")
-                await interaction.followup.send(
-                    "Something went wrong while asking Ollama.", ephemeral=True
-                )
-                return
+            ahead = requests_ahead(
+                processing=self._processing, queue_size=self._queue.qsize()
+            )
+            job = AskJob(interaction=interaction, question=question, model=model)
 
-            messages = format_ask_messages(model, question, answer)
-            await interaction.followup.send(messages[0])
-            for part in messages[1:]:
-                await interaction.followup.send(part)
+            if ahead > 0:
+                await interaction.response.send_message(
+                    "I'm already thinking on another question. "
+                    f"Yours is **#{ahead + 1}** in the queue — I'll answer it when I'm done.",
+                    ephemeral=True,
+                )
+            else:
+                await self._post_question(job)
+                job.question_shown = True
+
+            await self._queue.put(job)
+            self._ensure_worker()
