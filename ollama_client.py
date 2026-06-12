@@ -7,7 +7,7 @@ logger = logging.getLogger("discord_bot")
 
 DEFAULT_MODEL = "llama3.2:3b"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
 
 ALLOWED_MODELS = {
     "llama3.2:3b",
@@ -20,11 +20,6 @@ ALLOWED_MODELS = {
 class OllamaError(Exception):
     pass
 
-
-def get_ollama_timeout() -> int:
-    return int(os.getenv("OLLAMA_TIMEOUT", "180"))
-
-
 def query_ollama(
     prompt: str,
     model: str = DEFAULT_MODEL,
@@ -34,7 +29,7 @@ def query_ollama(
 ) -> str:
     """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
     if timeout is None:
-        timeout = get_ollama_timeout()
+        timeout = OLLAMA_TIMEOUT
     if model not in ALLOWED_MODELS:
         raise OllamaError(f"Model not allowed: {model}")
 
