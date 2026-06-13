@@ -1,12 +1,12 @@
 import logging
 import os
 
-from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
+from ollama_client import get_default_model, OllamaError, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
 TEASE_LLM_ENABLED = os.getenv("TEASE_LLM_ENHANCE", "true").lower() in ("1", "true", "yes")
-TEASE_OLLAMA_MODEL = os.getenv("TEASE_OLLAMA_MODEL", DEFAULT_MODEL)
+TEASE_OLLAMA_MODEL = os.getenv("TEASE_OLLAMA_MODEL", get_default_model())
 TEASE_OLLAMA_TIMEOUT = int(os.getenv("TEASE_OLLAMA_TIMEOUT", "45"))
 TEASE_LLM_MAX_CHARS = 280
 
