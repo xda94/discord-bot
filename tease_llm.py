@@ -1,11 +1,12 @@
 import logging
 import os
 
-from ollama_client import OllamaError, get_default_model, query_ollama
+from ollama_client import DEFAULT_MODEL, OllamaError, query_ollama
 
 logger = logging.getLogger("discord_bot")
 
 TEASE_LLM_ENABLED = os.getenv("TEASE_LLM_ENHANCE", "true").lower() in ("1", "true", "yes")
+TEASE_OLLAMA_MODEL = os.getenv("TEASE_OLLAMA_MODEL", DEFAULT_MODEL)
 TEASE_OLLAMA_TIMEOUT = int(os.getenv("TEASE_OLLAMA_TIMEOUT", "45"))
 TEASE_LLM_MAX_CHARS = 280
 
@@ -20,55 +21,42 @@ MOOD_STYLE: dict[str, str] = {
     "lenghel": "obsessed with food and şaormă, casual Romanian eating humor",
 }
 
-
-def get_tease_model() -> str:
-    override = os.getenv("TEASE_OLLAMA_MODEL", "").strip()
-    if override:
-        return override
-    return get_default_model()
-
-
-def build_tease_enhance_prompt(mood: str, line: str) -> str:
+def build_tease_prompt(mood: str, username: str, context: str) -> str:
     style = MOOD_STYLE.get(mood, mood)
-    return f"""Rewrite this Discord tease line in a "{mood}" mood ({style}).
-
-Original line: {line}
+    return f"""Act as a Discord bot. A user named '{username}' just said: "{context}"
+Write a short, one-line response to them in a "{mood}" mood ({style}).
 
 Rules:
-- Keep the same core meaning, attitude, and person being addressed
-- Do not remove or rename the username if one appears in the original
-- One short chat message, same language as the original (Romanian stays Romanian)
-- More vivid and in-character, but not longer than about 25 words
-- Output ONLY the rewritten line — no quotes, labels, or explanation"""
+- Max 25 words.
+- Same language as the user (Romanian stays Romanian).
+- Output ONLY the response text. No quotes, labels, or preamble."""
 
-
-def normalize_tease_response(text: str, *, fallback: str, username: str) -> str:
-    cleaned = text.strip().strip("\"'")
+def normalize_tease_response(text: str) -> str:
+    cleaned = text.strip().strip("\"'").strip()
     if "\n" in cleaned:
         cleaned = cleaned.split("\n", 1)[0].strip()
 
-    if not cleaned:
-        return fallback
-    if username and username not in cleaned and username in fallback:
-        return fallback
     if len(cleaned) > TEASE_LLM_MAX_CHARS:
         trimmed = cleaned[:TEASE_LLM_MAX_CHARS].rsplit(" ", 1)[0]
         cleaned = trimmed or cleaned[:TEASE_LLM_MAX_CHARS]
     return cleaned
 
-
-def enhance_tease(mood: str, line: str, *, username: str = "") -> str:
-    """Return an LLM-enhanced tease, or the original line on failure."""
+def enhance_tease(mood: str, username: str, context: str) -> str | None:
+    """Generate a tease based on mood and message context.
+    
+    Returns the generated string or None if generation fails or is disabled.
+    The function name is kept for compatibility with teases.py imports."""
     if not TEASE_LLM_ENABLED:
-        return line
+        return None
 
     try:
         raw = query_ollama(
-            build_tease_enhance_prompt(mood, line),
-            model=get_tease_model(),
+            build_tease_prompt(mood, username, context),
+            model=TEASE_OLLAMA_MODEL,
             timeout=TEASE_OLLAMA_TIMEOUT,
         )
-        return normalize_tease_response(raw, fallback=line, username=username)
+        result = normalize_tease_response(raw)
+        return result if result else None
     except OllamaError:
-        logger.warning("Tease LLM enhance failed for mood=%s; using original line", mood)
-        return line
+        logger.warning("Tease LLM generation failed for mood=%s", mood)
+        return None
