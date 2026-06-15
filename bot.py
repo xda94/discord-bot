@@ -37,6 +37,18 @@ except OllamaError as exc:
     logger.critical("%s Refusing to start.", exc)
     sys.exit(1)
 
+_raw_bot_id = os.getenv("BOT_ID", "").strip()
+if not _raw_bot_id:
+    logger.critical(
+        "BOT_ID is not set. Add your bot's Discord user ID to .env and restart."
+    )
+    sys.exit(1)
+try:
+    BOT_ID = int(_raw_bot_id)
+except ValueError:
+    logger.critical("BOT_ID must be a numeric Discord user ID.")
+    sys.exit(1)
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Fail loud and early when required env vars are missing. discord.py raises an
@@ -71,12 +83,11 @@ reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
 scraping = ScrapingFeature(client, tree)
 stats = StatsFeature(client, tree)
-ask = AskFeature(client, tree)
+ask = AskFeature(client, tree, bot_id=BOT_ID)
 help_feature = HelpFeature(client, tree)
 
-# Features that observe every message. Ordering reflects the original on_message
-# flow: track activity first, then try a keyword match, then a tease.
-MESSAGE_HANDLERS = (inactivity, keywords, teases)
+# Features that observe every message. Mentions are checked before keywords/teases.
+MESSAGE_HANDLERS = (inactivity, ask, keywords, teases)
 
 # Features that own background tasks needing to be kicked off in on_ready.
 BACKGROUND_FEATURES = (sponsors, inactivity, reminders, jokes, scraping)

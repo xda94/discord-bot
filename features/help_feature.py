@@ -100,6 +100,11 @@ HELP_TEXT = (
     "One `/ask` per user at a time; **60s cooldown** after your answer finishes. "
     "Default and optional models are configured in `.env` (`OLLAMA_DEFAULT_MODEL`, "
     "`OLLAMA_ALLOWED_MODELS`).\n\n"
+    "**@bot** (mention)\n"
+    "Ping the bot with no text: it replies via Ollama acknowledging you called it and "
+    "asks what you need. Ping with text: same as `/ask` (question, thinking, answer). "
+    "Uses the same cooldown and queue as `/ask`. Model: `MENTION_OLLAMA_MODEL` in `.env` "
+    "(falls back to `OLLAMA_DEFAULT_MODEL`). Set `BOT_ID` in `.env` to your bot's user ID.\n\n"
     "**/help**\n"
     "Show this message."
 )

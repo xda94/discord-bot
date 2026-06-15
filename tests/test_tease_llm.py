@@ -4,53 +4,52 @@ import pytest
 
 from ollama_client import OllamaError
 from tease_llm import (
-    build_tease_enhance_prompt,
+    build_summon_prompt,
+    build_tease_prompt,
     enhance_tease,
+    generate_summon_reply,
     normalize_tease_response,
 )
 
 
-def test_build_tease_enhance_prompt_includes_mood_and_line():
-    prompt = build_tease_enhance_prompt("bad", "cool story, Alice")
+def test_build_tease_prompt_includes_mood_and_context():
+    prompt = build_tease_prompt("bad", "Alice", "hello there")
     assert "bad" in prompt
-    assert "cool story, Alice" in prompt
+    assert "Alice" in prompt
+    assert "hello there" in prompt
     assert "sarcastic" in prompt
 
 
-def test_normalize_tease_response_keeps_username():
-    result = normalize_tease_response(
-        "wow Alice that was something",
-        fallback="cool story, Alice",
-        username="Alice",
-    )
-    assert result == "wow Alice that was something"
+def test_build_summon_prompt_includes_username():
+    prompt = build_summon_prompt("Alice")
+    assert "Alice" in prompt
+    assert "pinged" in prompt.lower()
 
 
-def test_normalize_tease_response_falls_back_without_username():
-    result = normalize_tease_response(
-        "wow that was something",
-        fallback="cool story, Alice",
-        username="Alice",
-    )
-    assert result == "cool story, Alice"
+def test_normalize_tease_response_trims_and_strips_quotes():
+    assert normalize_tease_response('  "hello"  ') == "hello"
+
+
+def test_normalize_tease_response_truncates_long_text():
+    text = "word " * 100
+    assert len(normalize_tease_response(text)) <= 280
 
 
 def test_enhance_tease_uses_llm(monkeypatch):
     monkeypatch.setattr(
         "tease_llm.query_ollama",
-        lambda prompt, **kwargs: "sure buddy, Alice, riveting stuff",
+        lambda prompt, **kwargs: "sure buddy, riveting stuff",
     )
-    result = enhance_tease("bad", "cool story, Alice", username="Alice")
-    assert "Alice" in result
+    result = enhance_tease("bad", "Alice", "hello")
+    assert result == "sure buddy, riveting stuff"
 
 
-def test_enhance_tease_falls_back_on_error(monkeypatch):
+def test_enhance_tease_returns_none_on_error(monkeypatch):
     def _fail(*args, **kwargs):
         raise OllamaError("down")
 
     monkeypatch.setattr("tease_llm.query_ollama", _fail)
-    original = "cool story, Alice"
-    assert enhance_tease("bad", original, username="Alice") == original
+    assert enhance_tease("bad", "Alice", "hello") is None
 
 
 def test_enhance_tease_disabled(monkeypatch):
@@ -59,5 +58,12 @@ def test_enhance_tease_disabled(monkeypatch):
         "tease_llm.query_ollama",
         MagicMock(side_effect=AssertionError("should not call ollama")),
     )
-    original = "cool story, Alice"
-    assert enhance_tease("bad", original, username="Alice") == original
+    assert enhance_tease("bad", "Alice", "hello") is None
+
+
+def test_generate_summon_reply(monkeypatch):
+    monkeypatch.setattr(
+        "tease_llm.query_ollama",
+        lambda prompt, **kwargs: "You rang? What do you need?",
+    )
+    assert generate_summon_reply("Alice") == "You rang? What do you need?"

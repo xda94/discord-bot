@@ -69,12 +69,14 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | Variable | Required | Notes |
 |---|---|---|
 | `DISCORD_TOKEN` | Yes (bot) | Bot refuses to start without it. |
+| `BOT_ID` | Yes (bot) | Your bot's Discord user ID (Developer Mode → right-click bot → Copy User ID). Used for @mention LLM replies. |
 | `HOST` | Yes (API) | Bind address. Use `0.0.0.0` for LAN/Tailscale or **Docker** (published ports). Use `127.0.0.1` only if the API should be local to the host (e.g. PM2, no remote access). |
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
 | `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for `/ask`. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
 | `OLLAMA_DEFAULT_MODEL` | Yes (bot) | Default model for `/ask` when none is chosen. Must be listed in `OLLAMA_ALLOWED_MODELS`. |
+| `MENTION_OLLAMA_MODEL` | No (bot) | Model for @bot mentions. Defaults to `OLLAMA_DEFAULT_MODEL`. Must be in `OLLAMA_ALLOWED_MODELS`. |
 | `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/ask` (e.g. `llama3.2:3b,qwen3:4b`). |
 | `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls (not a user-facing `/ask` limit). Default: `180`. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for `/ask` after each answer finishes. Default: `60` (1 minute). |
@@ -237,7 +239,9 @@ Flat prices do not trigger spurious “all-time low” messages.
 | Command | Description |
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
-| `/ask <question> [model]` | Prompt a local Ollama model (loaded on demand, unloaded after). Models come from `OLLAMA_ALLOWED_MODELS` in `.env`. **60s cooldown per user** after each answer. |
+| `/ask <question> [model]` | Prompt Ollama (models from `.env`). **60s cooldown** per user. |
+| `@bot` | Ping only → LLM acknowledges and asks what you need. |
+| `@bot <text>` | Same flow as `/ask` (question posted, then answer). Shares cooldown and queue. |
 
 ---
 
@@ -337,5 +341,6 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
 | `stats.py` | `StatsFeature` | `/stats` |
-| `ask.py` | `AskFeature` | `/ask` — Ollama on the homeserver |
+| `ask.py` | `AskFeature` | `/ask` and @bot mention prompts via Ollama |
+| `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |
