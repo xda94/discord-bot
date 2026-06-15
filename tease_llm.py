@@ -45,15 +45,23 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
-def normalize_tease_response(text: str) -> str:
-    cleaned = text.strip().strip("\"'").strip()
-    if "\n" in cleaned:
-        cleaned = cleaned.split("\n", 1)[0].strip()
+def build_mention_prompt(username: str, content: str) -> str:
+    return f"""You are a helpful Discord bot. A user named '{username}' messaged you:
+"{content}"
 
-    if len(cleaned) > TEASE_LLM_MAX_CHARS:
-        trimmed = cleaned[:TEASE_LLM_MAX_CHARS].rsplit(" ", 1)[0]
-        cleaned = trimmed or cleaned[:TEASE_LLM_MAX_CHARS]
+Write a direct reply to them. Match their language. Output ONLY your reply — no labels or quotes."""
+
+
+def normalize_llm_reply(text: str, *, max_chars: int | None = None) -> str:
+    cleaned = text.strip().strip("\"'").strip()
+    if max_chars is not None and len(cleaned) > max_chars:
+        trimmed = cleaned[:max_chars].rsplit(" ", 1)[0]
+        cleaned = trimmed or cleaned[:max_chars]
     return cleaned
+
+
+def normalize_tease_response(text: str) -> str:
+    return normalize_llm_reply(text, max_chars=TEASE_LLM_MAX_CHARS)
 
 
 def enhance_tease(mood: str, username: str, context: str) -> str | None:
@@ -71,6 +79,24 @@ def enhance_tease(mood: str, username: str, context: str) -> str | None:
         return result or None
     except OllamaError:
         logger.warning("Tease LLM generation failed for mood=%s", mood)
+        return None
+
+
+def generate_mention_reply(
+    username: str, content: str, *, model: str | None = None
+) -> str | None:
+    """Direct LLM reply when the bot is @mentioned with a message."""
+    if model is None:
+        model = get_mention_model()
+    try:
+        raw = query_ollama(
+            build_mention_prompt(username, content),
+            model=model,
+        )
+        result = normalize_llm_reply(raw)
+        return result or None
+    except OllamaError:
+        logger.warning("Mention LLM generation failed for user=%s", username)
         return None
 
 

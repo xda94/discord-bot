@@ -240,8 +240,8 @@ Flat prices do not trigger spurious “all-time low” messages.
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
 | `/ask <question> [model]` | Prompt Ollama (models from `.env`). **60s cooldown** per user. |
-| `@bot` | Ping only → LLM acknowledges and asks what you need. |
-| `@bot <text>` | Same flow as `/ask` (question posted, then answer). Shares cooldown and queue. |
+| `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → direct LLM answer. |
+| `@bot <text>` | Same as above; uses `MENTION_OLLAMA_MODEL`. |
 
 ---
 
