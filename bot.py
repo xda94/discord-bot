@@ -17,7 +17,7 @@ from logger import setup_logger
 logger = setup_logger("discord_bot", "bot.log")
 
 import db
-from features.ask import AskFeature
+from features.llm_mention import LLMMentionFeature
 from features.help_feature import HelpFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
@@ -83,11 +83,11 @@ reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
 scraping = ScrapingFeature(client, tree)
 stats = StatsFeature(client, tree)
-ask = AskFeature(client, tree, bot_id=BOT_ID)
+llm_mention = LLMMentionFeature(client, tree, bot_id=BOT_ID)
 help_feature = HelpFeature(client, tree)
 
 # Features that observe every message. Mentions are checked before keywords/teases.
-MESSAGE_HANDLERS = (inactivity, ask, keywords, teases)
+MESSAGE_HANDLERS = (inactivity, llm_mention, keywords, teases)
 
 # Features that own background tasks needing to be kicked off in on_ready.
 BACKGROUND_FEATURES = (sponsors, inactivity, reminders, jokes, scraping)

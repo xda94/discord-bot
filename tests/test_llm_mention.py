@@ -4,11 +4,9 @@ import pytest
 import requests
 
 from ollama_client import OllamaError, get_default_model, query_ollama
-from features.ask import (
+from features.llm_mention import (
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
-    format_answer_messages,
-    format_question_messages,
     get_ask_cooldown_seconds,
     requests_ahead,
     split_discord_messages,
@@ -18,18 +16,6 @@ from features.ask import (
 def test_get_ask_cooldown_seconds(monkeypatch):
     monkeypatch.setenv("ASK_COOLDOWN_SECONDS", "90")
     assert get_ask_cooldown_seconds() == 90.0
-
-
-def test_format_question_messages():
-    messages = format_question_messages("llama3.2:3b", "What is Python?")
-    assert messages == ["**llama3.2:3b**\n**Q:** What is Python?"]
-
-
-def test_format_answer_messages():
-    user = MagicMock()
-    user.mention = "<@123>"
-    messages = format_answer_messages(user, "A programming language.")
-    assert messages == ["<@123>\n**A:** A programming language."]
 
 
 def test_requests_ahead():
