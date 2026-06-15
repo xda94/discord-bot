@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 import discord
 from discord import app_commands
 
-from ollama_client import OllamaError, get_allowed_models, get_default_model, query_ollama
+from mention_utils import extract_mention_text
+from ollama_client import OllamaError, get_allowed_models, get_default_model, get_mention_model, query_ollama
+from tease_llm import generate_summon_reply
 
 logger = logging.getLogger("discord_bot")
 
@@ -16,14 +18,13 @@ def get_ask_cooldown_seconds() -> float:
     return float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
 
 
-
 def get_model_choices() -> list[app_commands.Choice[str]]:
     return [
         app_commands.Choice(name=model, value=model)
         for model in get_allowed_models()
     ]
 
-# Discord hard limit is 2000; stay below it for markdown / invisible overhead.
+
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
 
@@ -39,7 +40,6 @@ def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
     while remaining or prefix:
         cap = DISCORD_SAFE_LIMIT - len(prefix)
         if cap < 1:
-            # Prefix alone is too long (shouldn't happen for model names).
             chunks.append(prefix[:DISCORD_SAFE_LIMIT])
             prefix = ""
             continue
@@ -79,25 +79,35 @@ def format_answer_messages(user: discord.abc.User, answer: str) -> list[str]:
 
 
 def requests_ahead(*, processing: bool, queue_size: int) -> int:
-    """How many /ask jobs must finish before a newly queued one starts."""
     return queue_size + (1 if processing else 0)
 
 
 @dataclass
 class AskJob:
-    interaction: discord.Interaction
+    user: discord.abc.User
     question: str
     model: str
-    question_shown: bool = field(default=False)
+    interaction: discord.Interaction | None = None
+    channel: discord.abc.Messageable | None = None
+    reply_to: discord.Message | None = None
+    summon_only: bool = False
+    question_shown: bool = False
     thinking_message: discord.Message | None = field(default=None, compare=False)
 
 
 class AskFeature:
-    """The /ask command — prompts a local Ollama model on demand."""
+    """`/ask` command and @bot mention prompts via Ollama."""
 
-    def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
+    def __init__(
+        self,
+        client: discord.Client,
+        tree: app_commands.CommandTree,
+        *,
+        bot_id: int,
+    ):
         self.client = client
         self.tree = tree
+        self.bot_id = bot_id
         self._user_last_ask: dict[int, float] = {}
         self._user_pending: set[int] = set()
         self._queue: asyncio.Queue[AskJob] = asyncio.Queue()
@@ -120,32 +130,67 @@ class AskFeature:
                 await self._process_job(job)
             except Exception:
                 logger.exception("Unhandled error processing /ask job")
-                try:
-                    await job.interaction.followup.send(
-                        "Something went wrong while asking Ollama.", ephemeral=True
-                    )
-                except discord.HTTPException:
-                    pass
+                await self._send_error(job, "Something went wrong while asking Ollama.")
             finally:
                 self._processing = False
                 self._queue.task_done()
-                user_id = job.interaction.user.id
-                self._user_pending.discard(user_id)
-                self._user_last_ask[user_id] = time.time()
+                self._user_pending.discard(job.user.id)
+                self._user_last_ask[job.user.id] = time.time()
+
+    async def _send_error(self, job: AskJob, text: str) -> None:
+        try:
+            if job.interaction is not None:
+                if job.interaction.response.is_done():
+                    await job.interaction.followup.send(text, ephemeral=True)
+                else:
+                    await job.interaction.response.send_message(text, ephemeral=True)
+            elif job.channel is not None:
+                await job.channel.send(
+                    f"{job.user.mention} {text}",
+                    reference=job.reply_to,
+                    allowed_mentions=discord.AllowedMentions(users=[job.user]),
+                )
+        except discord.HTTPException:
+            pass
+
+    async def _send_parts(self, job: AskJob, parts: list[str], **kwargs) -> None:
+        if not parts:
+            return
+        if job.interaction is not None:
+            await job.interaction.followup.send(parts[0], **kwargs)
+            for part in parts[1:]:
+                await job.interaction.followup.send(part)
+            return
+        if job.channel is not None:
+            await job.channel.send(
+                parts[0],
+                reference=job.reply_to,
+                **kwargs,
+            )
+            for part in parts[1:]:
+                await job.channel.send(part)
 
     async def _post_question(self, job: AskJob) -> None:
         messages = format_question_messages(job.model, job.question)
-        if job.interaction.response.is_done():
-            await job.interaction.followup.send(messages[0])
-            for part in messages[1:]:
-                await job.interaction.followup.send(part)
+        if job.interaction is not None:
+            if job.interaction.response.is_done():
+                await job.interaction.followup.send(messages[0])
+                for part in messages[1:]:
+                    await job.interaction.followup.send(part)
+            else:
+                await job.interaction.response.send_message(messages[0])
+                for part in messages[1:]:
+                    await job.interaction.followup.send(part)
         else:
-            await job.interaction.response.send_message(messages[0])
-            for part in messages[1:]:
-                await job.interaction.followup.send(part)
+            await self._send_parts(job, messages)
 
     async def _post_thinking(self, job: AskJob) -> None:
-        job.thinking_message = await job.interaction.followup.send("⏳ **Thinking...**")
+        if job.interaction is not None:
+            job.thinking_message = await job.interaction.followup.send(
+                "⏳ **Thinking...**"
+            )
+        elif job.channel is not None:
+            job.thinking_message = await job.channel.send("⏳ **Thinking...**")
 
     async def _clear_thinking(self, job: AskJob) -> None:
         if job.thinking_message is None:
@@ -156,8 +201,31 @@ class AskFeature:
             pass
         job.thinking_message = None
 
-    async def _process_job(self, job: AskJob) -> None:
-        self._processing = True
+    async def _process_summon_job(self, job: AskJob) -> None:
+        await self._post_thinking(job)
+        try:
+            reply = await asyncio.to_thread(
+                generate_summon_reply, job.user.display_name
+            )
+        except Exception:
+            logger.exception("Unexpected error in summon reply")
+            await self._clear_thinking(job)
+            await self._send_error(job, "Something went wrong while asking Ollama.")
+            return
+
+        await self._clear_thinking(job)
+        if not reply:
+            await self._send_error(job, "Could not generate a reply right now.")
+            return
+
+        allowed = discord.AllowedMentions(users=[job.user])
+        await self._send_parts(
+            job,
+            [f"{job.user.mention}\n{reply}"],
+            allowed_mentions=allowed,
+        )
+
+    async def _process_ask_job(self, job: AskJob) -> None:
         if not job.question_shown:
             await self._post_question(job)
 
@@ -168,22 +236,100 @@ class AskFeature:
             )
         except OllamaError as exc:
             await self._clear_thinking(job)
-            await job.interaction.followup.send(str(exc), ephemeral=True)
+            await self._send_error(job, str(exc))
             return
         except Exception:
             logger.exception("Unexpected error in /ask")
             await self._clear_thinking(job)
-            await job.interaction.followup.send(
-                "Something went wrong while asking Ollama.", ephemeral=True
-            )
+            await self._send_error(job, "Something went wrong while asking Ollama.")
             return
 
         await self._clear_thinking(job)
-        allowed = discord.AllowedMentions(users=[job.interaction.user])
-        parts = format_answer_messages(job.interaction.user, answer)
-        await job.interaction.followup.send(parts[0], allowed_mentions=allowed)
-        for part in parts[1:]:
-            await job.interaction.followup.send(part)
+        allowed = discord.AllowedMentions(users=[job.user])
+        await self._send_parts(
+            job, format_answer_messages(job.user, answer), allowed_mentions=allowed
+        )
+
+    async def _process_job(self, job: AskJob) -> None:
+        self._processing = True
+        if job.summon_only:
+            await self._process_summon_job(job)
+        else:
+            await self._process_ask_job(job)
+
+    def _begin_job_checks(self, user_id: int) -> str | None:
+        if user_id in self._user_pending:
+            return (
+                "You already have a `/ask` in progress or queued. "
+                "Wait for it to finish before asking again."
+            )
+        remaining = self._cooldown_remaining(user_id)
+        if remaining > 0:
+            return f"Please wait **{int(remaining) + 1}s** before using `/ask` again."
+        return None
+
+    async def _enqueue_job(self, job: AskJob) -> None:
+        self._user_pending.add(job.user.id)
+        ahead = requests_ahead(
+            processing=self._processing, queue_size=self._queue.qsize()
+        )
+
+        if job.interaction is not None:
+            if ahead > 0:
+                await job.interaction.response.send_message(
+                    "I'm already thinking on another question. "
+                    f"Yours is **#{ahead + 1}** in the queue — I'll answer it when I'm done.",
+                    ephemeral=True,
+                )
+            else:
+                await job.interaction.response.defer(thinking=True)
+                if not job.summon_only:
+                    await self._post_question(job)
+                    job.question_shown = True
+        elif job.channel is not None:
+            if ahead > 0:
+                await job.channel.send(
+                    f"{job.user.mention} I'm already thinking on another question. "
+                    f"Yours is **#{ahead + 1}** in the queue.",
+                    reference=job.reply_to,
+                    allowed_mentions=discord.AllowedMentions(users=[job.user]),
+                )
+            elif not job.summon_only:
+                await self._post_question(job)
+                job.question_shown = True
+
+        await self._queue.put(job)
+        self._ensure_worker()
+
+    async def handle_message(self, message: discord.Message) -> bool:
+        text = extract_mention_text(message, self.bot_id)
+        if text is None:
+            return False
+
+        user_id = message.author.id
+        blocked = self._begin_job_checks(user_id)
+        if blocked:
+            await message.reply(blocked, mention_author=False)
+            return True
+
+        summon_only = not text
+        logger.info(
+            "Bot mention from %s (summon=%s, len=%s)",
+            message.author,
+            summon_only,
+            len(text),
+        )
+
+        job = AskJob(
+            user=message.author,
+            question=text,
+            model=get_mention_model(),
+            channel=message.channel,
+            reply_to=message,
+            summon_only=summon_only,
+        )
+        await self._enqueue_job(job)
+        return True
 
     def _register_commands(self) -> None:
         default_model = get_default_model()
@@ -207,40 +353,15 @@ class AskFeature:
                 f"(model={model}, len={len(question)})"
             )
 
-            user_id = interaction.user.id
-            if user_id in self._user_pending:
-                await interaction.response.send_message(
-                    "You already have a `/ask` in progress or queued. "
-                    "Wait for it to finish before asking again.",
-                    ephemeral=True,
-                )
+            blocked = self._begin_job_checks(interaction.user.id)
+            if blocked:
+                await interaction.response.send_message(blocked, ephemeral=True)
                 return
 
-            remaining = self._cooldown_remaining(user_id)
-            if remaining > 0:
-                await interaction.response.send_message(
-                    f"Please wait **{int(remaining) + 1}s** before using `/ask` again.",
-                    ephemeral=True,
-                )
-                return
-
-            self._user_pending.add(user_id)
-
-            ahead = requests_ahead(
-                processing=self._processing, queue_size=self._queue.qsize()
+            job = AskJob(
+                user=interaction.user,
+                question=question,
+                model=model,
+                interaction=interaction,
             )
-            job = AskJob(interaction=interaction, question=question, model=model)
-
-            if ahead > 0:
-                await interaction.response.send_message(
-                    "I'm already thinking on another question. "
-                    f"Yours is **#{ahead + 1}** in the queue — I'll answer it when I'm done.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.defer(thinking=True)
-                await self._post_question(job)
-                job.question_shown = True
-
-            await self._queue.put(job)
-            self._ensure_worker()
+            await self._enqueue_job(job)

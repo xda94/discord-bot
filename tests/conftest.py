@@ -23,6 +23,7 @@ def ollama_env(monkeypatch):
     """Ollama model config is required from .env in production; set for tests."""
     monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "llama3.2:3b,other-model")
     monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "llama3.2:3b")
+    monkeypatch.setenv("BOT_ID", "999888777")
 
 
 @pytest.fixture

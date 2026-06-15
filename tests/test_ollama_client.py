@@ -1,6 +1,6 @@
 import pytest
 
-from ollama_client import OllamaError, get_allowed_models, get_default_model
+from ollama_client import OllamaError, get_allowed_models, get_default_model, get_mention_model
 
 
 def test_get_allowed_models_from_env(monkeypatch):
@@ -34,6 +34,28 @@ def test_get_allowed_models_empty_raises(monkeypatch):
     monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "  ,  ")
     with pytest.raises(OllamaError, match="empty"):
         get_allowed_models()
+
+
+def test_get_mention_model_from_env(monkeypatch):
+    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "alpha,beta,gamma")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "alpha")
+    monkeypatch.setenv("MENTION_OLLAMA_MODEL", "gamma")
+    assert get_mention_model() == "gamma"
+
+
+def test_get_mention_model_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "alpha,beta")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "beta")
+    monkeypatch.delenv("MENTION_OLLAMA_MODEL", raising=False)
+    assert get_mention_model() == "beta"
+
+
+def test_get_mention_model_not_in_allowed_raises(monkeypatch):
+    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "alpha,beta")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "alpha")
+    monkeypatch.setenv("MENTION_OLLAMA_MODEL", "missing")
+    with pytest.raises(OllamaError, match="MENTION_OLLAMA_MODEL"):
+        get_mention_model()
 
 
 def test_get_default_model_missing_raises(monkeypatch):

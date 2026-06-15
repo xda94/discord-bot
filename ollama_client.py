@@ -41,6 +41,17 @@ def get_default_model() -> str:
     return default
 
 
+def get_mention_model() -> str:
+    raw = os.getenv("MENTION_OLLAMA_MODEL", "").strip()
+    if not raw:
+        return get_default_model()
+    if raw not in set(get_allowed_models()):
+        raise OllamaError(
+            f"MENTION_OLLAMA_MODEL {raw!r} is not listed in OLLAMA_ALLOWED_MODELS."
+        )
+    return raw
+
+
 def query_ollama(
     prompt: str,
     model: str | None = None,
