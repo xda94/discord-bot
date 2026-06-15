@@ -9,7 +9,7 @@ from discord import app_commands
 
 from mention_utils import extract_mention_text
 from ollama_client import OllamaError, get_allowed_models, get_default_model, get_mention_model, query_ollama
-from tease_llm import generate_summon_reply
+from tease_llm import generate_mention_reply, generate_summon_reply
 
 logger = logging.getLogger("discord_bot")
 
@@ -90,6 +90,7 @@ class AskJob:
     interaction: discord.Interaction | None = None
     channel: discord.abc.Messageable | None = None
     reply_to: discord.Message | None = None
+    mention_only: bool = False
     summon_only: bool = False
     question_shown: bool = False
     thinking_message: discord.Message | None = field(default=None, compare=False)
@@ -201,30 +202,6 @@ class AskFeature:
             pass
         job.thinking_message = None
 
-    async def _process_summon_job(self, job: AskJob) -> None:
-        await self._post_thinking(job)
-        try:
-            reply = await asyncio.to_thread(
-                generate_summon_reply, job.user.display_name
-            )
-        except Exception:
-            logger.exception("Unexpected error in summon reply")
-            await self._clear_thinking(job)
-            await self._send_error(job, "Something went wrong while asking Ollama.")
-            return
-
-        await self._clear_thinking(job)
-        if not reply:
-            await self._send_error(job, "Could not generate a reply right now.")
-            return
-
-        allowed = discord.AllowedMentions(users=[job.user])
-        await self._send_parts(
-            job,
-            [f"{job.user.mention}\n{reply}"],
-            allowed_mentions=allowed,
-        )
-
     async def _process_ask_job(self, job: AskJob) -> None:
         if not job.question_shown:
             await self._post_question(job)
@@ -250,23 +227,58 @@ class AskFeature:
             job, format_answer_messages(job.user, answer), allowed_mentions=allowed
         )
 
-    async def _process_job(self, job: AskJob) -> None:
-        self._processing = True
-        if job.summon_only:
-            await self._process_summon_job(job)
-        else:
-            await self._process_ask_job(job)
-
-    def _begin_job_checks(self, user_id: int) -> str | None:
+    def _begin_job_checks(self, user_id: int, *, for_mention: bool = False) -> str | None:
         if user_id in self._user_pending:
+            if for_mention:
+                return "I'm already working on something for you — hang on."
             return (
                 "You already have a `/ask` in progress or queued. "
                 "Wait for it to finish before asking again."
             )
         remaining = self._cooldown_remaining(user_id)
         if remaining > 0:
-            return f"Please wait **{int(remaining) + 1}s** before using `/ask` again."
+            return f"Please wait **{int(remaining) + 1}s** before trying again."
         return None
+
+    async def _reply_mention(self, job: AskJob, text: str) -> None:
+        parts = split_discord_messages(text)
+        if not parts or job.reply_to is None:
+            return
+        await job.reply_to.reply(parts[0], mention_author=False)
+        if job.channel is not None:
+            for part in parts[1:]:
+                await job.channel.send(part, reference=job.reply_to)
+
+    async def _process_mention_job(self, job: AskJob) -> None:
+        try:
+            if job.summon_only:
+                reply = await asyncio.to_thread(
+                    generate_summon_reply,
+                    job.user.display_name,
+                    model=job.model,
+                )
+            else:
+                reply = await asyncio.to_thread(
+                    generate_mention_reply,
+                    job.user.display_name,
+                    job.question,
+                    model=job.model,
+                )
+        except Exception:
+            logger.exception("Unexpected error in mention reply")
+            return
+
+        if not reply:
+            return
+
+        await self._reply_mention(job, reply)
+
+    async def _process_job(self, job: AskJob) -> None:
+        self._processing = True
+        if job.mention_only:
+            await self._process_mention_job(job)
+        else:
+            await self._process_ask_job(job)
 
     async def _enqueue_job(self, job: AskJob) -> None:
         self._user_pending.add(job.user.id)
@@ -286,7 +298,7 @@ class AskFeature:
                 if not job.summon_only:
                     await self._post_question(job)
                     job.question_shown = True
-        elif job.channel is not None:
+        elif job.channel is not None and not job.mention_only:
             if ahead > 0:
                 await job.channel.send(
                     f"{job.user.mention} I'm already thinking on another question. "
@@ -297,6 +309,7 @@ class AskFeature:
             elif not job.summon_only:
                 await self._post_question(job)
                 job.question_shown = True
+        # mention_only: no preview, no queue notice — reply when ready
 
         await self._queue.put(job)
         self._ensure_worker()
@@ -307,7 +320,7 @@ class AskFeature:
             return False
 
         user_id = message.author.id
-        blocked = self._begin_job_checks(user_id)
+        blocked = self._begin_job_checks(user_id, for_mention=True)
         if blocked:
             await message.reply(blocked, mention_author=False)
             return True
@@ -326,6 +339,7 @@ class AskFeature:
             model=get_mention_model(),
             channel=message.channel,
             reply_to=message,
+            mention_only=True,
             summon_only=summon_only,
         )
         await self._enqueue_job(job)

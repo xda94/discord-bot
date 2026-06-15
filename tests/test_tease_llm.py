@@ -4,9 +4,11 @@ import pytest
 
 from ollama_client import OllamaError
 from tease_llm import (
+    build_mention_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
+    generate_mention_reply,
     generate_summon_reply,
     normalize_tease_response,
 )
@@ -59,6 +61,22 @@ def test_enhance_tease_disabled(monkeypatch):
         MagicMock(side_effect=AssertionError("should not call ollama")),
     )
     assert enhance_tease("bad", "Alice", "hello") is None
+
+
+def test_build_mention_prompt_includes_content():
+    prompt = build_mention_prompt("Alice", "what is python?")
+    assert "Alice" in prompt
+    assert "what is python?" in prompt
+
+
+def test_generate_mention_reply(monkeypatch):
+    monkeypatch.setattr(
+        "tease_llm.query_ollama",
+        lambda prompt, **kwargs: "Python is a programming language.",
+    )
+    assert generate_mention_reply("Alice", "what is python?") == (
+        "Python is a programming language."
+    )
 
 
 def test_generate_summon_reply(monkeypatch):
