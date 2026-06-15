@@ -31,6 +31,8 @@ from db import (
     reset_all_guild_joke_sent,
     set_guild_joke_config,
     update_joke,
+    get_setting,
+    set_setting,
 )
 from logger import setup_logger
 from scraper import (
@@ -532,6 +534,29 @@ def api_get_all_scrapes():
     except Exception:
         logger.exception("Error in /wishlist/all")
         return jsonify({"error": "Internal server error"}), 500
+
+# --- Settings Routes ---
+
+@app.route("/settings/<key>", methods=["GET"])
+@require_token
+def api_get_setting(key):
+    value = get_setting(key)
+    if value is None:
+        return jsonify({"error": "Setting not found"}), 404
+    return jsonify({"key": key, "value": value})
+
+
+@app.route("/settings/<key>", methods=["PUT"])
+@require_token
+def api_set_setting(key):
+    data = request.get_json()
+    if not data or "value" not in data:
+        return jsonify({"error": "Missing 'value' field"}), 400
+
+    set_setting(key, data["value"])
+    logger.info(f"Setting '{key}' updated via API from {request.remote_addr}")
+    return jsonify({"status": "updated", "key": key, "value": data["value"]})
+
 
 if __name__ == "__main__":
     logger.info(f"Starting Flask API Server on {HOST}:{PORT}")

@@ -74,12 +74,12 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
-| `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for `/ask`. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
-| `OLLAMA_DEFAULT_MODEL` | Yes (bot) | Default model for `/ask` when none is chosen. Must be listed in `OLLAMA_ALLOWED_MODELS`. |
+| `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for mentions and teases. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
+| `OLLAMA_DEFAULT_MODEL` | Yes (bot) | Default model when none is chosen. Must be listed in `OLLAMA_ALLOWED_MODELS`. |
 | `MENTION_OLLAMA_MODEL` | No (bot) | Model for @bot mentions. Defaults to `OLLAMA_DEFAULT_MODEL`. Must be in `OLLAMA_ALLOWED_MODELS`. |
-| `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/ask` (e.g. `llama3.2:3b,qwen3:4b`). |
-| `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls (not a user-facing `/ask` limit). Default: `180`. |
-| `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for `/ask` after each answer finishes. Default: `60` (1 minute). |
+| `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/llm_set` (e.g. `llama3.2:3b,qwen3:4b`). |
+| `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls. Default: `180`. |
+| `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
 | `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Defaults to `OLLAMA_DEFAULT_MODEL`. |
 | `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |
@@ -239,7 +239,7 @@ Flat prices do not trigger spurious “all-time low” messages.
 | Command | Description |
 |---|---|
 | `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
-| `/ask <question> [model]` | Prompt Ollama (models from `.env`). **60s cooldown** per user. |
+| `/llm_set <model>` | Set the Ollama model used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → direct LLM answer. |
 | `@bot <text>` | Same as above; uses `MENTION_OLLAMA_MODEL`. |
 
