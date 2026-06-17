@@ -47,16 +47,17 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
-def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> str:
-    base = "You are a helpful conversational Discord bot.\n\n"
+def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> tuple[str, str]:
+    system = "You are a helpful conversational Discord bot.\n"
     if context_messages:
-        base += "--- CHAT HISTORY ---\n"
+        system += "\nContext (Previous chat history):\n"
         for msg in context_messages:
-            base += f"{msg}\n"
-        base += "--------------------\n\n"
-    base += f"User '{username}' just said to you: \"{content}\"\n\n"
-    base += "Write your direct response to them below. Match their language. Do not output any labels, tags, or quotes. Output ONLY the response text."
-    return base
+            system += f"{msg}\n"
+            
+    prompt = f"User '{username}' says: \"{content}\"\n\n"
+    prompt += "Write your direct response to the user. Match their language. Do not output any labels, tags, or quotes. Output ONLY the response text."
+    
+    return system, prompt
 
 
 def normalize_llm_reply(text: str, *, max_chars: int | None = None) -> str:
@@ -96,8 +97,10 @@ def generate_mention_reply(
     if model is None:
         model = get_mention_model()
     try:
+        system_prompt, user_prompt = build_mention_prompt(username, content, context_messages)
         raw = query_ollama(
-            build_mention_prompt(username, content, context_messages),
+            prompt=user_prompt,
+            system=system_prompt,
             model=model,
         )
         result = normalize_llm_reply(raw)
