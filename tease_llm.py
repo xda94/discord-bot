@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 
@@ -46,16 +48,14 @@ Keep it casual. Output ONLY the reply."""
 
 
 def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> str:
-    base = "You are a helpful Discord bot. "
+    base = "You are a helpful conversational Discord bot.\n\n"
     if context_messages:
-        base += "Here are the previous messages in the channel for context:\n"
+        base += "--- CHAT HISTORY ---\n"
         for msg in context_messages:
             base += f"{msg}\n"
-        base += "\n"
-    base += f"""A user named '{username}' messaged you:
-"{content}"
-
-Write a direct reply to them. Match their language. Output ONLY your reply — no labels or quotes."""
+        base += "--------------------\n\n"
+    base += f"User '{username}' just said to you: \"{content}\"\n\n"
+    base += "Write your direct response to them below. Match their language. Do not output any labels, tags, or quotes. Output ONLY the response text."
     return base
 
 
