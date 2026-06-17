@@ -45,11 +45,18 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
-def build_mention_prompt(username: str, content: str) -> str:
-    return f"""You are a helpful Discord bot. A user named '{username}' messaged you:
+def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> str:
+    base = "You are a helpful Discord bot. "
+    if context_messages:
+        base += "Here are the previous messages in the channel for context:\n"
+        for msg in context_messages:
+            base += f"{msg}\n"
+        base += "\n"
+    base += f"""A user named '{username}' messaged you:
 "{content}"
 
 Write a direct reply to them. Match their language. Output ONLY your reply — no labels or quotes."""
+    return base
 
 
 def normalize_llm_reply(text: str, *, max_chars: int | None = None) -> str:
@@ -83,14 +90,14 @@ def enhance_tease(mood: str, username: str, context: str) -> str | None:
 
 
 def generate_mention_reply(
-    username: str, content: str, *, model: str | None = None
+    username: str, content: str, *, model: str | None = None, context_messages: list[str] | None = None
 ) -> str | None:
     """Direct LLM reply when the bot is @mentioned with a message."""
     if model is None:
         model = get_mention_model()
     try:
         raw = query_ollama(
-            build_mention_prompt(username, content),
+            build_mention_prompt(username, content, context_messages),
             model=model,
         )
         result = normalize_llm_reply(raw)

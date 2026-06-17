@@ -80,6 +80,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/llm_set` (e.g. `llama3.2:3b,qwen3:4b`). |
 | `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls. Default: `180`. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Number of recent channel messages to include as context for mentions. Default: `0`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
 | `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Defaults to `OLLAMA_DEFAULT_MODEL`. |
 | `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |

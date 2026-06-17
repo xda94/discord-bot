@@ -19,6 +19,10 @@ def get_ask_cooldown_seconds() -> float:
     return float(os.getenv("ASK_COOLDOWN_SECONDS", "60"))
 
 
+def get_llm_context_messages() -> int:
+    return int(os.getenv("LLM_CONTEXT_MESSAGES", "0"))
+
+
 def get_model_choices() -> list[app_commands.Choice[str]]:
     return [
         app_commands.Choice(name=model, value=model)
@@ -80,6 +84,7 @@ class AskJob:
     channel: discord.abc.Messageable | None = None
     reply_to: discord.Message | None = None
     summon_only: bool = False
+    context_messages: list[str] = field(default_factory=list)
 
 
 class LLMMentionFeature:
@@ -147,6 +152,7 @@ class LLMMentionFeature:
                     job.user.display_name,
                     job.question,
                     model=job.model,
+                    context_messages=job.context_messages,
                 )
         except Exception:
             logger.exception("Unexpected error in mention reply")
@@ -192,6 +198,13 @@ class LLMMentionFeature:
         # Get dynamic mention model from DB or fallback
         model = db.get_setting("mention_model") or get_mention_model()
 
+        limit = get_llm_context_messages()
+        context_messages = []
+        if limit > 0:
+            async for past_msg in message.channel.history(limit=limit, before=message):
+                context_messages.append(f"{past_msg.author.display_name}: {past_msg.clean_content}")
+            context_messages.reverse()
+
         job = AskJob(
             user=message.author,
             question=text,
@@ -199,6 +212,7 @@ class LLMMentionFeature:
             channel=message.channel,
             reply_to=message,
             summon_only=summon_only,
+            context_messages=context_messages,
         )
         await self._enqueue_job(job)
         return True
