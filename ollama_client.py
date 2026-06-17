@@ -57,6 +57,7 @@ def get_mention_model() -> str:
 def query_ollama(
     prompt: str,
     model: str | None = None,
+    system: str | None = None,
     *,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int | None = None,
@@ -78,6 +79,9 @@ def query_ollama(
         "stream": False,
         "keep_alive": 0,
     }
+    if system is not None:
+        payload["system"] = system
+        
     try:
         response = requests.post(
             url,
