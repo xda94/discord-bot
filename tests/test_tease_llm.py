@@ -65,7 +65,9 @@ def test_enhance_tease_disabled(monkeypatch):
 
 def test_build_mention_prompt_includes_content():
     system, prompt = build_mention_prompt("Alice", "what is python?", ["Bob: hello"])
-    assert "Bob: hello" in system
+    assert "You are a helpful conversational Discord bot." in system
+    assert "Bob: hello" in prompt
+    assert "<chat_history>" in prompt
     assert "Alice" in prompt
     assert "what is python?" in prompt
 
