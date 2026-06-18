@@ -3,7 +3,13 @@ from __future__ import annotations
 import logging
 import os
 
-from ollama_client import OllamaError, get_default_model, get_mention_model, query_ollama
+from ollama_client import (
+    OllamaError,
+    chat_ollama,
+    get_default_model,
+    get_mention_model,
+    query_ollama,
+)
 
 logger = logging.getLogger("discord_bot")
 
@@ -47,25 +53,43 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
-def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> tuple[str, str]:
-    system = "You are a helpful conversational Discord bot. You provide a single, direct response to the user.\n"
-    system += "\nInstructions:\n"
-    system += "1. Use the chat history to understand the context of the user's message if relevant.\n"
-    system += "2. If the user's message is unrelated to the chat history, ignore the chat history.\n"
-    system += "3. DO NOT repeat, echo, or copy the chat history in your response. Your response must be a new, helpful, conversational reply.\n"
-            
-    prompt = ""
-    if context_messages:
-        prompt += "Here is the recent chat history for context:\n"
-        prompt += "<chat_history>\n"
-        for msg in context_messages:
-            prompt += f"{msg}\n"
-        prompt += "</chat_history>\n\n"
+def build_mention_messages(
+    username: str, content: str, context_messages: list[str] | None = None
+) -> list[dict[str, str]]:
+    """Build the /api/chat `messages` list for an @mention reply.
 
-    prompt += f"User '{username}' says: \"{content}\"\n\n"
-    prompt += "Write your direct response to the user. Match their language. Do not output any labels, tags, or quotes. Output ONLY your response text."
-    
-    return system, prompt
+    The channel is a busy multi-party room, so prior messages are NOT mapped to
+    chat roles (there is no single "user"). Instead they go into one labelled
+    context block, leaving the message that tagged the bot as the only real user
+    turn — so the model's generation marker lands right after it and it replies
+    instead of continuing the transcript.
+    """
+    system = (
+        "You are Balen, a helpful conversational Discord bot in a busy channel "
+        "where many different people talk. You reply only to the single message "
+        "that is directed at you. Any recent channel messages are background "
+        "context from other people — use them only if relevant, and never repeat, "
+        "quote, or echo them. Respond with a single original reply in your own "
+        "words. Match the user's language. Output ONLY your reply text, with no "
+        "names, labels, tags, or quotes."
+    )
+
+    if context_messages:
+        history = "\n".join(context_messages)
+        user_content = (
+            "Recent channel messages (background context only — do not repeat these):\n"
+            f"{history}\n"
+            "---\n"
+            "Now write your reply to this message, which is the one directed at you:\n"
+            f"{username}: {content}"
+        )
+    else:
+        user_content = f"{username}: {content}"
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content},
+    ]
 
 
 def normalize_llm_reply(text: str, *, max_chars: int | None = None) -> str:
@@ -105,12 +129,8 @@ def generate_mention_reply(
     if model is None:
         model = get_mention_model()
     try:
-        system_prompt, user_prompt = build_mention_prompt(username, content, context_messages)
-        raw = query_ollama(
-            prompt=user_prompt,
-            system=system_prompt,
-            model=model,
-        )
+        messages = build_mention_messages(username, content, context_messages)
+        raw = chat_ollama(messages, model=model)
         result = normalize_llm_reply(raw)
         return result or None
     except OllamaError:
