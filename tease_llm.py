@@ -50,21 +50,21 @@ Keep it casual. Output ONLY the reply."""
 def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> tuple[str, str]:
     system = "You are a helpful conversational Discord bot. You provide a single, direct response to the user.\n"
     system += "\nInstructions:\n"
-    system += "1. Use the chat history to understand the context of the user's message if relevant.\n"
-    system += "2. If the user's message is unrelated to the chat history, ignore the chat history.\n"
-    system += "3. DO NOT repeat, echo, or copy the chat history in your response. Your response must be a new, helpful, conversational reply.\n"
-            
+    system += "1. <chat_history> holds earlier messages from other people, for context only. Read it to understand what the user means — but it is NOT a script to continue.\n"
+    system += "2. Reply only to the message inside <message>. Write your reply in your own words; never repeat, quote, or copy lines from <chat_history> verbatim.\n"
+    system += "3. Match the user's language.\n"
+    system += "4. Output ONLY your reply text — no tags, usernames, labels, or quotes.\n"
+
     prompt = ""
     if context_messages:
-        prompt += "Here is the recent chat history for context:\n"
         prompt += "<chat_history>\n"
         for msg in context_messages:
             prompt += f"{msg}\n"
         prompt += "</chat_history>\n\n"
 
-    prompt += f"User '{username}' says: \"{content}\"\n\n"
-    prompt += "Write your direct response to the user. Match their language. Do not output any labels, tags, or quotes. Output ONLY your response text."
-    
+    prompt += f'<message from="{username}">\n{content}\n</message>\n\n'
+    prompt += "Your reply:"
+
     return system, prompt
 
 
