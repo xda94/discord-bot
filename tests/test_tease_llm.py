@@ -73,9 +73,9 @@ def test_build_mention_prompt_includes_content():
 
 
 def test_build_mention_prompt_includes_bot_name(monkeypatch):
-    monkeypatch.setenv("BOT_NAME", "Balen")
+    monkeypatch.setenv("BOT_NAME", "Skippy")
     system, _ = build_mention_prompt("Alice", "hi")
-    assert "You are Balen, a helpful conversational Discord bot." in system
+    assert "You are Skippy, a helpful conversational Discord bot." in system
 
 
 def test_build_mention_prompt_omits_name_when_unset(monkeypatch):
