@@ -70,7 +70,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 |---|---|---|
 | `DISCORD_TOKEN` | Yes (bot) | Bot refuses to start without it. |
 | `BOT_ID` | Yes (bot) | Your bot's Discord user ID (Developer Mode → right-click bot → Copy User ID). Used for @mention LLM replies. |
-| `BOT_NAME` | No (bot) | The bot's name, injected into the @mention system prompt so replies know who they are (e.g. `Balen`). If unset, no name is added to the prompt. |
+| `BOT_NAME` | No (bot) | The bot's name, injected into the @mention system prompt so replies know who they are (e.g. `Skippy`). If unset, no name is added to the prompt. |
 | `HOST` | Yes (API) | Bind address. Use `0.0.0.0` for LAN/Tailscale or **Docker** (published ports). Use `127.0.0.1` only if the API should be local to the host (e.g. PM2, no remote access). |
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
