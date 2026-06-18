@@ -4,7 +4,7 @@ import pytest
 
 from ollama_client import OllamaError
 from tease_llm import (
-    build_mention_messages,
+    build_mention_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
@@ -63,29 +63,19 @@ def test_enhance_tease_disabled(monkeypatch):
     assert enhance_tease("bad", "Alice", "hello") is None
 
 
-def test_build_mention_messages_with_history():
-    messages = build_mention_messages("Alice", "what is python?", ["Bob: hello"])
-    assert messages[0]["role"] == "system"
-    assert "Balen" in messages[0]["content"]
-    assert messages[-1]["role"] == "user"
-    user_content = messages[-1]["content"]
-    assert "Bob: hello" in user_content
-    assert "Alice: what is python?" in user_content
-    # The triggering message must be the only real user turn, so the model
-    # replies instead of continuing the multi-party transcript.
-    assert sum(m["role"] == "user" for m in messages) == 1
-
-
-def test_build_mention_messages_without_history():
-    messages = build_mention_messages("Alice", "what is python?")
-    assert messages[-1]["role"] == "user"
-    assert messages[-1]["content"] == "Alice: what is python?"
+def test_build_mention_prompt_includes_content():
+    system, prompt = build_mention_prompt("Alice", "what is python?", ["Bob: hello"])
+    assert "You are a helpful conversational Discord bot." in system
+    assert "Bob: hello" in prompt
+    assert "<chat_history>" in prompt
+    assert "Alice" in prompt
+    assert "what is python?" in prompt
 
 
 def test_generate_mention_reply(monkeypatch):
     monkeypatch.setattr(
-        "tease_llm.chat_ollama",
-        lambda messages, **kwargs: "Python is a programming language.",
+        "tease_llm.query_ollama",
+        lambda prompt, **kwargs: "Python is a programming language.",
     )
     assert generate_mention_reply("Alice", "what is python?") == (
         "Python is a programming language."
