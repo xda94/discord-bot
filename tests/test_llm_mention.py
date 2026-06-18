@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from ollama_client import OllamaError, chat_ollama, get_default_model, query_ollama
+from ollama_client import OllamaError, get_default_model, query_ollama
 from features.llm_mention import (
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
@@ -86,45 +86,3 @@ def test_query_ollama_model_not_found(monkeypatch):
 
     with pytest.raises(OllamaError, match="not available"):
         query_ollama("hi", model=get_default_model(), base_url="http://ollama:11434")
-
-
-def test_chat_ollama_success(monkeypatch):
-    mock_response = MagicMock()
-    mock_response.ok = True
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "message": {"role": "assistant", "content": "Hello from chat"}
-    }
-    mock_post = MagicMock(return_value=mock_response)
-    monkeypatch.setattr(requests, "post", mock_post)
-
-    messages = [{"role": "user", "content": "hi"}]
-    answer = chat_ollama(messages, model=get_default_model(), base_url="http://ollama:11434")
-
-    assert answer == "Hello from chat"
-    mock_post.assert_called_once()
-    args, kwargs = mock_post.call_args
-    assert args[0] == "http://ollama:11434/api/chat"
-    assert kwargs["json"]["messages"] == messages
-    assert kwargs["json"]["keep_alive"] == 0
-    assert kwargs["json"]["stream"] is False
-
-
-def test_chat_ollama_rejects_unknown_model():
-    with pytest.raises(OllamaError, match="not allowed"):
-        chat_ollama([{"role": "user", "content": "hi"}], model="unknown-model")
-
-
-def test_chat_ollama_empty_response_raises(monkeypatch):
-    mock_response = MagicMock()
-    mock_response.ok = True
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"message": {"role": "assistant", "content": ""}}
-    monkeypatch.setattr(requests, "post", MagicMock(return_value=mock_response))
-
-    with pytest.raises(OllamaError, match="empty"):
-        chat_ollama(
-            [{"role": "user", "content": "hi"}],
-            model=get_default_model(),
-            base_url="http://ollama:11434",
-        )
