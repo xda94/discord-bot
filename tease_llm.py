@@ -30,6 +30,11 @@ def get_tease_model() -> str:
     return get_default_model()
 
 
+def get_bot_name() -> str:
+    """The bot's display name from the BOT_NAME env var, or '' if unset."""
+    return os.getenv("BOT_NAME", "").strip()
+
+
 def build_tease_prompt(mood: str, username: str, context: str) -> str:
     style = MOOD_STYLE.get(mood, mood)
     return f"""Act as a Discord bot. A user named '{username}' just said: "{context}"
@@ -48,7 +53,13 @@ Keep it casual. Output ONLY the reply."""
 
 
 def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> tuple[str, str]:
-    system = "You are a helpful conversational Discord bot. You provide a single, direct response to the user.\n"
+    bot_name = get_bot_name()
+    identity = (
+        f"You are {bot_name}, a helpful conversational Discord bot."
+        if bot_name
+        else "You are a helpful conversational Discord bot."
+    )
+    system = f"{identity} You provide a single, direct response to the user.\n"
     system += "\nInstructions:\n"
     system += "1. <chat_history> holds earlier messages from other people, for context only. Read it to understand what the user means — but it is NOT a script to continue.\n"
     system += "2. Reply only to the message inside <message>. Write your reply in your own words; never repeat, quote, or copy lines from <chat_history> verbatim.\n"

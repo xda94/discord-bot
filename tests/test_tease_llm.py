@@ -72,6 +72,18 @@ def test_build_mention_prompt_includes_content():
     assert "what is python?" in prompt
 
 
+def test_build_mention_prompt_includes_bot_name(monkeypatch):
+    monkeypatch.setenv("BOT_NAME", "Balen")
+    system, _ = build_mention_prompt("Alice", "hi")
+    assert "You are Balen, a helpful conversational Discord bot." in system
+
+
+def test_build_mention_prompt_omits_name_when_unset(monkeypatch):
+    monkeypatch.delenv("BOT_NAME", raising=False)
+    system, _ = build_mention_prompt("Alice", "hi")
+    assert system.startswith("You are a helpful conversational Discord bot.")
+
+
 def test_generate_mention_reply(monkeypatch):
     monkeypatch.setattr(
         "tease_llm.query_ollama",
