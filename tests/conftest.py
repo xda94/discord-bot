@@ -24,6 +24,9 @@ def ollama_env(monkeypatch):
     monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "llama3.2:3b,other-model")
     monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "llama3.2:3b")
     monkeypatch.setenv("BOT_ID", "999888777")
+    # Keep the bot name unset by default so prompt tests are deterministic;
+    # tests that need it set it explicitly.
+    monkeypatch.delenv("BOT_NAME", raising=False)
 
 
 @pytest.fixture
