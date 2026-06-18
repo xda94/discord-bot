@@ -54,34 +54,24 @@ def get_mention_model() -> str:
     return raw
 
 
-def query_ollama(
-    prompt: str,
-    model: str | None = None,
-    system: str | None = None,
-    *,
-    base_url: str = OLLAMA_BASE_URL,
-    timeout: int | None = None,
-) -> str:
-    """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
-    if timeout is None:
-        timeout = OLLAMA_TIMEOUT
+def _resolve_model(model: str | None) -> str:
     if model is None:
         model = get_default_model()
-
-    allowed = set(get_allowed_models())
-    if model not in allowed:
+    if model not in set(get_allowed_models()):
         raise OllamaError(f"Model not allowed: {model}")
+    return model
 
-    url = f"{base_url}/api/generate"
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": 0,
-    }
-    if system is not None:
-        payload["system"] = system
-        
+
+def _post_ollama(
+    path: str,
+    payload: dict,
+    *,
+    base_url: str,
+    timeout: int,
+    model: str,
+) -> dict:
+    """POST to an Ollama endpoint, handling transport and HTTP errors uniformly."""
+    url = f"{base_url}{path}"
     try:
         response = requests.post(
             url,
@@ -111,11 +101,71 @@ def query_ollama(
         raise OllamaError(f"Ollama returned HTTP {response.status_code}: {detail}")
 
     try:
-        data = response.json()
+        return response.json()
     except ValueError as exc:
         raise OllamaError("Ollama returned a non-JSON response.") from exc
 
+
+def query_ollama(
+    prompt: str,
+    model: str | None = None,
+    system: str | None = None,
+    *,
+    base_url: str = OLLAMA_BASE_URL,
+    timeout: int | None = None,
+) -> str:
+    """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
+    if timeout is None:
+        timeout = OLLAMA_TIMEOUT
+    model = _resolve_model(model)
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": 0,
+    }
+    if system is not None:
+        payload["system"] = system
+
+    data = _post_ollama(
+        "/api/generate", payload, base_url=base_url, timeout=timeout, model=model
+    )
     answer = (data.get("response") or "").strip()
+    if not answer:
+        raise OllamaError("Ollama returned an empty response.")
+    return answer
+
+
+def chat_ollama(
+    messages: list[dict[str, str]],
+    model: str | None = None,
+    *,
+    base_url: str = OLLAMA_BASE_URL,
+    timeout: int | None = None,
+) -> str:
+    """Call Ollama /api/chat once, then unload the model (`keep_alive: 0`).
+
+    Stateless like /api/generate — the full `messages` list is sent every call.
+    Using the chat endpoint appends the model's assistant-turn generation marker
+    after the final message, which stops it from continuing the transcript.
+    """
+    if timeout is None:
+        timeout = OLLAMA_TIMEOUT
+    model = _resolve_model(model)
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "keep_alive": 0,
+    }
+
+    data = _post_ollama(
+        "/api/chat", payload, base_url=base_url, timeout=timeout, model=model
+    )
+    message = data.get("message") or {}
+    answer = (message.get("content") or "").strip()
     if not answer:
         raise OllamaError("Ollama returned an empty response.")
     return answer

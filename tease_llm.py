@@ -3,7 +3,13 @@ from __future__ import annotations
 import logging
 import os
 
-from ollama_client import OllamaError, get_default_model, get_mention_model, query_ollama
+from ollama_client import (
+    OllamaError,
+    chat_ollama,
+    get_default_model,
+    get_mention_model,
+    query_ollama,
+)
 
 logger = logging.getLogger("discord_bot")
 
@@ -105,12 +111,8 @@ def generate_mention_reply(
     if model is None:
         model = get_mention_model()
     try:
-        system_prompt, user_prompt = build_mention_prompt(username, content, context_messages)
-        raw = query_ollama(
-            prompt=user_prompt,
-            system=system_prompt,
-            model=model,
-        )
+        messages = build_mention_messages(username, content, context_messages)
+        raw = chat_ollama(messages, model=model)
         result = normalize_llm_reply(raw)
         return result or None
     except OllamaError:
