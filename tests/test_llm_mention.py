@@ -54,18 +54,18 @@ def test_split_discord_messages_respects_limit_with_prefix():
 
 def test_resolve_bot_display_name_uses_server_nickname():
     message = MagicMock()
-    message.guild.me.display_name = "BalenOnServer"
+    message.guild.me.display_name = "SkippyOnServer"
     client = MagicMock()
-    client.user.display_name = "BalenGlobal"
-    assert resolve_bot_display_name(message, client) == "BalenOnServer"
+    client.user.display_name = "SkippyGlobal"
+    assert resolve_bot_display_name(message, client) == "SkippyOnServer"
 
 
 def test_resolve_bot_display_name_falls_back_to_global_in_dm():
     message = MagicMock()
     message.guild = None
     client = MagicMock()
-    client.user.display_name = "BalenGlobal"
-    assert resolve_bot_display_name(message, client) == "BalenGlobal"
+    client.user.display_name = "SkippyGlobal"
+    assert resolve_bot_display_name(message, client) == "SkippyGlobal"
 
 
 def test_query_ollama_rejects_unknown_model():
