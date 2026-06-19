@@ -19,6 +19,19 @@ def is_bot_mentioned(message: discord.Message, bot_id: int) -> bool:
     return any(user.id == bot_id for user in message.mentions)
 
 
+def resolve_bot_display_name(
+    guild: discord.Guild | None, client: discord.Client
+) -> str:
+    """The bot's name in this context: its server nickname if set, otherwise its
+    global username. Empty string if the client isn't ready yet. Resolved live so
+    renaming the bot on the server takes effect immediately."""
+    if guild is not None and guild.me is not None:
+        return guild.me.display_name
+    if client.user is not None:
+        return client.user.display_name
+    return ""
+
+
 def extract_mention_text(message: discord.Message, bot_id: int) -> str | None:
     """Return the text after the bot mention, or '' if only the ping.
 
