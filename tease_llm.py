@@ -30,11 +30,6 @@ def get_tease_model() -> str:
     return get_default_model()
 
 
-def get_bot_name() -> str:
-    """The bot's display name from the BOT_NAME env var, or '' if unset."""
-    return os.getenv("BOT_NAME", "").strip()
-
-
 def build_tease_prompt(mood: str, username: str, context: str) -> str:
     style = MOOD_STYLE.get(mood, mood)
     return f"""Act as a Discord bot. A user named '{username}' just said: "{context}"
@@ -52,8 +47,12 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
-def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> tuple[str, str]:
-    bot_name = get_bot_name()
+def build_mention_prompt(
+    username: str,
+    content: str,
+    context_messages: list[str] | None = None,
+    bot_name: str | None = None,
+) -> tuple[str, str]:
     identity = (
         f"You are {bot_name}, a helpful conversational Discord bot."
         if bot_name
@@ -110,13 +109,20 @@ def enhance_tease(mood: str, username: str, context: str) -> str | None:
 
 
 def generate_mention_reply(
-    username: str, content: str, *, model: str | None = None, context_messages: list[str] | None = None
+    username: str,
+    content: str,
+    *,
+    model: str | None = None,
+    context_messages: list[str] | None = None,
+    bot_name: str | None = None,
 ) -> str | None:
     """Direct LLM reply when the bot is @mentioned with a message."""
     if model is None:
         model = get_mention_model()
     try:
-        system_prompt, user_prompt = build_mention_prompt(username, content, context_messages)
+        system_prompt, user_prompt = build_mention_prompt(
+            username, content, context_messages, bot_name=bot_name
+        )
         raw = query_ollama(
             prompt=user_prompt,
             system=system_prompt,

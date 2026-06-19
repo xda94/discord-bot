@@ -72,14 +72,12 @@ def test_build_mention_prompt_includes_content():
     assert "what is python?" in prompt
 
 
-def test_build_mention_prompt_includes_bot_name(monkeypatch):
-    monkeypatch.setenv("BOT_NAME", "Skippy")
-    system, _ = build_mention_prompt("Alice", "hi")
+def test_build_mention_prompt_includes_bot_name():
+    system, _ = build_mention_prompt("Alice", "hi", bot_name="Skippy")
     assert "You are Skippy, a helpful conversational Discord bot." in system
 
 
-def test_build_mention_prompt_omits_name_when_unset(monkeypatch):
-    monkeypatch.delenv("BOT_NAME", raising=False)
+def test_build_mention_prompt_omits_name_when_absent():
     system, _ = build_mention_prompt("Alice", "hi")
     assert system.startswith("You are a helpful conversational Discord bot.")
 
