@@ -78,6 +78,18 @@ def requests_ahead(*, processing: bool, queue_size: int) -> int:
     return queue_size + (1 if processing else 0)
 
 
+def resolve_bot_display_name(message: discord.Message, client: discord.Client) -> str:
+    """The bot's name in this context: its server nickname if set, otherwise its
+    global username. Empty string if the client isn't ready yet. Resolved live
+    per message, so renaming the bot on the server takes effect immediately."""
+    guild = message.guild
+    if guild is not None and guild.me is not None:
+        return guild.me.display_name
+    if client.user is not None:
+        return client.user.display_name
+    return ""
+
+
 @dataclass
 class AskJob:
     user: discord.abc.User
@@ -87,6 +99,7 @@ class AskJob:
     reply_to: discord.Message | None = None
     summon_only: bool = False
     context_messages: list[str] = field(default_factory=list)
+    bot_name: str = ""
 
 
 class LLMMentionFeature:
@@ -155,6 +168,7 @@ class LLMMentionFeature:
                     job.question,
                     model=job.model,
                     context_messages=job.context_messages,
+                    bot_name=job.bot_name,
                 )
         except Exception:
             logger.exception("Unexpected error in mention reply")
@@ -215,6 +229,7 @@ class LLMMentionFeature:
             reply_to=message,
             summon_only=summon_only,
             context_messages=context_messages,
+            bot_name=resolve_bot_display_name(message, self.client),
         )
         await self._enqueue_job(job)
         return True

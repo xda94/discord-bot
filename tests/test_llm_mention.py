@@ -9,6 +9,7 @@ from features.llm_mention import (
     DISCORD_SAFE_LIMIT,
     get_ask_cooldown_seconds,
     requests_ahead,
+    resolve_bot_display_name,
     split_discord_messages,
 )
 
@@ -49,6 +50,22 @@ def test_split_discord_messages_respects_limit_with_prefix():
     chunks = split_discord_messages(text, first_prefix=prefix)
     assert all(len(c) <= DISCORD_SAFE_LIMIT for c in chunks)
     assert len(chunks) > 1
+
+
+def test_resolve_bot_display_name_uses_server_nickname():
+    message = MagicMock()
+    message.guild.me.display_name = "BalenOnServer"
+    client = MagicMock()
+    client.user.display_name = "BalenGlobal"
+    assert resolve_bot_display_name(message, client) == "BalenOnServer"
+
+
+def test_resolve_bot_display_name_falls_back_to_global_in_dm():
+    message = MagicMock()
+    message.guild = None
+    client = MagicMock()
+    client.user.display_name = "BalenGlobal"
+    assert resolve_bot_display_name(message, client) == "BalenGlobal"
 
 
 def test_query_ollama_rejects_unknown_model():
