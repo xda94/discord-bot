@@ -1,11 +1,27 @@
+from unittest.mock import MagicMock
+
 import pytest
 
-from mention_utils import extract_mention_text, get_bot_id
+from mention_utils import extract_mention_text, get_bot_id, resolve_bot_display_name
 
 
 def test_get_bot_id_from_env(monkeypatch):
     monkeypatch.setenv("BOT_ID", "123456789")
     assert get_bot_id() == 123456789
+
+
+def test_resolve_bot_display_name_uses_server_nickname():
+    guild = MagicMock()
+    guild.me.display_name = "SkippyOnServer"
+    client = MagicMock()
+    client.user.display_name = "SkippyGlobal"
+    assert resolve_bot_display_name(guild, client) == "SkippyOnServer"
+
+
+def test_resolve_bot_display_name_falls_back_to_global_without_guild():
+    client = MagicMock()
+    client.user.display_name = "SkippyGlobal"
+    assert resolve_bot_display_name(None, client) == "SkippyGlobal"
 
 
 def test_extract_mention_text_returns_none_without_mention():
