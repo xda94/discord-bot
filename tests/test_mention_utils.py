@@ -26,6 +26,8 @@ def test_extract_mention_text_empty_ping():
     class FakeMessage:
         mentions = [FakeUser()]
         content = "<@99>"
+        role_mentions = []
+        channel_mentions = []
 
     assert extract_mention_text(FakeMessage(), 99) == ""
 
@@ -37,5 +39,26 @@ def test_extract_mention_text_with_question():
     class FakeMessage:
         mentions = [FakeUser()]
         content = "<@!99> what is python?"
+        role_mentions = []
+        channel_mentions = []
 
     assert extract_mention_text(FakeMessage(), 99) == "what is python?"
+
+
+def test_extract_mention_text_resolves_other_user_mentions():
+    class Bot:
+        id = 99
+
+    class Carol:
+        id = 456
+        display_name = "Carol"
+
+    class FakeMessage:
+        mentions = [Bot(), Carol()]
+        content = "<@99> what did <@456> say?"
+        role_mentions = []
+        channel_mentions = []
+
+    # The bot's own mention is stripped; other users become readable names,
+    # so no raw <@id> reaches the LLM.
+    assert extract_mention_text(FakeMessage(), 99) == "what did @Carol say?"

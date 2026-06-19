@@ -47,8 +47,18 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
-def build_mention_prompt(username: str, content: str, context_messages: list[str] | None = None) -> tuple[str, str]:
-    system = "You are a helpful conversational Discord bot. You provide a single, direct response to the user.\n"
+def build_mention_prompt(
+    username: str,
+    content: str,
+    context_messages: list[str] | None = None,
+    bot_name: str | None = None,
+) -> tuple[str, str]:
+    identity = (
+        f"You are {bot_name}, a helpful conversational Discord bot."
+        if bot_name
+        else "You are a helpful conversational Discord bot."
+    )
+    system = f"{identity} You provide a single, direct response to the user.\n"
     system += "\nInstructions:\n"
     system += "1. <chat_history> holds earlier messages from other people, for context only. Read it to understand what the user means — but it is NOT a script to continue.\n"
     system += "2. Reply only to the message inside <message>. Write your reply in your own words; never repeat, quote, or copy lines from <chat_history> verbatim.\n"
@@ -99,13 +109,20 @@ def enhance_tease(mood: str, username: str, context: str) -> str | None:
 
 
 def generate_mention_reply(
-    username: str, content: str, *, model: str | None = None, context_messages: list[str] | None = None
+    username: str,
+    content: str,
+    *,
+    model: str | None = None,
+    context_messages: list[str] | None = None,
+    bot_name: str | None = None,
 ) -> str | None:
     """Direct LLM reply when the bot is @mentioned with a message."""
     if model is None:
         model = get_mention_model()
     try:
-        system_prompt, user_prompt = build_mention_prompt(username, content, context_messages)
+        system_prompt, user_prompt = build_mention_prompt(
+            username, content, context_messages, bot_name=bot_name
+        )
         raw = query_ollama(
             prompt=user_prompt,
             system=system_prompt,
