@@ -4,10 +4,12 @@ import pytest
 
 from ollama_client import OllamaError
 from tease_llm import (
+    build_inactivity_prompt,
     build_mention_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
+    generate_inactivity_message,
     generate_mention_reply,
     generate_summon_reply,
     normalize_tease_response,
@@ -98,3 +100,32 @@ def test_generate_summon_reply(monkeypatch):
         lambda prompt, **kwargs: "You rang? What do you need?",
     )
     assert generate_summon_reply("Alice") == "You rang? What do you need?"
+
+
+def test_build_inactivity_prompt_with_question_and_name():
+    prompt = build_inactivity_prompt("Skippy", ask_question=True)
+    assert "Skippy" in prompt
+    assert "question" in prompt.lower()
+
+
+def test_build_inactivity_prompt_without_name_or_question():
+    prompt = build_inactivity_prompt(None, ask_question=False)
+    assert "You are a Discord bot" in prompt
+
+
+def test_generate_inactivity_message_success(monkeypatch):
+    monkeypatch.setattr(
+        "tease_llm.query_ollama",
+        lambda prompt, **kwargs: "yo, is anyone still alive in here?",
+    )
+    assert generate_inactivity_message("Skippy", ask_question=False) == (
+        "yo, is anyone still alive in here?"
+    )
+
+
+def test_generate_inactivity_message_returns_none_on_error(monkeypatch):
+    def _fail(*args, **kwargs):
+        raise OllamaError("down")
+
+    monkeypatch.setattr("tease_llm.query_ollama", _fail)
+    assert generate_inactivity_message("Skippy", ask_question=True) is None
