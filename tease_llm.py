@@ -47,6 +47,29 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
+def build_inactivity_prompt(bot_name: str | None, ask_question: bool) -> str:
+    identity = f"You are {bot_name}, a Discord bot" if bot_name else "You are a Discord bot"
+    base = (
+        f"{identity} in a server that has been completely silent for a whole day. "
+        "Break the silence with a single short, playful, slightly cheeky message — "
+        "the kind a bored friend would send."
+    )
+    if ask_question:
+        task = (
+            " Address one person directly and ask them a casual, fun question to get "
+            "them talking (their day, an opinion, plans — anything light). Do not use "
+            "any name; just talk to them directly."
+        )
+    else:
+        task = " React to how dead the chat is and try to wake people up."
+    return base + task + (
+        "\n\nRules:\n"
+        "- One short line, max 25 words.\n"
+        "- Casual, internet tone.\n"
+        "- Output ONLY the message text. No quotes, labels, or preamble."
+    )
+
+
 def build_mention_prompt(
     username: str,
     content: str,
@@ -149,4 +172,23 @@ def generate_summon_reply(username: str, *, model: str | None = None) -> str | N
         return result or None
     except OllamaError:
         logger.warning("Summon LLM generation failed for user=%s", username)
+        return None
+
+
+def generate_inactivity_message(
+    bot_name: str | None = None, *, ask_question: bool, model: str | None = None
+) -> str | None:
+    """LLM-generated nudge for a silent channel, or None if it failed.
+
+    The caller adds the ping (and falls back to a preset) — this only produces
+    the message text."""
+    try:
+        raw = query_ollama(
+            build_inactivity_prompt(bot_name, ask_question),
+            model=model,
+            timeout=TEASE_OLLAMA_TIMEOUT,
+        )
+        return normalize_tease_response(raw) or None
+    except OllamaError:
+        logger.warning("Inactivity LLM generation failed")
         return None
