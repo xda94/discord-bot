@@ -21,6 +21,8 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from ollama_client import query_ollama
+
 # Distinct logger name so the bot's "discord_bot" file handler and the API's
 # "flask_api" file handler can both pick this up via the setup wired in
 # `logger.py`. Without that attachment these messages go nowhere when the
@@ -205,6 +207,17 @@ class PriceScraper:
             # leave the persisted value alone (via COALESCE) instead of
             # mis-stamping the item as out-of-stock.
 
+            if price is None and title is None and currency is None and in_stock is None:
+                # Fall back to LLM extraction if standard methods failed
+                # Extract clean text and truncate to avoid huge context windows
+                clean_text = soup.get_text(separator=' ', strip=True)
+                llm_price, llm_title, llm_currency, llm_stock = self._extract_with_llm(clean_text)
+                
+                price = llm_price if llm_price is not None else price
+                title = llm_title if llm_title is not None else title
+                currency = llm_currency if llm_currency is not None else currency
+                in_stock = llm_stock if llm_stock is not None else in_stock
+
             result = ScrapeResult(
                 price=price,
                 in_stock=in_stock,
@@ -341,3 +354,49 @@ class PriceScraper:
         if any(k in text_lower for k in cls.IN_STOCK_KEYWORDS):
             return True
         return None
+
+    @staticmethod
+    def _extract_with_llm(text: str) -> tuple[float | None, str | None, str | None, bool | None]:
+        # Truncate text to roughly 3000 words to save context
+        words = text.split()
+        if len(words) > 3000:
+            text = " ".join(words[:3000])
+
+        prompt = (
+            "You are a web scraping assistant. Extract the product information from the following webpage text. "
+            "Return ONLY a valid JSON object with these exact keys:\n"
+            "- \"title\": string (the name of the product), or null if not found\n"
+            "- \"price\": number (the price as a float), or null if not found\n"
+            "- \"currency\": string (the 3-letter currency code, e.g., 'RON', 'EUR', 'USD'), or null if not found\n"
+            "- \"in_stock\": boolean (true if available/in stock, false if out of stock), or null if unknown\n\n"
+            f"Webpage text:\n{text}"
+        )
+        try:
+            response = query_ollama(prompt, options={"format": "json", "temperature": 0.0})
+            data = json.loads(response)
+            
+            price = data.get("price")
+            if price is not None:
+                try:
+                    price = float(price)
+                except (ValueError, TypeError):
+                    price = None
+                    
+            title = data.get("title")
+            if not isinstance(title, str):
+                title = None
+                
+            currency = data.get("currency")
+            if not isinstance(currency, str):
+                currency = None
+            elif len(currency) > 5:
+                currency = None
+                
+            in_stock = data.get("in_stock")
+            if not isinstance(in_stock, bool):
+                in_stock = None
+                
+            return price, title, currency, in_stock
+        except Exception as e:
+            logger.warning(f"LLM fallback extraction failed: {e}")
+            return None, None, None, None

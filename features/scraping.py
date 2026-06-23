@@ -16,6 +16,8 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from ollama_client import query_ollama
+
 # Re-export the pure scraping primitives from `scraper.py` so existing
 # call-sites and tests can keep importing them from `features.scraping`.
 # Splitting them out of this module lets `api.py` reuse `PriceScraper`
@@ -944,7 +946,28 @@ class ScrapingFeature:
                         msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                     if decision.alert_kind:
                         new_src = _effective_currency(result.currency, url)
-                        msg += self._format_alert_section(decision, new_src)
+                        alert_text = self._format_alert_section(decision, new_src)
+                        
+                        if decision.alert_kind == "low":
+                            # Use LLM to generate a fun, enthusiastic message
+                            disp_name = result.title or old_title or url
+                            current_str = self.converter.format_with_conversions(
+                                decision.new_state_price, new_src,
+                            )
+                            prompt = (
+                                f"I am tracking the price of an item called '{disp_name}'. "
+                                f"The price just dropped to an all-time low of {current_str}! "
+                                "Write a very short, hyped, and fun notification message (max 2 sentences) telling the user to buy it now. "
+                            )
+                            try:
+                                llm_msg = await asyncio.to_thread(
+                                    query_ollama, prompt, options={"temperature": 0.8}
+                                )
+                                alert_text += f"🤖 *{llm_msg}*\n"
+                            except Exception as e:
+                                logger.warning(f"Failed to generate LLM alert: {e}")
+                                
+                        msg += alert_text
                     await user.send(msg, suppress_embeds=True)
                     logger.info(
                         f"Scrape DM sent to user {user_id} for {url} "
