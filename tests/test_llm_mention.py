@@ -72,7 +72,8 @@ def test_query_ollama_success(monkeypatch):
     assert args[0] == "http://ollama:11434/api/generate"
     assert kwargs["json"]["model"] == get_default_model()
     assert kwargs["json"]["prompt"] == "hi"
-    assert kwargs["json"]["keep_alive"] == 0
+    from ollama_client import get_keep_alive
+    assert kwargs["json"]["keep_alive"] == get_keep_alive()
     assert kwargs["json"]["stream"] is False
 
 

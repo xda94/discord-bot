@@ -79,6 +79,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `MENTION_OLLAMA_MODEL` | No (bot) | Model for @bot mentions. Defaults to `OLLAMA_DEFAULT_MODEL`. Must be in `OLLAMA_ALLOWED_MODELS`. |
 | `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/llm_set` (e.g. `llama3.2:3b,qwen3:4b`). |
 | `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls. Default: `180`. |
+| `OLLAMA_KEEP_ALIVE` | No | Keep-alive duration for Ollama models (e.g. `5m`, `10m`, `300` seconds, `-1` to keep loaded indefinitely, `0` to unload immediately). Default: `5m`. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Number of recent channel messages to include as context for mentions. Default: `0`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |

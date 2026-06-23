@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Pure web-scraping utilities — no Discord or Matplotlib dependencies.
 
 Split out of `features/scraping.py` so that:

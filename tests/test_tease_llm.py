@@ -129,3 +129,15 @@ def test_generate_inactivity_message_returns_none_on_error(monkeypatch):
 
     monkeypatch.setattr("tease_llm.query_ollama", _fail)
     assert generate_inactivity_message("Skippy", ask_question=True) is None
+
+
+def test_generate_inactivity_message_passes_temperature(monkeypatch):
+    called_kwargs = {}
+    def mock_query(prompt, **kwargs):
+        nonlocal called_kwargs
+        called_kwargs = kwargs
+        return "mocked inactivity message"
+
+    monkeypatch.setattr("tease_llm.query_ollama", mock_query)
+    generate_inactivity_message("Skippy", ask_question=True)
+    assert called_kwargs.get("options") == {"temperature": 0.8}
