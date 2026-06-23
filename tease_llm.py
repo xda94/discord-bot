@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 
 from ollama_client import OllamaError, get_default_model, get_mention_model, query_ollama
 
@@ -47,6 +48,35 @@ Reply in one short message: acknowledge they called you, and ask what they need.
 Keep it casual. Output ONLY the reply."""
 
 
+INACTIVITY_TOPICS = [
+    "what they are eating or drinking",
+    "the most chaotic thing they did today",
+    "what they are currently procrastinating on",
+    "a terrible movie or show recommendation",
+    "their current life status or how they are surviving",
+    "their plans for the weekend or rest of the day",
+    "an extremely controversial but low-stakes opinion (e.g. pineapple on pizza)",
+    "what project they are supposed to be working on right now",
+    "their current mood or energy level",
+    "if they've touched grass recently",
+    "if they've had water or coffee today",
+    "a random silly thought or hypothetical scenario",
+]
+
+INACTIVITY_THEMES = [
+    "reacting with dramatic loneliness",
+    "making a dad joke about the silence",
+    "claiming to have found a tumbleweed",
+    "wondering if everyone finally decided to touch grass",
+    "threatening to start singing if no one responds",
+    "asking if this is what the apocalypse feels like",
+    "demanding someone explain why it's so quiet",
+    "wondering if they got muted or if the server is actually dead",
+    "inviting everyone to join their imaginary party",
+    "speculating what everyone is doing instead of chatting",
+]
+
+
 def build_inactivity_prompt(bot_name: str | None, ask_question: bool) -> str:
     identity = f"You are {bot_name}, a Discord bot" if bot_name else "You are a Discord bot"
     base = (
@@ -55,13 +85,14 @@ def build_inactivity_prompt(bot_name: str | None, ask_question: bool) -> str:
         "the kind a bored friend would send."
     )
     if ask_question:
+        topic = random.choice(INACTIVITY_TOPICS)
         task = (
-            " Address one person directly and ask them a casual, fun question to get "
-            "them talking (their day, an opinion, plans — anything light). Do not use "
-            "any name; just talk to them directly."
+            f" Address one person directly and ask them a casual, fun question about {topic} to get "
+            "them talking. Do not use any name; just talk to them directly."
         )
     else:
-        task = " React to how dead the chat is and try to wake people up."
+        theme = random.choice(INACTIVITY_THEMES)
+        task = f" React to how dead the chat is with a {theme} and try to wake people up."
     return base + task + (
         "\n\nRules:\n"
         "- One short line, max 25 words.\n"
@@ -187,6 +218,7 @@ def generate_inactivity_message(
             build_inactivity_prompt(bot_name, ask_question),
             model=model,
             timeout=TEASE_OLLAMA_TIMEOUT,
+            options={"temperature": 0.8},
         )
         return normalize_tease_response(raw) or None
     except OllamaError:

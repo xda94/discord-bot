@@ -63,3 +63,62 @@ def test_get_default_model_missing_raises(monkeypatch):
     monkeypatch.delenv("OLLAMA_DEFAULT_MODEL", raising=False)
     with pytest.raises(OllamaError, match="not set"):
         get_default_model()
+
+
+def test_query_ollama_sends_options(monkeypatch):
+    import requests
+    from ollama_client import query_ollama
+    
+    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "alpha")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "alpha")
+    
+    payload_received = {}
+    
+    class MockResponse:
+        status_code = 200
+        ok = True
+        def json(self):
+            return {"response": "test response"}
+            
+    def mock_post(url, json, timeout):
+        nonlocal payload_received
+        payload_received = json
+        return MockResponse()
+        
+    monkeypatch.setattr(requests, "post", mock_post)
+    
+    result = query_ollama("hello", options={"temperature": 0.8})
+    assert result == "test response"
+    assert payload_received.get("options") == {"temperature": 0.8}
+
+
+def test_query_ollama_respects_keep_alive(monkeypatch):
+    import requests
+    from ollama_client import query_ollama
+    
+    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "alpha")
+    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "alpha")
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "10m")
+    
+    payload_received = {}
+    
+    class MockResponse:
+        status_code = 200
+        ok = True
+        def json(self):
+            return {"response": "test response"}
+            
+    def mock_post(url, json, timeout):
+        nonlocal payload_received
+        payload_received = json
+        return MockResponse()
+        
+    monkeypatch.setattr(requests, "post", mock_post)
+    
+    query_ollama("hello")
+    assert payload_received.get("keep_alive") == "10m"
+    
+    # Test integer parsing:
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "-1")
+    query_ollama("hello")
+    assert payload_received.get("keep_alive") == -1

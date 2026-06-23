@@ -11,6 +11,14 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip(
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "180"))
 
 
+def get_keep_alive() -> int | str:
+    raw = os.getenv("OLLAMA_KEEP_ALIVE", "5m").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
 class OllamaError(Exception):
     pass
 
@@ -59,10 +67,11 @@ def query_ollama(
     model: str | None = None,
     system: str | None = None,
     *,
+    options: dict | None = None,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int | None = None,
 ) -> str:
-    """Call Ollama /api/generate once, then unload the model (`keep_alive: 0`)."""
+    """Call Ollama /api/generate."""
     if timeout is None:
         timeout = OLLAMA_TIMEOUT
     if model is None:
@@ -77,10 +86,12 @@ def query_ollama(
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "keep_alive": 0,
+        "keep_alive": get_keep_alive(),
     }
     if system is not None:
         payload["system"] = system
+    if options is not None:
+        payload["options"] = options
         
     try:
         response = requests.post(
