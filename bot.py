@@ -19,6 +19,7 @@ from logger import setup_logger
 logger = setup_logger("discord_bot", "bot.log")
 
 import db
+from features.azi_se_spala import AziSeSpalaFeature
 from features.llm_mention import LLMMentionFeature
 from features.help_feature import HelpFeature
 from features.inactivity import InactivityFeature
@@ -85,6 +86,7 @@ reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
 scraping = ScrapingFeature(client, tree)
 stats = StatsFeature(client, tree)
+azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_mention = LLMMentionFeature(client, tree, bot_id=BOT_ID)
 help_feature = HelpFeature(client, tree)
 
