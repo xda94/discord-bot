@@ -14,6 +14,10 @@ logger = logging.getLogger("discord_bot")
 # command exists for: by tradition you don't do laundry on certain holy days.
 CALENDAR_URL = "https://azisespala.ro/data/holidays-{year}.json"
 
+# The API's usage terms ask that the data source be credited wherever it's
+# displayed. Shown as a footer on every reply that surfaces calendar data.
+ATTRIBUTION = "Date calendar: azisespala.ro"
+
 # Accept the day in the formats a Romanian would actually type. All resolve to
 # (day, month); the year always comes from the requested/`today` year so we
 # only ever fetch one calendar file.
@@ -86,7 +90,73 @@ def _format_reply(target: date, entry: dict) -> str:
     lines = [header, body]
     if text:
         lines.append(f"\n📖 {text}")
+    lines.append(f"\n_{ATTRIBUTION}_")
     return "\n".join(lines)
+
+
+def _parse_date(raw: str | None) -> date | None:
+    """Resolve the optional `data` argument to a `date`.
+
+    None/empty -> today. A recognised day string -> that day this year
+    (or the explicit year if the user typed one). Unrecognised -> None,
+    which the command surfaces as a friendly format hint."""
+    if not raw or not raw.strip():
+        return datetime.now().date()
+    raw = raw.strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        # Day-only formats default the year to 1900; pin those to the
+        # current year so "25.12" means this Christmas, not 1900's.
+        if "%Y" not in fmt:
+            parsed = parsed.replace(year=datetime.now().year)
+        return parsed.date()
+    return None
+
+
+async def _run(interaction: discord.Interaction, data: str | None) -> None:
+    """Core /azi-se-spala handler. Kept module-level (not a registration
+    closure) so it can be unit-tested with a mock interaction."""
+    logger.info(f"Command /azi-se-spala called by {interaction.user} (data={data!r})")
+
+    target = _parse_date(data)
+    if target is None:
+        await interaction.response.send_message(
+            "Format de dată nevalid. Folosește `ZZ.LL` sau `ZZ.LL.AAAA` "
+            "(ex. `25.12` sau `25.12.2026`).",
+            ephemeral=True,
+        )
+        return
+
+    # Network round-trip; defer so we never race Discord's 3s window.
+    await interaction.response.defer()
+
+    try:
+        calendar = await asyncio.to_thread(_fetch_calendar, target.year)
+    except CalendarNotAvailable:
+        await interaction.followup.send(
+            f"Nu am date din calendar pentru anul {target.year} "
+            f"(încă nu sunt publicate pe azisespala.ro)."
+        )
+        return
+    except requests.RequestException as exc:
+        logger.warning(f"Failed to fetch azisespala calendar: {exc}")
+        await interaction.followup.send(
+            "Nu am putut contacta azisespala.ro acum. Încearcă mai târziu."
+        )
+        return
+
+    entry = _lookup_day(calendar, target)
+    if entry is None:
+        await interaction.followup.send(
+            f"Nu am găsit nicio intrare pentru {target.strftime('%d.%m.%Y')} "
+            f"în calendar."
+        )
+        return
+
+    await interaction.followup.send(_format_reply(target, entry))
 
 
 class AziSeSpalaFeature:
@@ -99,30 +169,7 @@ class AziSeSpalaFeature:
         self.tree = tree
         self._register_commands()
 
-    def _parse_date(self, raw: str | None) -> date | None:
-        """Resolve the optional `data` argument to a `date`.
-
-        None/empty -> today. A recognised day string -> that day this year
-        (or the explicit year if the user typed one). Unrecognised -> None,
-        which the command surfaces as a friendly format hint."""
-        if not raw or not raw.strip():
-            return datetime.now().date()
-        raw = raw.strip()
-        for fmt in _DATE_FORMATS:
-            try:
-                parsed = datetime.strptime(raw, fmt)
-            except ValueError:
-                continue
-            # Day-only formats default the year to 1900; pin those to the
-            # current year so "25.12" means this Christmas, not 1900's.
-            if "%Y" not in fmt:
-                parsed = parsed.replace(year=datetime.now().year)
-            return parsed.date()
-        return None
-
     def _register_commands(self) -> None:
-        feature = self
-
         @self.tree.command(
             name="azi-se-spala",
             description="Vezi dacă azi (sau într-o anumită zi) se spală rufe, după calendarul ortodox",
@@ -131,41 +178,4 @@ class AziSeSpalaFeature:
             data="Optional: o zi de verificat (ex. 25.12 sau 25.12.2026). Implicit, azi."
         )
         async def azi_se_spala(interaction: discord.Interaction, data: str | None = None):
-            logger.info(f"Command /azi-se-spala called by {interaction.user} (data={data!r})")
-
-            target = feature._parse_date(data)
-            if target is None:
-                await interaction.response.send_message(
-                    "Format de dată nevalid. Folosește `ZZ.LL` sau `ZZ.LL.AAAA` "
-                    "(ex. `25.12` sau `25.12.2026`).",
-                    ephemeral=True,
-                )
-                return
-
-            # Network round-trip; defer so we never race Discord's 3s window.
-            await interaction.response.defer()
-
-            try:
-                calendar = await asyncio.to_thread(_fetch_calendar, target.year)
-            except CalendarNotAvailable:
-                await interaction.followup.send(
-                    f"Nu am date din calendar pentru anul {target.year} "
-                    f"(încă nu sunt publicate pe azisespala.ro)."
-                )
-                return
-            except requests.RequestException as exc:
-                logger.warning(f"Failed to fetch azisespala calendar: {exc}")
-                await interaction.followup.send(
-                    "Nu am putut contacta azisespala.ro acum. Încearcă mai târziu."
-                )
-                return
-
-            entry = _lookup_day(calendar, target)
-            if entry is None:
-                await interaction.followup.send(
-                    f"Nu am găsit nicio intrare pentru {target.strftime('%d.%m.%Y')} "
-                    f"în calendar."
-                )
-                return
-
-            await interaction.followup.send(_format_reply(target, entry))
+            await _run(interaction, data)
