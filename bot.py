@@ -22,6 +22,7 @@ import db
 from features.azi_se_spala import AziSeSpalaFeature
 from features.llm_mention import LLMMentionFeature
 from features.help_feature import HelpFeature
+from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
 from features.keywords import KeywordsFeature
@@ -85,6 +86,7 @@ inactivity = InactivityFeature(client, tree)
 reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
 scraping = ScrapingFeature(client, tree)
+flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_mention = LLMMentionFeature(client, tree, bot_id=BOT_ID)
@@ -94,7 +96,7 @@ help_feature = HelpFeature(client, tree)
 MESSAGE_HANDLERS = (inactivity, llm_mention, keywords, teases)
 
 # Features that own background tasks needing to be kicked off in on_ready.
-BACKGROUND_FEATURES = (sponsors, inactivity, reminders, jokes, scraping)
+BACKGROUND_FEATURES = (sponsors, inactivity, reminders, jokes, scraping, flights)
 
 
 @client.event
