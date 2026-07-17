@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, and a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs). A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -64,6 +64,8 @@ DISCORD_TOKEN=YOUR_DISCORD_TOKEN_HERE
 HOST=YOUR_HOST_HERE
 PORT=YOUR_PORT_HERE
 API_TOKEN=YOUR_API_TOKEN_HERE
+AMADEUS_CLIENT_ID=YOUR_AMADEUS_API_KEY
+AMADEUS_CLIENT_SECRET=YOUR_AMADEUS_API_SECRET
 ```
 
 | Variable | Required | Notes |
@@ -85,6 +87,12 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
 | `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Defaults to `OLLAMA_DEFAULT_MODEL`. |
 | `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |
+| `AMADEUS_CLIENT_ID` | For flight searches | Amadeus Self-Service API key. A tracker can still be saved without credentials, but checks remain pending until both credentials are configured. |
+| `AMADEUS_CLIENT_SECRET` | For flight searches | Amadeus Self-Service API secret. Never commit it. |
+| `AMADEUS_BASE_URL` | No | Defaults to `https://test.api.amadeus.com`. Use `https://api.amadeus.com` after the application has production access. |
+| `AMADEUS_TIMEOUT` | No | Flight API HTTP timeout in seconds. Default: `20`. |
+| `FLIGHT_CHECK_INTERVAL_HOURS` | No | Hours between flight tracker passes. Default: `5`; raise this if the account approaches its monthly quota. Minimum: `1`. |
+| `FLIGHT_CHECK_GAP_SECONDS` | No | Delay between users' flight trackers in one pass. Default: `1`. |
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
 
@@ -170,6 +178,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 | Feature | Interval | What it does |
 |---|---|---|
 | Wishlist scrape | 12 h | Fetches each tracked URL, updates price/stock, appends history, trims entries older than 180 days, DMs on change / back-in-stock / buy-wait alerts |
+| Flight tracker | 5 h (configurable) | Searches each user's exact dates or flexible period, stores price history, and DMs on the first result or a lower price |
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
 | Reminders | 10 s | Delivers due reminders |
@@ -237,6 +246,20 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 - Red — above historical median (“maybe wait”); one alert per high period until price returns to median or below.
 
 Flat prices do not trigger spurious “all-time low” messages.
+
+### Flight tracker (per user)
+
+| Command | Description |
+|---|---|
+| `/flight-tracker add <origin> <destination> <start_date> <end_date> [trip_days] [adults] [currency]` | Save a round-trip watch and run its first search immediately. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
+| `/flight-tracker show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
+| `/flight-tracker delete <tracker_id>` | Delete only your own tracker and its price history. |
+
+Exact example: `/flight-tracker add origin:OTP destination:BKK start_date:2026-12-30 end_date:2027-01-13`.
+
+Flexible example: `/flight-tracker add origin:OTP destination:BKK start_date:2026-10-01 end_date:2026-10-31 trip_days:10`. The 10-day length is inclusive, so this represents all 22 windows from October 1-10, October 2-11, through October 22-31. Amadeus's cheapest-date endpoint searches that departure range and duration in one quota-efficient cached request; the bot then confirms the cheapest candidates with the live Flight Offers Search endpoint.
+
+The default Amadeus URL is the limited test dataset. For useful real tracking, request production access and set `AMADEUS_BASE_URL=https://api.amadeus.com`. Amadeus Self-Service also documents dataset gaps, including low-cost carriers, American Airlines, Delta, and British Airways; the bot reports "no offers" rather than inventing a price when the route is absent. See the [Amadeus flight API guide](https://developers.amadeus.com/self-service/apis-docs/guides/developer-guides/resources/flights/) and [rate-limit guide](https://developers.amadeus.com/self-service/apis-docs/guides/developer-guides/api-rate-limits/).
 
 ### System
 
@@ -310,7 +333,7 @@ python -m pytest
 
 **CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
 
-Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascade, exchange rates, **per-guild joke** config/sent isolation), `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker.
+Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (sliding windows, credentials, exact/flexible Amadeus response parsing), registered flight `add/show/delete` command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, and `features/keywords` response picker.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
@@ -325,6 +348,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `bot.py` | Discord client, feature wiring, `on_message` / `on_ready` |
 | `api.py` | Flask API (lazy `init_db` on first request) |
 | `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** discord/matplotlib |
+| `flight_provider.py` | Amadeus OAuth/search client, IATA/date validation, flexible window generation — **no** Discord imports |
 | `db.py` | SQLite schema and queries |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` env for log file location |
 | `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
@@ -344,6 +368,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
+| `flights.py` | `FlightTrackerFeature` | `/flight-tracker add/show/delete`, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `ask.py` | `AskFeature` | `/ask` and @bot mention prompts via Ollama |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
