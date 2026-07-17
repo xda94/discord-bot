@@ -64,8 +64,6 @@ DISCORD_TOKEN=YOUR_DISCORD_TOKEN_HERE
 HOST=YOUR_HOST_HERE
 PORT=YOUR_PORT_HERE
 API_TOKEN=YOUR_API_TOKEN_HERE
-AMADEUS_CLIENT_ID=YOUR_AMADEUS_API_KEY
-AMADEUS_CLIENT_SECRET=YOUR_AMADEUS_API_SECRET
 ```
 
 | Variable | Required | Notes |
@@ -87,10 +85,11 @@ AMADEUS_CLIENT_SECRET=YOUR_AMADEUS_API_SECRET
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
 | `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Defaults to `OLLAMA_DEFAULT_MODEL`. |
 | `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |
-| `AMADEUS_CLIENT_ID` | For flight searches | Amadeus Self-Service API key. A tracker can still be saved without credentials, but checks remain pending until both credentials are configured. |
-| `AMADEUS_CLIENT_SECRET` | For flight searches | Amadeus Self-Service API secret. Never commit it. |
-| `AMADEUS_BASE_URL` | No | Defaults to `https://test.api.amadeus.com`. Use `https://api.amadeus.com` after the application has production access. |
-| `AMADEUS_TIMEOUT` | No | Flight API HTTP timeout in seconds. Default: `20`. |
+| `SERPAPI_BASE_URL` | No | Google Flights search endpoint. Default: `https://serpapi.com/search.json`. |
+| `SERPAPI_ACCOUNT_URL` | No | API-key validation endpoint. Default: `https://serpapi.com/account.json`. |
+| `SERPAPI_TIMEOUT` | No | SerpApi HTTP timeout in seconds. Default: `30`. |
+| `SERPAPI_GL` | No | Google Flights country context. Default: `ro`. |
+| `SERPAPI_HL` | No | Google Flights response language. Default: `en`. |
 | `FLIGHT_CHECK_INTERVAL_HOURS` | No | Hours between flight tracker passes. Default: `5`; raise this if the account approaches its monthly quota. Minimum: `1`. |
 | `FLIGHT_CHECK_GAP_SECONDS` | No | Delay between users' flight trackers in one pass. Default: `1`. |
 
@@ -178,7 +177,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 | Feature | Interval | What it does |
 |---|---|---|
 | Wishlist scrape | 12 h | Fetches each tracked URL, updates price/stock, appends history, trims entries older than 180 days, DMs on change / back-in-stock / buy-wait alerts |
-| Flight tracker | 5 h (configurable) | Searches each user's exact dates or flexible period, stores price history, and DMs on the first result or a lower price |
+| Flight tracker | 5 h (configurable) | Checks the least-recently searched fixed-date tracker for each user, stores price history, and DMs on the first result or a lower price |
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
 | Reminders | 10 s | Delivers due reminders |
@@ -251,21 +250,25 @@ Flat prices do not trigger spurious “all-time low” messages.
 
 | Command | Description |
 |---|---|
-| `/flight-tracker add <origin> <destination> <start_date> <end_date> [trip_days] [adults] [currency]` | Save a round-trip watch and run its first search immediately. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
-| `/flight-tracker show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
-| `/flight-tracker delete <tracker_id>` | Delete only your own tracker and its price history. |
+| `/flight_tracker_add <origin> <destination> <start_date> <end_date> [adults] [currency]` | Save a fixed-date round-trip watch and run its first search immediately. On first use, opens the private SerpApi login modal. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
+| `/flight_tracker_show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
+| `/flight_tracker_delete <tracker_id>` | Delete only your own tracker and its price history. |
+| `/flight_tracker_login` | Validate and set/replace your own SerpApi API Key. |
+| `/flight_tracker_logout` | Remove your saved SerpApi key. Existing trackers remain saved but checks pause until the next login. |
 
-Exact example: `/flight-tracker add origin:OTP destination:BKK start_date:2026-12-30 end_date:2027-01-13`.
+Exact example: `/flight_tracker_add origin:OTP destination:BKK start_date:2026-12-30 end_date:2027-01-13`.
 
-Flexible example: `/flight-tracker add origin:OTP destination:BKK start_date:2026-10-01 end_date:2026-10-31 trip_days:10`. The 10-day length is inclusive, so this represents all 22 windows from October 1-10, October 2-11, through October 22-31. Amadeus's cheapest-date endpoint searches that departure range and duration in one quota-efficient cached request; the bot then confirms the cheapest candidates with the live Flight Offers Search endpoint.
+Only fixed departure and return dates are supported. Flexible date windows were intentionally removed because each date pair would consume a separate SerpApi search and quickly exhaust the free quota.
 
-The default Amadeus URL is the limited test dataset. For useful real tracking, request production access and set `AMADEUS_BASE_URL=https://api.amadeus.com`. Amadeus Self-Service also documents dataset gaps, including low-cost carriers, American Airlines, Delta, and British Airways; the bot reports "no offers" rather than inventing a price when the route is absent. See the [Amadeus flight API guide](https://developers.amadeus.com/self-service/apis-docs/guides/developer-guides/resources/flights/) and [rate-limit guide](https://developers.amadeus.com/self-service/apis-docs/guides/developer-guides/api-rate-limits/).
+Each Discord user supplies one **SerpApi API Key**. If no login exists when `/flight_tracker_add` is used, the bot opens a modal, validates the key through SerpApi's Account API, saves it, and then creates the tracker. Later adds reuse that same user's key and quota. Keys are stored in the local SQLite database and are never shown by commands or written to logs. Because SQLite storage is not encrypted, filesystem/database access must be restricted to the bot operator; use `/flight_tracker_logout` to remove a user's key.
+
+The free SerpApi plan currently includes 250 searches per month. To stay below that, each five-hour scheduled pass checks at most one tracker per user/API key, selecting the least-recently checked one. This caps scheduled usage at about 144 successful searches per user in a 30-day month regardless of how many trackers are saved; multiple trackers rotate and are therefore checked less often individually. Immediate searches performed by `/flight_tracker_add` use additional credits from the remaining headroom. See the [SerpApi Google Flights documentation](https://serpapi.com/google-flights-api) and [pricing](https://serpapi.com/pricing).
 
 ### System
 
 | Command | Description |
 |---|---|
-| `/stats` | Host CPU, RAM, disk, temperature, network, uptime (load avg `N/A` on Windows). |
+| `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
 | `/llm_set <model>` | Set the Ollama model used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → direct LLM answer. |
 | `@bot <text>` | Same as above; uses `MENTION_OLLAMA_MODEL`. |
@@ -333,7 +336,7 @@ python -m pytest
 
 **CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
 
-Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (sliding windows, credentials, exact/flexible Amadeus response parsing), registered flight `add/show/delete` command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, and `features/keywords` response picker.
+Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), registered flight login/add/show/delete command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, and `features/keywords` response picker.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
@@ -348,7 +351,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `bot.py` | Discord client, feature wiring, `on_message` / `on_ready` |
 | `api.py` | Flask API (lazy `init_db` on first request) |
 | `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** discord/matplotlib |
-| `flight_provider.py` | Amadeus OAuth/search client, IATA/date validation, flexible window generation — **no** Discord imports |
+| `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
 | `db.py` | SQLite schema and queries |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` env for log file location |
 | `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
@@ -368,7 +371,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
-| `flights.py` | `FlightTrackerFeature` | `/flight-tracker add/show/delete`, immediate searches, five-hour checks, lower-price DMs |
+| `flights.py` | `FlightTrackerFeature` | `/flight_tracker_*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `ask.py` | `AskFeature` | `/ask` and @bot mention prompts via Ollama |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |

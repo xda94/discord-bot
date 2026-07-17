@@ -183,9 +183,29 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_price_history_timestamp "
                 "ON price_history(timestamp)"
             )
-            # Per-user round-trip flight watches. ``trip_days = 0`` means
-            # start_date/end_date are exact travel dates; values >= 2 mean
-            # "search every sliding trip_days window contained in this period".
+            # Migration from the decommissioned Amadeus integration. Those
+            # client-id/secret pairs cannot be used with SerpApi, so remove the
+            # obsolete credential table and require each user to log in again
+            # with one SerpApi key. Flight trackers themselves are preserved.
+            c.execute("PRAGMA table_info(flight_api_credentials)")
+            credential_columns = {row[1] for row in c.fetchall()}
+            if credential_columns and "api_key" not in credential_columns:
+                c.execute("DROP TABLE flight_api_credentials")
+                logger.info("Removed obsolete per-user Amadeus credentials.")
+
+            # One SerpApi key per Discord user keeps account quotas isolated.
+            # Keys are never returned by commands or written to logs. Operators
+            # must restrict filesystem access to the SQLite database.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS flight_api_credentials (
+                    user_id INTEGER PRIMARY KEY,
+                    api_key TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            # Per-user fixed-date round-trip flight watches. ``trip_days`` is
+            # retained only for compatibility with the short-lived flexible
+            # tracker build; new trackers always store 0.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS flight_trackers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -914,6 +934,56 @@ def get_price_history(user_id, url):
 
 
 # --- Flight tracker functions ---
+
+def set_flight_api_credentials(user_id, api_key):
+    """Create or replace one Discord user's SerpApi key."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO flight_api_credentials "
+                "(user_id, api_key, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "api_key = excluded.api_key, "
+                "updated_at = excluded.updated_at",
+                (user_id, api_key, time.time()),
+            )
+        return True
+    except Exception:
+        logger.exception(f"Failed to store flight API credentials for user {user_id}")
+        return False
+
+
+def get_flight_api_credentials(user_id):
+    """Return the user's private SerpApi key for internal provider use."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT api_key, updated_at "
+                "FROM flight_api_credentials WHERE user_id = ?",
+                (user_id,),
+            )
+            row = c.fetchone()
+            if row is None:
+                return None
+            return {
+                "api_key": row[0],
+                "updated_at": row[1],
+            }
+    except Exception:
+        logger.exception(f"Failed to fetch flight API credentials for user {user_id}")
+        return None
+
+
+def delete_flight_api_credentials(user_id):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM flight_api_credentials WHERE user_id = ?", (user_id,)
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(f"Failed to delete flight API credentials for user {user_id}")
+        return False
 
 _FLIGHT_TRACKER_COLUMNS = (
     "id, user_id, origin, destination, start_date, end_date, trip_days, "
