@@ -200,8 +200,15 @@ class PriceScraper:
             currency = currency or self._currency_from_tld(url)
             if in_stock is None:
                 in_stock = self._extract_meta_availability(soup)
+            
+            # Strip out script and style elements before text fallback / LLM extraction
+            # This avoids falsely matching out-of-stock translation keys in JSON bundles.
+            for element in soup(["script", "style"]):
+                element.decompose()
+            clean_text = soup.get_text(separator=' ', strip=True)
+
             if in_stock is None:
-                in_stock = self._extract_text_availability(response.text)
+                in_stock = self._extract_text_availability(clean_text)
             # NOTE: deliberately do NOT coerce `in_stock=None` to False here.
             # Unknown stock status is propagated up so the scrape loop can
             # leave the persisted value alone (via COALESCE) instead of
@@ -210,7 +217,6 @@ class PriceScraper:
             if price is None and title is None and currency is None and in_stock is None:
                 # Fall back to LLM extraction if standard methods failed
                 # Extract clean text and truncate to avoid huge context windows
-                clean_text = soup.get_text(separator=' ', strip=True)
                 llm_price, llm_title, llm_currency, llm_stock = self._extract_with_llm(clean_text)
                 
                 price = llm_price if llm_price is not None else price
