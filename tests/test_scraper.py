@@ -253,3 +253,24 @@ def test_text_availability_no_signal_returns_none():
     """No keyword match in either direction → unknown (not False). This is
     what lets the downstream loop avoid mis-stamping items as OOS."""
     assert PriceScraper._extract_text_availability("<p>just a desc</p>") is None
+
+def test_fetch_ignores_script_tags():
+    """Verify that fetch strips script tags before falling back to text availability.
+    This prevents matching JSON payloads containing out-of-stock keys."""
+    class DummyResponse:
+        status_code = 200
+        text = '''
+        <html>
+            <body><p>in stoc</p></body>
+            <script>const state = {"status": "stoc epuizat"};</script>
+        </html>
+        '''
+    
+    scraper = PriceScraper()
+    scraper._http_get = lambda url: DummyResponse()
+    
+    result = scraper.fetch("https://example.com/test")
+    # "stoc epuizat" is in the script, so if it's not stripped, it would win.
+    # Since it is stripped, the "in stoc" in the body should win.
+    assert result.in_stock is True
+

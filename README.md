@@ -237,6 +237,8 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 
 **Currency** — read from the page when possible; TLD fallback (e.g. `.ro` → RON, `.dk` → DKK).
 
+**Text-fallback extraction** — If JSON-LD or meta tags are missing, the scraper strips `<script>` and `<style>` tags to check visible page text for stock status keywords, preventing false "out of stock" readings triggered by hidden JS localization strings.
+
 **AI Fallback Scraping** — If standard HTML metadata is missing, the scraper strips the page text and uses local Ollama (`OLLAMA_DEFAULT_MODEL`) to robustly extract price and stock data from unstructured web text.
 
 **Buy / wait DMs** (after ~7 data points and ≥1 % price spread in the window):
