@@ -73,6 +73,32 @@ def test_build_mention_prompt_includes_content():
     assert "<chat_history>" in prompt
     assert "Alice" in prompt
     assert "what is python?" in prompt
+    assert "<current_message" in prompt
+
+
+def test_build_mention_prompt_requires_one_direct_contextual_reply():
+    prompt = build_mention_prompt(
+        "Robeeque",
+        "pareri?",
+        ["Alex: Noul model pare mai rapid decât Gemma 3:4b."],
+    )
+    lowered = prompt.lower()
+    assert "use the chat history to resolve short references" in lowered
+    assert "exactly one natural, ready-to-send discord message" in lowered
+    assert "do not provide options" in lowered
+    assert "do not act as a writing coach" in lowered
+    assert "same language as the current message" in lowered
+    assert "not from <chat_history>" in lowered
+
+
+def test_current_message_controls_reply_language_not_history():
+    prompt = build_mention_prompt(
+        "Robeeque",
+        "pareri?",
+        ["Alex: This model appears to be considerably faster."],
+    )
+    assert "Reply in the same language as the current message" in prompt
+    assert "Determine the language from <current_message>" in prompt
 
 
 def test_build_mention_prompt_has_no_system_identity():

@@ -298,8 +298,8 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
 | `/llm_set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `/llm_inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
-| `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → direct LLM answer. |
-| `@bot <text>` | Same as above; uses `MENTION_LLAMA_CPP_MODEL`. |
+| `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → one direct LLM answer. |
+| `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
 
 ---
 
