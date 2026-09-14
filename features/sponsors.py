@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import time
+from typing import Optional
 
 import discord
 from discord import app_commands
@@ -26,6 +27,21 @@ SPONSOR_TIER_CHOICES = [
 
 ONE_YEAR_SECONDS = 365 * 24 * 3600
 ONE_DAY_SECONDS = 24 * 3600
+
+
+def build_sponsor_plans_message() -> str:
+    """Build the public plan list from the canonical tier configuration."""
+    lines = ["**Available Sponsorship Plans:**", ""]
+    for key, tier in SPONSOR_TIERS.items():
+        chance = f"{tier['chance']:.0%}"
+        if key == "ultra":
+            benefit = "sansa sa adauge la un raspuns un mesaj pe care il vrei tu"
+        else:
+            benefit = "sansa sa adauge la un raspuns `(Sponsored by @User)`"
+        lines.append(
+            f"**{tier['name']}** — {tier['price']} — {chance} {benefit}"
+        )
+    return "\n".join(lines)
 
 
 class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
@@ -134,8 +150,8 @@ class SponsorsFeature:
         @app_commands.choices(plan=SPONSOR_TIER_CHOICES)
         async def sponsor_set(
             interaction: discord.Interaction,
-            user: discord.Member | None = None,
-            plan: app_commands.Choice[str] | None = None,
+            user: Optional[discord.Member] = None,
+            plan: Optional[app_commands.Choice[str]] = None,
         ):
             sponsor_name = user.display_name if user else None
             tier = plan.value if plan else "standard"
@@ -144,14 +160,7 @@ class SponsorsFeature:
         @self.tree.command(name="sponsor_plans", description="Show available sponsorship plans")
         async def sponsor_plans(interaction: discord.Interaction):
             logger.info(f"Command /sponsor_plans called by {interaction.user}")
-            text = (
-                "**Available Sponsorship Plans:**\n\n"
-                "**Sponsor Standard** — 6 lei / an — 1% sansa sa adauge la un raspuns `(Sponsored by @User)`\n"
-                "**Sponsor Entuziast** — 8 lei / an — 3% sansa sa adauge la un raspuns `(Sponsored by @User)`\n"
-                "**Sponsor Premium** — 10 lei / an — 5% sansa sa adauge la un raspuns `(Sponsored by @User)`\n"
-                "**Sponsor Ultra Pro Max** — 20 lei / an — 8% sansa sa adauge la un raspuns un mesaj pe care il vrei tu"
-            )
-            await interaction.response.send_message(text)
+            await interaction.response.send_message(build_sponsor_plans_message())
 
         @self.tree.command(name="sponsor_who", description="Show the current sponsor and time until expiry")
         async def sponsor_who(interaction: discord.Interaction):
