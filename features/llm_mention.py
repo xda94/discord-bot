@@ -10,8 +10,8 @@ import discord
 from discord import app_commands
 
 import db
-from mention_utils import extract_mention_text, resolve_bot_display_name
-from ollama_client import OllamaError, get_allowed_models, get_mention_model
+from llm_client import get_allowed_models, get_mention_model
+from mention_utils import extract_mention_text
 from tease_llm import generate_mention_reply, generate_summon_reply
 
 logger = logging.getLogger("discord_bot")
@@ -30,6 +30,24 @@ def get_model_choices() -> list[app_commands.Choice[str]]:
         app_commands.Choice(name=model, value=model)
         for model in get_allowed_models()
     ]
+
+
+def get_selected_model() -> str:
+    """Return a valid configured alias and repair stale pre-migration values."""
+    stored = db.get_setting("mention_model")
+    allowed = set(get_allowed_models())
+    if stored in allowed:
+        return stored
+
+    fallback = get_mention_model()
+    if stored:
+        logger.warning(
+            "Stored mention model %r is not a configured llama.cpp alias; using %r.",
+            stored,
+            fallback,
+        )
+        db.set_setting("mention_model", fallback)
+    return fallback
 
 
 DISCORD_MESSAGE_LIMIT = 2000
@@ -87,11 +105,10 @@ class AskJob:
     reply_to: discord.Message | None = None
     summon_only: bool = False
     context_messages: list[str] = field(default_factory=list)
-    bot_name: str = ""
 
 
 class LLMMentionFeature:
-    """@bot mention prompts via Ollama and /llm_set command."""
+    """@bot mention prompts via llama.cpp and /llm_set command."""
 
     def __init__(
         self,
@@ -156,7 +173,6 @@ class LLMMentionFeature:
                     job.question,
                     model=job.model,
                     context_messages=job.context_messages,
-                    bot_name=job.bot_name,
                 )
         except Exception:
             logger.exception("Unexpected error in mention reply")
@@ -199,8 +215,7 @@ class LLMMentionFeature:
             len(text),
         )
         
-        # Get dynamic mention model from DB or fallback
-        model = db.get_setting("mention_model") or get_mention_model()
+        model = get_selected_model()
 
         limit = get_llm_context_messages()
         context_messages = []
@@ -217,7 +232,6 @@ class LLMMentionFeature:
             reply_to=message,
             summon_only=summon_only,
             context_messages=context_messages,
-            bot_name=resolve_bot_display_name(message.guild, self.client),
         )
         await self._enqueue_job(job)
         return True
@@ -228,7 +242,7 @@ class LLMMentionFeature:
             description="Set the model used when the bot is mentioned",
         )
         @app_commands.describe(
-            model="Ollama model to use for mentions",
+            model="llama.cpp model alias to use for mentions",
         )
         @app_commands.choices(model=get_model_choices())
         async def llm_set(

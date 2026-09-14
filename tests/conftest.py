@@ -19,10 +19,10 @@ import db  # noqa: E402  (sys.path tweak needs to happen first)
 
 
 @pytest.fixture(autouse=True)
-def ollama_env(monkeypatch):
-    """Ollama model config is required from .env in production; set for tests."""
-    monkeypatch.setenv("OLLAMA_ALLOWED_MODELS", "llama3.2:3b,other-model")
-    monkeypatch.setenv("OLLAMA_DEFAULT_MODEL", "llama3.2:3b")
+def llama_cpp_env(monkeypatch):
+    """llama.cpp model config is required in production; set it for tests."""
+    monkeypatch.setenv("LLAMA_CPP_ALLOWED_MODELS", "discord-bot,other-model")
+    monkeypatch.setenv("LLAMA_CPP_DEFAULT_MODEL", "discord-bot")
     monkeypatch.setenv("BOT_ID", "999888777")
 
 
