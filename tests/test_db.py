@@ -212,6 +212,22 @@ def test_guild_activity_returns_empty_when_unset(tmp_db):
     assert db.get_all_guild_activity() == []
 
 
+def test_guild_inactivity_defaults_to_enabled(tmp_db):
+    assert db.is_guild_inactivity_enabled(123) is True
+
+
+def test_guild_inactivity_setting_is_isolated_per_guild(tmp_db):
+    db.set_guild_inactivity_enabled(1, False)
+    db.set_guild_inactivity_enabled(2, True)
+
+    assert db.is_guild_inactivity_enabled(1) is False
+    assert db.is_guild_inactivity_enabled(2) is True
+    assert db.is_guild_inactivity_enabled(3) is True
+
+    db.set_guild_inactivity_enabled(1, True)
+    assert db.is_guild_inactivity_enabled(1) is True
+
+
 # ---------------------------------------------------------------------------
 # Exchange rates
 # ---------------------------------------------------------------------------

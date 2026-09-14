@@ -12,7 +12,7 @@ services:
     environment:
       DB_FILE: /data/responses.db
       LOG_DIR: /data/logs
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      LLAMA_CPP_BASE_URL: ${LLAMA_CPP_BASE_URL:-http://host.docker.internal:8080}
     volumes:
       - bot-data:/data
     restart: unless-stopped

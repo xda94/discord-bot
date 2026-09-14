@@ -7,12 +7,17 @@ so we won't accidentally re-introduce spammy or missed alerts on a
 future refactor.
 """
 
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from features.scraping import (
     ALERT_LOW_REALERT_DROP_PCT,
     ALERT_MIN_DATA_POINTS,
     AlertDecision,
+    ScrapeResult,
+    ScrapingFeature,
     _classify_price,
 )
 
@@ -310,3 +315,101 @@ def test_decision_returns_dataclass_instance():
     """Sanity: callers rely on attribute access, not tuple indexing."""
     decision = _classify_price(None, [], None, None)
     assert isinstance(decision, AlertDecision)
+
+
+def test_price_change_dm_includes_llm_reaction(monkeypatch):
+    feature = object.__new__(ScrapingFeature)
+    feature.scraper = MagicMock()
+    feature.scraper.fetch.return_value = ScrapeResult(
+        price=80.0,
+        in_stock=True,
+        title="Coffee machine",
+        currency="RON",
+    )
+    feature.converter = MagicMock()
+    feature.converter.format_with_conversions.side_effect = [
+        "100.00 RON",
+        "80.00 RON",
+    ]
+    user = MagicMock()
+    user.send = AsyncMock()
+    feature.client = MagicMock()
+    feature.client.fetch_user = AsyncMock(return_value=user)
+    generate_message = MagicMock(return_value="The price finally chose kindness.")
+
+    monkeypatch.setattr("features.scraping.db.get_price_history", lambda *args: [])
+    monkeypatch.setattr("features.scraping.db.add_price_history", MagicMock())
+    monkeypatch.setattr("features.scraping.db.update_scraped_item_status", MagicMock())
+    monkeypatch.setattr("features.scraping.db.update_item_alert_state", MagicMock())
+    monkeypatch.setattr(
+        "features.scraping.generate_price_change_message", generate_message
+    )
+
+    item = (
+        1,
+        2,
+        "https://example.ro/coffee",
+        100.0,
+        1,
+        "Old title",
+        "RON",
+        None,
+        None,
+    )
+    asyncio.run(feature._process_scrape_item(item))
+
+    generate_message.assert_called_once_with(
+        "Coffee machine",
+        100.0,
+        80.0,
+        "100.00 RON",
+        "80.00 RON",
+    )
+    sent_message = user.send.await_args.args[0]
+    assert "Price changed: `100.00 RON` -> **80.00 RON**" in sent_message
+    assert "The price finally chose kindness." in sent_message
+
+
+def test_price_change_dm_survives_missing_llm_reaction(monkeypatch):
+    feature = object.__new__(ScrapingFeature)
+    feature.scraper = MagicMock()
+    feature.scraper.fetch.return_value = ScrapeResult(
+        price=120.0,
+        in_stock=True,
+        title="Coffee machine",
+        currency="RON",
+    )
+    feature.converter = MagicMock()
+    feature.converter.format_with_conversions.side_effect = [
+        "100.00 RON",
+        "120.00 RON",
+    ]
+    user = MagicMock()
+    user.send = AsyncMock()
+    feature.client = MagicMock()
+    feature.client.fetch_user = AsyncMock(return_value=user)
+
+    monkeypatch.setattr("features.scraping.db.get_price_history", lambda *args: [])
+    monkeypatch.setattr("features.scraping.db.add_price_history", MagicMock())
+    monkeypatch.setattr("features.scraping.db.update_scraped_item_status", MagicMock())
+    monkeypatch.setattr("features.scraping.db.update_item_alert_state", MagicMock())
+    monkeypatch.setattr(
+        "features.scraping.generate_price_change_message", lambda *args: None
+    )
+
+    item = (
+        1,
+        2,
+        "https://example.ro/coffee",
+        100.0,
+        1,
+        "Old title",
+        "RON",
+        None,
+        None,
+    )
+    asyncio.run(feature._process_scrape_item(item))
+
+    sent_message = user.send.await_args.args[0]
+    assert "Price changed: `100.00 RON` -> **120.00 RON**" in sent_message
+    assert "🤖" not in sent_message

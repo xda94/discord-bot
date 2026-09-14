@@ -14,6 +14,7 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 | [Flask](https://flask.palletsprojects.com/) | REST API (`api.py`) |
 | [PM2](https://pm2.keymetrics.io/) | Process manager |
 | [pytest](https://pytest.org/) | Tests (`requirements-dev.txt`) |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Local LLM inference through `llama-server` |
 | `curl_cffi` (optional) | TLS fingerprinting for bot-protected shops; falls back to `requests` |
 
 **Why two Python entry points?** `scraper.py` holds pure HTTP/HTML parsing with no Discord or Matplotlib imports. `api.py` imports only `scraper.py`, so the API process stays light. `features/scraping.py` adds Discord commands, graphs, currency conversion, and alerts on top of the same scraper.
@@ -27,6 +28,7 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 - Python 3.x and pip
 - SQLite3 (usually bundled with Python)
 - Node.js + npm (for PM2)
+- `llama-server` with a compatible GGUF instruct/chat model
 - For graphs: Matplotlib (in `requirements.txt`)
 
 ### Install dependencies
@@ -64,27 +66,30 @@ DISCORD_TOKEN=YOUR_DISCORD_TOKEN_HERE
 HOST=YOUR_HOST_HERE
 PORT=YOUR_PORT_HERE
 API_TOKEN=YOUR_API_TOKEN_HERE
+LLAMA_CPP_BASE_URL=http://127.0.0.1:8080
+LLAMA_CPP_DEFAULT_MODEL=discord-bot
+LLAMA_CPP_ALLOWED_MODELS=discord-bot
 ```
 
 | Variable | Required | Notes |
 |---|---|---|
 | `DISCORD_TOKEN` | Yes (bot) | Bot refuses to start without it. |
-| `BOT_ID` | Yes (bot) | Your bot's Discord user ID (Developer Mode → right-click bot → Copy User ID). Used for @mention LLM replies. The bot's name in the mention prompt is derived from this automatically (server nickname, else username) — no separate config needed. |
+| `BOT_ID` | Yes (bot) | Your bot's Discord user ID (Developer Mode → right-click bot → Copy User ID). Used to recognize @mentions addressed to the bot. |
 | `HOST` | Yes (API) | Bind address. Use `0.0.0.0` for LAN/Tailscale or **Docker** (published ports). Use `127.0.0.1` only if the API should be local to the host (e.g. PM2, no remote access). |
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
-| `OLLAMA_BASE_URL` | No (bot) | Ollama API base URL for mentions and teases. Default: `http://127.0.0.1:11434` (PM2 / bare metal on the same host). Docker: set `http://host.docker.internal:11434` or `http://ollama:11434` in `.env`. |
-| `OLLAMA_DEFAULT_MODEL` | Yes (bot) | Default model when none is chosen. Must be listed in `OLLAMA_ALLOWED_MODELS`. |
-| `MENTION_OLLAMA_MODEL` | No (bot) | Model for @bot mentions. Defaults to `OLLAMA_DEFAULT_MODEL`. Must be in `OLLAMA_ALLOWED_MODELS`. |
-| `OLLAMA_ALLOWED_MODELS` | Yes (bot) | Comma-separated Ollama model tags offered in `/llm_set` (e.g. `llama3.2:3b,qwen3:4b`). |
-| `OLLAMA_TIMEOUT` | No | Internal HTTP limit for Ollama calls. Default: `180`. |
-| `OLLAMA_KEEP_ALIVE` | No | Keep-alive duration for Ollama models (e.g. `5m`, `10m`, `300` seconds, `-1` to keep loaded indefinitely, `0` to unload immediately). Default: `5m`. |
+| `LLAMA_CPP_BASE_URL` | No (bot) | `llama-server` base URL. Default: `http://127.0.0.1:8080`. Docker defaults to `http://host.docker.internal:8080`. A URL ending in `/v1` is also accepted. |
+| `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
+| `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
+| `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm_set`. A single-server setup normally lists one alias. |
+| `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
+| `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Number of recent channel messages to include as context for mentions. Default: `0`. |
-| `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through Ollama. Default: `true`. Set `false` to send templates as-is. |
-| `TEASE_OLLAMA_MODEL` | No (bot) | Model for tease rewrites. Defaults to `OLLAMA_DEFAULT_MODEL`. |
-| `TEASE_OLLAMA_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. Falls back to the template on timeout. |
+| `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
+| `TEASE_LLAMA_CPP_MODEL` | No (bot) | Model alias for tease rewrites. Defaults to `LLAMA_CPP_DEFAULT_MODEL`. |
+| `TEASE_LLAMA_CPP_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. |
 | `SERPAPI_BASE_URL` | No | Google Flights search endpoint. Default: `https://serpapi.com/search.json`. |
 | `SERPAPI_ACCOUNT_URL` | No | API-key validation endpoint. Default: `https://serpapi.com/account.json`. |
 | `SERPAPI_TIMEOUT` | No | SerpApi HTTP timeout in seconds. Default: `30`. |
@@ -92,6 +97,24 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 | `SERPAPI_HL` | No | Google Flights response language. Default: `en`. |
 | `FLIGHT_CHECK_INTERVAL_HOURS` | No | Hours between flight tracker passes. Default: `5`; raise this if the account approaches its monthly quota. Minimum: `1`. |
 | `FLIGHT_CHECK_GAP_SECONDS` | No | Delay between users' flight trackers in one pass. Default: `1`. |
+
+Start llama.cpp before the bot. The alias must match
+`LLAMA_CPP_DEFAULT_MODEL`:
+
+```bash
+llama-server \
+  --model /path/to/model.gguf \
+  --alias discord-bot \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --ctx-size 4096
+```
+
+The bot calls llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint.
+It sends only a `user` message and does not inject a `system` message; persistent
+identity and behavior should be configured with the model or llama.cpp chat
+template. If multiple aliases are listed, each one must be reachable through the
+configured endpoint (for example through a compatible model router).
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
 
@@ -181,9 +204,9 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
 | Reminders | 10 s | Delivers due reminders |
-| Inactivity nudge | 30 min | Nudges quiet guild channels |
+| Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm_inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
-| Teases | On message | Random mood lines rewritten via Ollama (shared cooldown with keywords) |
+| Teases | On message | Random mood lines rewritten via llama.cpp |
 
 ---
 
@@ -195,7 +218,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 |---|---|
 | `/keyword_add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
 | `/topkeywords [user]` | Most triggered keywords in the server. |
-| `/mood <mood>` | Set tease mood; random teases are rewritten via Ollama in that style. |
+| `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style. |
 | `/help` | Full command list (chunked for Discord’s 2000-character limit). |
 
 ### Reminders
@@ -239,11 +262,13 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 
 **Text-fallback extraction** — If JSON-LD or meta tags are missing, the scraper strips `<script>` and `<style>` tags to check visible page text for stock status keywords, preventing false "out of stock" readings triggered by hidden JS localization strings.
 
-**AI Fallback Scraping** — If standard HTML metadata is missing, the scraper strips the page text and uses local Ollama (`OLLAMA_DEFAULT_MODEL`) to robustly extract price and stock data from unstructured web text.
+**AI Fallback Scraping** — If standard HTML metadata is missing, the scraper strips the page text and uses local llama.cpp (`LLAMA_CPP_DEFAULT_MODEL`) to extract price and stock data from unstructured web text.
+
+**Price-change DMs** include exact old/new prices plus a short llama.cpp-generated reaction. The model randomly varies between funny, mock-corporate, playful, serious, enthusiastic, and melodramatically sad tones, and is told whether the observed price increased or decreased. If generation fails, the factual notification is still delivered.
 
 **Buy / wait DMs** (after ~7 data points and ≥1 % price spread in the window):
 
-- Green — at or below rolling all-time low (“buy window”); re-alerts only on a further ≥1 % drop. Also triggers a fun, personalized AI message generated by Ollama!
+- Green — at or below rolling all-time low (“buy window”); re-alerts only on a further ≥1 % drop.
 - Red — above historical median (“maybe wait”); one alert per high period until price returns to median or below.
 
 Flat prices do not trigger spurious “all-time low” messages.
@@ -271,9 +296,10 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | Command | Description |
 |---|---|
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
-| `/llm_set <model>` | Set the Ollama model used when the bot is mentioned. **60s cooldown** per user for mentions. |
+| `/llm_set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
+| `/llm_inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
 | `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → direct LLM answer. |
-| `@bot <text>` | Same as above; uses `MENTION_OLLAMA_MODEL`. |
+| `@bot <text>` | Same as above; uses `MENTION_LLAMA_CPP_MODEL`. |
 
 ---
 
@@ -366,8 +392,8 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `response_gate.py` | `ResponseGate` | Cooldown between keyword replies and teases |
 | `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword_add`, `/topkeywords` |
 | `teases.py` | `TeasesFeature` | Mood teases (LLM-enhanced), `/mood` |
-| `tease_llm.py` | — | Ollama prompts + rewrite for teases |
-| `ollama_client.py` | — | Shared Ollama `/api/generate` helper |
+| `tease_llm.py` | — | LLM prompts and generation helpers for teases and mentions |
+| `llm_client.py` | — | Shared llama.cpp `/v1/chat/completions` client |
 | `inactivity.py` | `InactivityFeature` | Guild activity tracking, inactivity nudges |
 | `reminders.py` | `RemindersFeature` | `/remind`, delivery loop |
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
@@ -375,6 +401,6 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
 | `flights.py` | `FlightTrackerFeature` | `/flight_tracker_*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
-| `ask.py` | `AskFeature` | `/ask` and @bot mention prompts via Ollama |
+| `llm_mention.py` | `LLMMentionFeature` | Queued @bot mention prompts through llama.cpp |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |

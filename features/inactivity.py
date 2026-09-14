@@ -20,20 +20,6 @@ INACTIVITY_HISTORY_LOOKBACK = 50
 
 INACTIVITY_THRESHOLD = 86400  # 24 hours, in seconds
 
-INACTIVITY_MESSAGES = [
-    "it's quiet... too quiet",
-    "did everyone die?",
-    "hello? is this thing on?",
-    "I'm bored, someone say something",
-    "*tumbleweed rolls by*",
-    "this server is deader than my will to live",
-    "I've been alone for 24 hours now. this is fine.",
-    "not a single message in a whole day? wow.",
-    "guess I'll just talk to myself then",
-    "ce plm, ba? ati murit toti?",
-    "HELLO? ANYBODY HERE? ECHOOOOO.....",
-]
-
 
 def pick_chatter(messages: list[discord.Message]) -> discord.abc.User | None:
     """Pick a random non-bot author from `messages`, or None if there are none.
@@ -61,6 +47,54 @@ class InactivityFeature:
         }
         if self._state:
             logger.info(f"Restored activity timestamps for {len(self._state)} guild(s)")
+        self._register_commands()
+
+    def _register_commands(self) -> None:
+        @self.tree.command(
+            name="llm_inactivity",
+            description="Activate or deactivate LLM inactivity nudges in this server",
+        )
+        @app_commands.describe(action="Whether to activate or deactivate the nudges")
+        @app_commands.choices(
+            action=[
+                app_commands.Choice(name="Activate", value="activate"),
+                app_commands.Choice(name="Deactivate", value="deactivate"),
+            ]
+        )
+        @app_commands.default_permissions(manage_guild=True)
+        async def llm_inactivity(
+            interaction: discord.Interaction,
+            action: str,
+        ):
+            logger.info(
+                f"Command /llm_inactivity called by {interaction.user} "
+                f"in guild {interaction.guild_id} with action {action}"
+            )
+            if interaction.guild_id is None:
+                await interaction.response.send_message(
+                    "This command must be run inside a server, not in DMs.",
+                    ephemeral=True,
+                )
+                return
+
+            permissions = getattr(interaction.user, "guild_permissions", None)
+            can_manage = permissions and (
+                permissions.manage_guild or permissions.administrator
+            )
+            if not can_manage:
+                await interaction.response.send_message(
+                    "You need the **Manage Server** permission to change this setting.",
+                    ephemeral=True,
+                )
+                return
+
+            enabled = action == "activate"
+            db.set_guild_inactivity_enabled(interaction.guild_id, enabled)
+            state = "activated" if enabled else "deactivated"
+            await interaction.response.send_message(
+                f"LLM inactivity nudges are now **{state}** for this server.",
+                ephemeral=True,
+            )
 
     async def handle_message(self, message: discord.Message) -> bool:
         if message.guild:
@@ -86,12 +120,17 @@ class InactivityFeature:
             # Snapshot: _send_nudge awaits, during which handle_message may add
             # a new guild to _state — iterating the live dict would then raise.
             for guild_id, guild_state in list(self._state.items()):
+                if not db.is_guild_inactivity_enabled(guild_id):
+                    continue
                 if now - guild_state["last_time"] < INACTIVITY_THRESHOLD:
                     continue
                 channel = self.client.get_channel(guild_state["channel_id"])
                 if channel is None:
                     continue
-                await self._send_nudge(channel)
+                if not await self._send_nudge(channel):
+                    # Keep the guild overdue so the next scheduled check can
+                    # retry once llama.cpp is available again.
+                    continue
                 guild_state["last_time"] = now
                 # Mirror the in-memory reset so a restart right after a nudge
                 # doesn't fire it again from the stale DB row.
@@ -100,12 +139,11 @@ class InactivityFeature:
         except Exception:
             logger.exception("Error in check_inactivity loop")
 
-    async def _send_nudge(self, channel: discord.abc.Messageable) -> None:
-        """Post an LLM nudge, tagging a recent chatter when there is one. Falls
-        back to a preset line if the LLM is unavailable."""
+    async def _send_nudge(self, channel: discord.abc.Messageable) -> bool:
+        """Post an LLM-generated nudge and report whether it was sent."""
         target = await self._pick_recent_chatter(channel)
         bot_name = resolve_bot_display_name(getattr(channel, "guild", None), self.client)
-        # query_ollama is blocking (and the model cold-starts), so keep it off
+        # llama-server inference is blocking (and the model may be busy), so keep it off
         # the event loop.
         text = await asyncio.to_thread(
             generate_inactivity_message,
@@ -113,11 +151,13 @@ class InactivityFeature:
             ask_question=target is not None,
         )
         if text is None:
-            await channel.send(random.choice(INACTIVITY_MESSAGES))
-        elif target is not None:
+            logger.warning("Skipping inactivity nudge because LLM generation failed")
+            return False
+        if target is not None:
             await channel.send(f"<@{target.id}> {text}")
         else:
             await channel.send(text)
+        return True
 
     async def _pick_recent_chatter(
         self, channel: discord.abc.Messageable

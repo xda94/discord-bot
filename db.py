@@ -279,6 +279,15 @@ def init_db():
                     channel_id INTEGER NOT NULL
                 )
             """)
+            # Per-guild switch for LLM inactivity nudges. Missing rows mean
+            # enabled so existing installations preserve their current
+            # behaviour after upgrading.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS guild_inactivity_config (
+                    guild_id INTEGER PRIMARY KEY,
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
+                )
+            """)
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")
@@ -1176,3 +1185,36 @@ def get_all_guild_activity():
     except Exception:
         logger.exception("Failed to fetch guild_activity")
         return []
+
+
+def set_guild_inactivity_enabled(guild_id: int, enabled: bool) -> None:
+    """Persist whether LLM inactivity nudges may run in one guild."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO guild_inactivity_config (guild_id, enabled) VALUES (?, ?) "
+                "ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
+                (guild_id, int(enabled)),
+            )
+    except Exception:
+        logger.exception(
+            f"Failed to set inactivity configuration for guild {guild_id}"
+        )
+
+
+def is_guild_inactivity_enabled(guild_id: int) -> bool:
+    """Return the guild setting; unconfigured guilds default to enabled."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT enabled FROM guild_inactivity_config WHERE guild_id = ?",
+                (guild_id,),
+            )
+            row = c.fetchone()
+            return True if row is None else bool(row[0])
+    except Exception:
+        logger.exception(
+            f"Failed to fetch inactivity configuration for guild {guild_id}"
+        )
+        # A database failure should not cause unsolicited messages.
+        return False

@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from ollama_client import query_ollama
+from llm_client import query_llm
 
 # Distinct logger name so the bot's "discord_bot" file handler and the API's
 # "flask_api" file handler can both pick this up via the setup wired in
@@ -378,7 +378,7 @@ class PriceScraper:
             f"Webpage text:\n{text}"
         )
         try:
-            response = query_ollama(prompt, options={"format": "json", "temperature": 0.0})
+            response = query_llm(prompt, options={"format": "json", "temperature": 0.0})
             data = json.loads(response)
             
             price = data.get("price")

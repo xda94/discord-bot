@@ -33,11 +33,11 @@ from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
 
-from ollama_client import OllamaError, get_default_model
+from llm_client import LlamaCppError, get_default_model
 
 try:
     get_default_model()
-except OllamaError as exc:
+except LlamaCppError as exc:
     logger.critical("%s Refusing to start.", exc)
     sys.exit(1)
 
