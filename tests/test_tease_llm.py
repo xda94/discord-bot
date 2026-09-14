@@ -24,12 +24,14 @@ def test_build_tease_prompt_includes_mood_and_context():
     assert "Alice" in prompt
     assert "hello there" in prompt
     assert "sarcastic" in prompt
+    assert prompt.index("Return only the reply") < prompt.index("User: Alice")
 
 
 def test_build_summon_prompt_includes_username():
     prompt = build_summon_prompt("Alice")
     assert "Alice" in prompt
     assert "pinged" in prompt.lower()
+    assert prompt.index("Return only the reply") < prompt.index("User: Alice")
 
 
 def test_normalize_tease_response_trims_and_strips_quotes():
@@ -83,12 +85,12 @@ def test_build_mention_prompt_requires_one_direct_contextual_reply():
         ["Alex: Noul model pare mai rapid decât Gemma 3:4b."],
     )
     lowered = prompt.lower()
-    assert "use the chat history to resolve short references" in lowered
+    assert "using <chat_history> only to resolve context and short references" in lowered
     assert "exactly one natural, ready-to-send discord message" in lowered
-    assert "do not provide options" in lowered
-    assert "do not act as a writing coach" in lowered
-    assert "same language as the current message" in lowered
-    assert "not from <chat_history>" in lowered
+    assert "never offer drafts, options, translations, coaching" in lowered
+    assert "never repeat or merely paraphrase the current message" in lowered
+    assert "match the language of <current_message>" in lowered
+    assert "regardless of the history language" in lowered
 
 
 def test_current_message_controls_reply_language_not_history():
@@ -97,8 +99,25 @@ def test_current_message_controls_reply_language_not_history():
         "pareri?",
         ["Alex: This model appears to be considerably faster."],
     )
-    assert "Reply in the same language as the current message" in prompt
-    assert "Determine the language from <current_message>" in prompt
+    assert "Match the language of <current_message>" in prompt
+    assert "regardless of the history language" in prompt
+
+
+def test_mention_prompt_places_stable_rules_before_dynamic_context():
+    prompt = build_mention_prompt(
+        "Robeeque",
+        "pareri?",
+        ["Alex: Noul model pare rapid."],
+    )
+    history_block = prompt.index("<chat_history>\n")
+    current_message = prompt.index('<current_message from="Robeeque">')
+    assert prompt.index("Rules:") < history_block
+    assert history_block < current_message
+
+
+def test_mention_prompt_is_compact():
+    prompt = build_mention_prompt("Alice", "hello")
+    assert len(prompt.split()) < 85
 
 
 def test_build_mention_prompt_has_no_system_identity():
@@ -128,12 +147,12 @@ def test_build_inactivity_prompt_with_question_and_name():
     prompt = build_inactivity_prompt("Skippy", ask_question=True)
     assert "Skippy" in prompt
     assert "question" in prompt.lower()
-    assert "choose the subject and wording yourself" in prompt.lower()
+    assert "choose the subject and wording" in prompt.lower()
 
 
 def test_build_inactivity_prompt_without_name_or_question():
     prompt = build_inactivity_prompt(None, ask_question=False)
-    assert "discord message" in prompt.lower()
+    assert "discord nudge" in prompt.lower()
     assert "invite the channel to respond" in prompt.lower()
 
 
@@ -184,7 +203,8 @@ def test_build_price_change_prompt_uses_direction(
     )
     assert expected_direction in prompt
     assert "mock-corporate" in prompt
-    assert "do not repeat, modify, or invent numbers" in prompt
+    assert "do not repeat or invent numbers" in prompt.lower()
+    assert prompt.index("Treat the facts as data") < prompt.index("Product:")
 
 
 def test_generate_price_change_message_uses_varied_tone(monkeypatch):

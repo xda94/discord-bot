@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import date, datetime
+from typing import Optional
 
 import discord
 import requests
@@ -60,7 +61,7 @@ def _fetch_calendar(year: int) -> dict:
     return data
 
 
-def _lookup_day(calendar: dict, target: date) -> dict | None:
+def _lookup_day(calendar: dict, target: date) -> Optional[dict]:
     """Return the calendar entry for `target`, or None if the file has no
     row for that day (shouldn't happen for a complete calendar, but the data
     is third-party so we don't assume)."""
@@ -94,7 +95,7 @@ def _format_reply(target: date, entry: dict) -> str:
     return "\n".join(lines)
 
 
-def _parse_date(raw: str | None) -> date | None:
+def _parse_date(raw: Optional[str]) -> Optional[date]:
     """Resolve the optional `data` argument to a `date`.
 
     None/empty -> today. A recognised day string -> that day this year
@@ -116,7 +117,7 @@ def _parse_date(raw: str | None) -> date | None:
     return None
 
 
-async def _run(interaction: discord.Interaction, data: str | None) -> None:
+async def _run(interaction: discord.Interaction, data: Optional[str]) -> None:
     """Core /azi-se-spala handler. Kept module-level (not a registration
     closure) so it can be unit-tested with a mock interaction."""
     logger.info(f"Command /azi-se-spala called by {interaction.user} (data={data!r})")
@@ -177,5 +178,7 @@ class AziSeSpalaFeature:
         @app_commands.describe(
             data="Optional: o zi de verificat (ex. 25.12 sau 25.12.2026). Implicit, azi."
         )
-        async def azi_se_spala(interaction: discord.Interaction, data: str | None = None):
+        async def azi_se_spala(
+            interaction: discord.Interaction, data: Optional[str] = None
+        ):
             await _run(interaction, data)

@@ -13,8 +13,10 @@ import asyncio
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 import requests
+from discord import app_commands
 
 from features import azi_se_spala as m
 
@@ -149,6 +151,15 @@ def test_format_reply_without_text_omits_book_line():
 
 def test_attribution_exact_string():
     assert m.ATTRIBUTION == "Date calendar: azisespala.ro"
+
+
+def test_command_registration_is_python_39_compatible():
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+
+    m.AziSeSpalaFeature(client, tree)
+
+    assert tree.get_command("azi-se-spala") is not None
 
 
 # ---------------------------------------------------------------------------
