@@ -305,7 +305,7 @@ def test_guild_joke_config_round_trip(tmp_db):
 
 
 def test_guild_joke_config_upsert_overwrites_channel_and_time(tmp_db):
-    """A second /joke_activation in the same guild should replace the
+    """A second /joke-activation in the same guild should replace the
     schedule, not append a new row."""
     db.set_guild_joke_config(111, 222, "09:00")
     db.set_guild_joke_config(111, 333, "18:30")
@@ -316,7 +316,7 @@ def test_guild_joke_config_upsert_overwrites_channel_and_time(tmp_db):
 
 def test_guild_joke_config_upsert_preserves_last_sent_date(tmp_db):
     """Re-activating on the same day must not clear `last_sent_date` —
-    otherwise a guild that re-runs /joke_activation after the day's
+    otherwise a guild that re-runs /joke-activation after the day's
     joke fired would get a duplicate the next time the loop ticks."""
     db.set_guild_joke_config(111, 222, "09:00")
     db.set_guild_joke_last_sent(111, "2026-06-02")
@@ -355,7 +355,7 @@ def test_clear_guild_joke_config_returns_true_when_present(tmp_db):
 
 
 def test_clear_guild_joke_config_returns_false_when_missing(tmp_db):
-    """Used by /joke_deactivation to detect 'no-op' and message the
+    """Used by /joke-deactivation to detect 'no-op' and message the
     user differently."""
     assert db.clear_guild_joke_config(99999) is False
 

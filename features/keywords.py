@@ -27,7 +27,7 @@ def _pick_response(options: list[str], last_one: str | None) -> str:
 
 
 class KeywordsFeature:
-    """Keyword-triggered auto-responses plus the /keyword_add and /topkeywords
+    """Keyword-triggered auto-responses plus the /keyword-add and /top-keywords
     commands."""
 
     def __init__(
@@ -93,10 +93,10 @@ class KeywordsFeature:
         return False
 
     def _register_commands(self) -> None:
-        @self.tree.command(name="keyword_add", description="Add a new keyword and response")
+        @self.tree.command(name="keyword-add", description="Add a new keyword and response")
         @app_commands.describe(keyword="The keyword", response="The response")
         async def keyword_add(interaction: discord.Interaction, keyword: str, response: str):
-            logger.info(f"Command /keyword_add called by {interaction.user} for '{keyword}'")
+            logger.info(f"Command /keyword-add called by {interaction.user} for '{keyword}'")
             if not interaction.guild:
                 await interaction.response.send_message(
                     "This command must be run inside a server, not in DMs.",
@@ -108,11 +108,11 @@ class KeywordsFeature:
                 f"Added keyword **{keyword}** for this server."
             )
 
-        @self.tree.command(name="topkeywords", description="Show the most used keywords")
+        @self.tree.command(name="top-keywords", description="Show the most used keywords")
         @app_commands.describe(user="Optional: see a specific user's top keywords")
         async def topkeywords(interaction: discord.Interaction, user: discord.Member | None = None):
             logger.info(
-                f"Command /topkeywords called by {interaction.user}"
+                f"Command /top-keywords called by {interaction.user}"
                 + (f" for {user.display_name}" if user else "")
             )
             if not interaction.guild:

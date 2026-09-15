@@ -66,7 +66,7 @@ def init_db():
                 if legacy_count:
                     logger.warning(
                         f"{legacy_count} legacy keyword(s) have no guild_id and "
-                        f"will not match until re-added per server with /keyword_add."
+                        f"will not match until re-added per server with /keyword-add."
                     )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_responses_guild_id "
@@ -97,7 +97,7 @@ def init_db():
                     sent INTEGER NOT NULL DEFAULT 0
                 )
             """)
-            # Per-guild joke scheduling. Each guild that runs /joke_activation
+            # Per-guild joke scheduling. Each guild that runs /joke-activation
             # gets one row; missing row = no joke is sent for that guild.
             # `last_sent_date` is the ISO date of the last successful send so
             # the 30-second check loop fires exactly once per day per guild
@@ -662,7 +662,7 @@ def set_setting(key, value):
 
 def set_guild_joke_config(guild_id, channel_id, send_time):
     """Upsert one guild's joke schedule. Preserves `last_sent_date` on
-    re-activation so a guild that re-runs /joke_activation on the same
+    re-activation so a guild that re-runs /joke-activation on the same
     day doesn't get a duplicate joke."""
     try:
         with _connect(commit=True) as c:

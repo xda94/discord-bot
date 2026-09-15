@@ -181,7 +181,7 @@ def test_add_without_credentials_logs_in_then_adds_tracker(tmp_db):
     interaction = FakeInteraction(123)
 
     asyncio.run(
-        tree.get_command("flight_tracker_add").callback(
+        tree.get_command("flight-tracker-add").callback(
             interaction, "otp", "bkk", start, end, 1, None
         )
     )
@@ -207,7 +207,7 @@ def test_invalid_modal_credentials_are_not_saved_and_tracker_is_not_added(tmp_db
     start, end = _future_dates()
     interaction = FakeInteraction(123)
     asyncio.run(
-        tree.get_command("flight_tracker_add").callback(
+        tree.get_command("flight-tracker-add").callback(
             interaction, "otp", "bkk", start, end, 1, None
         )
     )
@@ -250,7 +250,7 @@ def test_flight_tracker_add_show_delete_commands_work(tmp_db):
 
     add_interaction = FakeInteraction(123)
     asyncio.run(
-        tree.get_command("flight_tracker_add").callback(
+        tree.get_command("flight-tracker-add").callback(
             add_interaction, "otp", "bkk", start, end, 1, None
         )
     )
@@ -260,17 +260,17 @@ def test_flight_tracker_add_show_delete_commands_work(tmp_db):
     assert db.get_user_flight_trackers(123)[0]["last_price"] == 599.0
 
     show_interaction = FakeInteraction(123)
-    asyncio.run(tree.get_command("flight_tracker_show").callback(show_interaction))
+    asyncio.run(tree.get_command("flight-tracker-show").callback(show_interaction))
     assert "#1 OTP -> BKK" in show_interaction.response.messages[0][0]
     assert "599.00 EUR" in show_interaction.response.messages[0][0]
 
     # Ownership is enforced by both command and SQL predicate.
     wrong_user = FakeInteraction(999)
-    asyncio.run(tree.get_command("flight_tracker_delete").callback(wrong_user, 1))
+    asyncio.run(tree.get_command("flight-tracker-delete").callback(wrong_user, 1))
     assert "not found" in wrong_user.response.messages[0][0].lower()
 
     delete_interaction = FakeInteraction(123)
-    asyncio.run(tree.get_command("flight_tracker_delete").callback(delete_interaction, 1))
+    asyncio.run(tree.get_command("flight-tracker-delete").callback(delete_interaction, 1))
     assert "were deleted" in delete_interaction.response.messages[0][0]
     assert db.get_user_flight_trackers(123) == []
     asyncio.run(client.close())

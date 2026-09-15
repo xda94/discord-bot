@@ -14,7 +14,7 @@ class JokesFeature:
     """Daily joke loop plus per-guild activation, deactivation, and status
     commands.
 
-    Each guild that runs `/joke_activation` gets its own row in
+    Each guild that runs `/joke-activation` gets its own row in
     `guild_joke_config` with its own channel + send time + last-sent
     date. The 30-second `_check` loop iterates every configured guild
     and fires that guild's next unsent joke when its scheduled window
@@ -69,7 +69,7 @@ class JokesFeature:
         except (discord.NotFound, discord.Forbidden) as exc:
             logger.warning(
                 f"Legacy joke channel {legacy_channel} unreachable ({type(exc).__name__}); "
-                f"clearing the legacy config. Re-run /joke_activation in the "
+                f"clearing the legacy config. Re-run /joke-activation in the "
                 f"target guild to opt back in."
             )
             for key in self.LEGACY_SETTING_KEYS:
@@ -120,21 +120,21 @@ class JokesFeature:
     def _register_commands(self) -> None:
         feature = self
 
-        @self.tree.command(name="joke_add", description="Add a joke/text to the daily joke list")
+        @self.tree.command(name="joke-add", description="Add a joke/text to the daily joke list")
         @app_commands.describe(text="The joke or text to add")
         async def joke_add(interaction: discord.Interaction, text: str):
-            logger.info(f"Command /joke_add called by {interaction.user}")
+            logger.info(f"Command /joke-add called by {interaction.user}")
             db.add_joke(text)
             await interaction.response.send_message("Joke added!")
 
         @self.tree.command(
-            name="joke_activation",
+            name="joke-activation",
             description="Activate the daily joke in this channel at a specific time",
         )
         @app_commands.describe(time="The time to send the daily joke (e.g. 14:00)")
         async def joke_activation(interaction: discord.Interaction, time: str):
             logger.info(
-                f"Command /joke_activation called by {interaction.user} "
+                f"Command /joke-activation called by {interaction.user} "
                 f"in guild {interaction.guild_id} with time {time}"
             )
             if interaction.guild_id is None:
@@ -159,12 +159,12 @@ class JokesFeature:
             )
 
         @self.tree.command(
-            name="joke_deactivation",
+            name="joke-deactivation",
             description="Stop the daily joke in this server",
         )
         async def joke_deactivation(interaction: discord.Interaction):
             logger.info(
-                f"Command /joke_deactivation called by {interaction.user} "
+                f"Command /joke-deactivation called by {interaction.user} "
                 f"in guild {interaction.guild_id}"
             )
             if interaction.guild_id is None:
@@ -178,7 +178,7 @@ class JokesFeature:
             if removed:
                 await interaction.response.send_message(
                     "Daily joke deactivated for this server. "
-                    "Run `/joke_activation` again to re-enable."
+                    "Run `/joke-activation` again to re-enable."
                 )
             else:
                 await interaction.response.send_message(
@@ -187,12 +187,12 @@ class JokesFeature:
                 )
 
         @self.tree.command(
-            name="joke_status",
+            name="joke-status",
             description="Show the daily joke configuration for this server",
         )
         async def joke_status(interaction: discord.Interaction):
             logger.info(
-                f"Command /joke_status called by {interaction.user} "
+                f"Command /joke-status called by {interaction.user} "
                 f"in guild {interaction.guild_id}"
             )
             if interaction.guild_id is None:
@@ -206,7 +206,7 @@ class JokesFeature:
             if cfg is None:
                 await interaction.response.send_message(
                     "Daily joke is **not activated** for this server. "
-                    "Use `/joke_activation` to enable it.",
+                    "Use `/joke-activation` to enable it.",
                     ephemeral=True,
                 )
                 return

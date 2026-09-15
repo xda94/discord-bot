@@ -91,7 +91,7 @@ class LLMFeedbackFeature:
 
     def _register_commands(self) -> None:
         @self.tree.command(
-            name="llm_feedback_summary",
+            name="llm-feedback-summary",
             description="Show reviewed LLM feedback for this server",
         )
         async def llm_feedback_summary(interaction: discord.Interaction):

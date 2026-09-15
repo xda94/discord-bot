@@ -67,7 +67,7 @@ class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
             return
 
         logger.info(
-            f"Command /sponsor_set called by {interaction.user} "
+            f"Command /sponsor-set called by {interaction.user} "
             f"with name={self._sponsor_name}, tier={self._tier}"
         )
         custom = self.custom_message.value if self._tier == "ultra" else None
@@ -84,7 +84,7 @@ class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
 
 
 class SponsorsFeature:
-    """Owns sponsor state and the /sponsor_* commands."""
+    """Owns sponsor state and the /sponsor-* commands."""
 
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
         self.client = client
@@ -145,7 +145,7 @@ class SponsorsFeature:
     def _register_commands(self) -> None:
         feature = self
 
-        @self.tree.command(name="sponsor_set", description="Set or clear the sponsor tag")
+        @self.tree.command(name="sponsor-set", description="Set or clear the sponsor tag")
         @app_commands.describe(user="Select the sponsor user (omit to clear)", plan="Sponsorship plan")
         @app_commands.choices(plan=SPONSOR_TIER_CHOICES)
         async def sponsor_set(
@@ -157,14 +157,14 @@ class SponsorsFeature:
             tier = plan.value if plan else "standard"
             await interaction.response.send_modal(_SponsorModal(feature, sponsor_name, tier))
 
-        @self.tree.command(name="sponsor_plans", description="Show available sponsorship plans")
+        @self.tree.command(name="sponsor-plans", description="Show available sponsorship plans")
         async def sponsor_plans(interaction: discord.Interaction):
-            logger.info(f"Command /sponsor_plans called by {interaction.user}")
+            logger.info(f"Command /sponsor-plans called by {interaction.user}")
             await interaction.response.send_message(build_sponsor_plans_message())
 
-        @self.tree.command(name="sponsor_who", description="Show the current sponsor and time until expiry")
+        @self.tree.command(name="sponsor-who", description="Show the current sponsor and time until expiry")
         async def sponsor_who(interaction: discord.Interaction):
-            logger.info(f"Command /sponsor_who called by {interaction.user}")
+            logger.info(f"Command /sponsor-who called by {interaction.user}")
             if not feature.sponsor or not feature.sponsor_set_at:
                 await interaction.response.send_message(
                     "There is no active sponsor right now.", ephemeral=True

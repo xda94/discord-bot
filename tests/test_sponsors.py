@@ -30,4 +30,4 @@ def test_sponsor_commands_register_on_python_39(tmp_db):
 
     SponsorsFeature(client, tree)
 
-    assert tree.get_command("sponsor_plans") is not None
+    assert tree.get_command("sponsor-plans") is not None

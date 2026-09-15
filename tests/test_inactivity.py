@@ -121,7 +121,7 @@ def test_llm_inactivity_command_updates_current_guild(tmp_db, monkeypatch):
     interaction.response.send_message = AsyncMock()
 
     asyncio.run(
-        tree.get_command("llm_inactivity").callback(interaction, "deactivate")
+        tree.get_command("llm-inactivity").callback(interaction, "deactivate")
     )
 
     assert db.is_guild_inactivity_enabled(77) is False
