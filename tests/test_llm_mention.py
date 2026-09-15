@@ -11,11 +11,14 @@ from features.llm_mention import (
     LLMMentionFeature,
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
+    MEMORY_MENTION_PROMPT_VERSION,
+    budget_reference_context,
     get_ask_cooldown_seconds,
     get_selected_model,
     requests_ahead,
     split_discord_messages,
 )
+from features.user_memory import MemoryBatch
 
 
 @pytest.mark.parametrize("summon_only", [False, True])
@@ -90,6 +93,189 @@ def test_requests_ahead():
     assert requests_ahead(processing=True, queue_size=0) == 1
     assert requests_ahead(processing=True, queue_size=2) == 3
     assert requests_ahead(processing=False, queue_size=2) == 2
+
+
+def test_reference_budget_prioritizes_memory_and_newest_history():
+    memory, history = budget_reference_context(
+        "m" * 2000,
+        ["old:" + "x" * 900, "new:" + "y" * 900],
+    )
+    assert len(memory) == 2000
+    assert len(memory) + sum(len(item) for item in history) <= 3000
+    assert len(history) == 1
+    assert history[0].startswith("new:")
+
+
+def test_reference_budget_counts_escaped_prompt_size():
+    memory, history = budget_reference_context("<" * 1000, [">" * 1000])
+    escaped_size = len(memory.replace("<", "&lt;")) + sum(
+        len(item.replace(">", "&gt;")) for item in history
+    )
+    assert escaped_size <= 3000
+
+
+def test_memory_enabled_reply_uses_distinct_feedback_prompt_version():
+    feature = object.__new__(LLMMentionFeature)
+    feature.feedback = SimpleNamespace(register_reply=AsyncMock())
+    original = SimpleNamespace(reply=AsyncMock())
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="hello",
+        model="discord-bot",
+        reply_to=original,
+        memory_enabled=True,
+        prompt_version=MEMORY_MENTION_PROMPT_VERSION,
+    )
+
+    asyncio.run(feature._reply_mention(job, "Salut!"))
+
+    assert (
+        feature.feedback.register_reply.await_args.kwargs["prompt_version"]
+        == MEMORY_MENTION_PROMPT_VERSION
+    )
+
+
+def test_reply_is_sent_before_memory_consolidation(monkeypatch):
+    events = []
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=True),
+        commit_batch=MagicMock(side_effect=lambda *args: events.append("commit"))
+    )
+    feature._reply_mention = AsyncMock(side_effect=lambda *args: events.append("reply"))
+    batch = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("I like Python",),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="hello",
+        model="discord-bot",
+        memory_enabled=True,
+        memory_batch=batch,
+    )
+    monkeypatch.setattr(
+        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
+    )
+    monkeypatch.setattr(
+        "features.llm_mention.generate_memory_update",
+        lambda *args, **kwargs: SimpleNamespace(
+            successful=True, profile="# Preferences\n- Likes Python"
+        ),
+    )
+
+    asyncio.run(feature._process_job(job))
+
+    assert events == ["reply", "commit"]
+
+
+def test_failed_memory_consolidation_does_not_commit(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+    )
+    feature._reply_mention = AsyncMock()
+    batch = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("hello",),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="hello",
+        model="discord-bot",
+        memory_batch=batch,
+    )
+    monkeypatch.setattr(
+        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
+    )
+    monkeypatch.setattr(
+        "features.llm_mention.generate_memory_update",
+        lambda *args, **kwargs: SimpleNamespace(successful=False, profile=None),
+    )
+
+    asyncio.run(feature._process_job(job))
+
+    feature._reply_mention.assert_awaited_once()
+    feature.memory.commit_batch.assert_not_called()
+
+
+def test_summon_never_consolidates_memory(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+    )
+    feature._reply_mention = AsyncMock()
+    batch = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("hello",),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="",
+        model="discord-bot",
+        summon_only=True,
+        memory_batch=batch,
+    )
+    update = MagicMock()
+    monkeypatch.setattr(
+        "features.llm_mention.generate_summon_reply",
+        lambda *args, **kwargs: "You rang?",
+    )
+    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
+
+    asyncio.run(feature._process_job(job))
+
+    feature._reply_mention.assert_awaited_once()
+    update.assert_not_called()
+    feature.memory.commit_batch.assert_not_called()
+
+
+def test_invalidated_batch_is_not_sent_for_consolidation(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=False), commit_batch=MagicMock()
+    )
+    feature._reply_mention = AsyncMock()
+    batch = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("sensitive stale snapshot",),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="hello",
+        model="discord-bot",
+        memory_batch=batch,
+    )
+    update = MagicMock()
+    monkeypatch.setattr(
+        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
+    )
+    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
+
+    asyncio.run(feature._process_job(job))
+
+    update.assert_not_called()
+    feature.memory.commit_batch.assert_not_called()
 
 
 def test_split_discord_messages_splits_long_text():

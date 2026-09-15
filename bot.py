@@ -33,6 +33,7 @@ from features.scraping import ScrapingFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
+from features.user_memory import UserMemoryFeature
 
 from llm_client import LlamaCppError, get_default_model
 
@@ -91,11 +92,18 @@ flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
-llm_mention = LLMMentionFeature(client, tree, bot_id=BOT_ID, feedback=llm_feedback)
+user_memory = UserMemoryFeature(client, tree)
+llm_mention = LLMMentionFeature(
+    client,
+    tree,
+    bot_id=BOT_ID,
+    feedback=llm_feedback,
+    memory=user_memory,
+)
 help_feature = HelpFeature(client, tree)
 
 # Features that observe every message. Mentions are checked before keywords/teases.
-MESSAGE_HANDLERS = (inactivity, llm_mention, keywords, teases)
+MESSAGE_HANDLERS = (inactivity, user_memory, llm_mention, keywords, teases)
 
 # Features that own background tasks needing to be kicked off in on_ready.
 BACKGROUND_FEATURES = (sponsors, inactivity, reminders, jokes, scraping, flights)

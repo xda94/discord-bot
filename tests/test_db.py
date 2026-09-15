@@ -230,6 +230,55 @@ def test_llm_feedback_keeps_only_compact_rating_metadata(tmp_db):
 
 
 # ---------------------------------------------------------------------------
+# Persistent LLM user memory
+# ---------------------------------------------------------------------------
+
+def test_llm_memory_channel_configuration_defaults_off_and_is_scoped(tmp_db):
+    assert db.is_llm_memory_channel_enabled(1, 10) is False
+    assert db.set_llm_memory_channel_enabled(1, 10, True)
+    assert db.is_llm_memory_channel_enabled(1, 10) is True
+    assert db.is_llm_memory_channel_enabled(1, 11) is False
+    assert db.get_enabled_llm_memory_channels() == [(1, 10)]
+
+    assert db.set_llm_memory_channel_enabled(1, 10, False)
+    assert db.is_llm_memory_channel_enabled(1, 10) is False
+    assert db.get_enabled_llm_memory_channels() == []
+
+
+def test_llm_user_memory_is_isolated_by_scope_and_user(tmp_db):
+    assert db.set_llm_user_memory(100, 7, "Guild A")
+    assert db.set_llm_user_memory(200, 7, "Guild B")
+    assert db.set_llm_user_memory(0, 7, "DM")
+    assert db.set_llm_user_memory(100, 8, "Other user")
+
+    assert db.get_llm_user_memory(100, 7) == "Guild A"
+    assert db.get_llm_user_memory(200, 7) == "Guild B"
+    assert db.get_llm_user_memory(0, 7) == "DM"
+    assert db.get_llm_user_memory(100, 8) == "Other user"
+
+
+def test_llm_memory_purge_preserves_preferences(tmp_db):
+    db.set_llm_user_memory(100, 7, "Profile")
+    db.set_llm_user_memory(100, 8, "Profile")
+    db.set_llm_user_memory(200, 7, "Other guild")
+    db.set_llm_memory_preference(100, 7, False)
+
+    assert db.purge_guild_llm_user_memories(100) == 2
+    assert db.get_llm_user_memory(100, 7) is None
+    assert db.get_llm_user_memory(100, 8) is None
+    assert db.get_llm_user_memory(200, 7) == "Other guild"
+    assert db.get_llm_memory_preference(100, 7) is False
+
+
+def test_llm_memory_preference_round_trip(tmp_db):
+    assert db.get_llm_memory_preference(100, 7) is None
+    assert db.set_llm_memory_preference(100, 7, False)
+    assert db.get_llm_memory_preference(100, 7) is False
+    assert db.set_llm_memory_preference(100, 7, True)
+    assert db.get_llm_memory_preference(100, 7) is True
+
+
+# ---------------------------------------------------------------------------
 # Guild activity (used by InactivityFeature)
 # ---------------------------------------------------------------------------
 
