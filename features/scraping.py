@@ -4,9 +4,11 @@ import asyncio
 import io
 import logging
 import statistics
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 import discord
 import matplotlib.dates as mdates
@@ -47,6 +49,7 @@ plt.switch_backend("Agg")
 # `idx_price_history_timestamp` so the periodic cleanup stays fast as
 # the table grows.
 PRICE_HISTORY_RETENTION_DAYS = 180
+MANUAL_REFRESH_COOLDOWN_SECONDS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +423,7 @@ class ScrapingFeature:
         self.tree = tree
         self.converter = CurrencyConverter()
         self.scraper = PriceScraper()
+        self._manual_refresh_at: dict[tuple[int, str], float] = {}
         self._register_commands()
 
     async def start_tasks(self) -> None:
@@ -506,6 +510,107 @@ class ScrapingFeature:
                 await interaction.response.send_message("Link not found in your list.", ephemeral=True)
 
         @self.tree.command(
+            name="wishlist-target-price",
+            description="Alert once when an item's price reaches your target",
+        )
+        @app_commands.describe(
+            url="The tracked item URL",
+            price="Notify when the price is at or below this amount",
+            currency="Currency for the target price",
+        )
+        @app_commands.choices(currency=CURRENCY_CHOICES)
+        async def wishlist_target_price(
+            interaction: discord.Interaction,
+            url: str,
+            price: float,
+            currency: app_commands.Choice[str],
+        ):
+            if price <= 0:
+                await interaction.response.send_message(
+                    "Target price must be greater than zero.", ephemeral=True
+                )
+                return
+            if db.set_scraped_item_target(
+                interaction.user.id, url, price, currency.value
+            ):
+                await interaction.response.send_message(
+                    f"🎯 I will notify you once when this item reaches "
+                    f"{price:.2f} {currency.value} or less.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "That URL is not in your tracking list.", ephemeral=True
+                )
+
+        @self.tree.command(
+            name="wishlist-target-clear",
+            description="Remove a target-price alert from a tracked item",
+        )
+        @app_commands.describe(url="The tracked item URL")
+        async def wishlist_target_clear(interaction: discord.Interaction, url: str):
+            if db.set_scraped_item_target(interaction.user.id, url, None, None):
+                await interaction.response.send_message(
+                    "Target-price alert removed.", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "That URL is not in your tracking list.", ephemeral=True
+                )
+
+        @self.tree.command(
+            name="wishlist-restock-only",
+            description="Choose whether an item only notifies when restocked",
+        )
+        @app_commands.describe(
+            url="The tracked item URL",
+            enabled="When enabled, price and target alerts are suppressed",
+        )
+        async def wishlist_restock_only(
+            interaction: discord.Interaction, url: str, enabled: bool
+        ):
+            if db.set_scraped_item_restock_only(interaction.user.id, url, enabled):
+                text = (
+                    "Restock-only mode enabled. Price history still updates, "
+                    "but only a back-in-stock notification will be sent."
+                    if enabled
+                    else "Restock-only mode disabled. Price and target alerts are enabled again."
+                )
+                await interaction.response.send_message(text, ephemeral=True)
+            else:
+                await interaction.response.send_message(
+                    "That URL is not in your tracking list.", ephemeral=True
+                )
+
+        @self.tree.command(
+            name="wishlist-refresh",
+            description="Refresh one tracked item now (five-minute cooldown)",
+        )
+        @app_commands.describe(url="The tracked item URL")
+        async def wishlist_refresh(interaction: discord.Interaction, url: str):
+            item = db.get_scraped_item(interaction.user.id, url)
+            if item is None:
+                await interaction.response.send_message(
+                    "That URL is not in your tracking list.", ephemeral=True
+                )
+                return
+
+            key = (interaction.user.id, url)
+            now = time.monotonic()
+            previous = feature._manual_refresh_at.get(key, 0.0)
+            remaining = MANUAL_REFRESH_COOLDOWN_SECONDS - (now - previous)
+            if remaining > 0:
+                await interaction.response.send_message(
+                    f"Please wait {int(remaining) + 1}s before refreshing this item again.",
+                    ephemeral=True,
+                )
+                return
+            feature._manual_refresh_at[key] = now
+            await interaction.response.defer(ephemeral=True)
+            result = await feature._manual_refresh_item(item)
+            await interaction.followup.send(result, ephemeral=True, suppress_embeds=True)
+
+        @self.tree.command(
             name="wishlist-show", description="Show your tracked items and their current prices"
         )
         @app_commands.describe(
@@ -514,7 +619,7 @@ class ScrapingFeature:
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_show(
             interaction: discord.Interaction,
-            currency: app_commands.Choice[str] | None = None,
+            currency: Optional[app_commands.Choice[str]] = None,
         ):
             # `target_currency = None` → render each item in its own native
             # (stored / TLD-derived) currency. When the user explicitly picks
@@ -526,13 +631,16 @@ class ScrapingFeature:
             )
             await interaction.response.defer(ephemeral=True)
 
-            items = db.get_user_scraped_items(interaction.user.id)
+            items = db.get_user_scraped_items_with_settings(interaction.user.id)
             if not items:
                 await interaction.followup.send("You are not tracking any items.", ephemeral=True)
                 return
 
             blocks = []
-            for url, price, stock, title, item_currency in items:
+            for (
+                url, price, stock, title, item_currency, alert_price,
+                alert_currency, restock_only, last_checked_at, check_status,
+            ) in items:
                 if stock is None:
                     status = "❓ Stock unknown"
                 elif stock:
@@ -546,7 +654,18 @@ class ScrapingFeature:
                     price, source_currency, target_currency
                 )
                 item_name = f"**{title}**" if title else f"🔗 {url}"
-                blocks.append(f"{item_name}\nURL: {url}\n💰 Price: {price_display} | {status}")
+                target = (
+                    f"🎯 Target: {alert_price:.2f} {alert_currency}"
+                    if alert_price is not None and alert_currency
+                    else "🎯 Target: none"
+                )
+                mode = " | 🔕 Restock-only" if restock_only else ""
+                freshness = feature._format_check_status(last_checked_at, check_status)
+                blocks.append(
+                    f"{item_name}\nSource: {_domain(url)} | URL: {url}\n"
+                    f"💰 Price: {price_display} | {status}{mode}\n"
+                    f"{target}\n{freshness}"
+                )
 
             # Group items into chunks under Discord's 2000-char message limit.
             header = (
@@ -579,7 +698,7 @@ class ScrapingFeature:
         async def scrape_graph(
             interaction: discord.Interaction,
             url: str,
-            currency: app_commands.Choice[str] | None = None,
+            currency: Optional[app_commands.Choice[str]] = None,
         ):
             await interaction.response.defer(ephemeral=True)
 
@@ -659,7 +778,7 @@ class ScrapingFeature:
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph_all(
             interaction: discord.Interaction,
-            currency: app_commands.Choice[str] | None = None,
+            currency: Optional[app_commands.Choice[str]] = None,
         ):
             await interaction.response.defer(ephemeral=True)
 
@@ -763,6 +882,110 @@ class ScrapingFeature:
         if source_currency:
             return f"`{price:.2f} {source_currency.upper()}`"
         return f"`{price:.2f} (?)`"
+
+    @staticmethod
+    def _format_check_status(
+        checked_at: float | None, status: str | None
+    ) -> str:
+        if not checked_at:
+            return "Last checked: not yet"
+        try:
+            when = datetime.fromtimestamp(float(checked_at)).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OSError):
+            return "Last checked: unknown"
+        labels = {
+            "ok": "OK",
+            FAILURE_BLOCKED: "source blocked/unreachable",
+            FAILURE_UNSUPPORTED: "source unsupported",
+        }
+        return f"Last checked: {when} ({labels.get(status, status or 'unknown')})"
+
+    def _target_price_reached(
+        self,
+        current_price: float | None,
+        source_currency: str | None,
+        target_price: float | None,
+        target_currency: str | None,
+    ) -> tuple[bool | None, float | None]:
+        """Return whether a configured currency-aware target has been met."""
+        if current_price is None or target_price is None or not target_currency:
+            return None, None
+        converted = self.converter.to_currency(
+            current_price, source_currency, target_currency
+        )
+        if converted is None:
+            return None, None
+        return converted <= target_price, converted
+
+    async def _manual_refresh_item(self, item) -> str:
+        """Fetch one owned item and return a direct, non-DM status."""
+        (
+            item_id, _user_id, url, old_price, old_stock, old_title,
+            old_currency, _old_alert_kind, _old_alert_price, target_price,
+            target_currency, _target_alerted, _restock_only, _last_checked,
+            _last_check_status,
+        ) = item
+        result = await asyncio.to_thread(self.scraper.fetch, url)
+        status = result.failure or "ok"
+        db.update_scraped_item_check_status(item_id, status)
+
+        if result.failure == FAILURE_BLOCKED:
+            return (
+                f"Refresh failed: {_domain(url)} blocked or could not be reached.\n"
+                f"{self._format_check_status(time.time(), status)}"
+            )
+        if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
+            return (
+                f"Refresh failed: {_domain(url)} returned no supported price/stock data.\n"
+                f"{self._format_check_status(time.time(), status)}"
+            )
+
+        if result.price is not None and result.price != old_price:
+            db.add_price_history(item_id, result.price)
+        db.update_scraped_item_status(
+            item_id, result.price, result.in_stock, result.title, result.currency
+        )
+
+        title = result.title or old_title or url
+        source_currency = _effective_currency(result.currency or old_currency, url)
+        price_display = self._format_show_price(
+            result.price if result.price is not None else old_price,
+            source_currency,
+            None,
+        )
+        stock = result.in_stock if result.in_stock is not None else old_stock
+        stock_label = (
+            "Stock unknown" if stock is None
+            else ("In stock" if stock else "Out of stock")
+        )
+        lines = [
+            f"Refreshed: {title}",
+            f"Source: {_domain(url)}",
+            f"Price: {price_display} | {stock_label}",
+        ]
+        reached, converted = self._target_price_reached(
+            result.price if result.price is not None else old_price,
+            source_currency,
+            target_price,
+            target_currency,
+        )
+        if target_price is not None and target_currency:
+            if reached is True:
+                lines.append(
+                    f"Target reached: {converted:.2f} {target_currency} "
+                    f"<= {target_price:.2f} {target_currency}"
+                )
+            elif reached is False:
+                lines.append(
+                    f"Target: {target_price:.2f} {target_currency} (not reached)"
+                )
+            else:
+                lines.append(
+                    f"Target: {target_price:.2f} {target_currency} "
+                    f"(conversion unavailable)"
+                )
+        lines.append(self._format_check_status(time.time(), status))
+        return "\n".join(lines)
 
     @staticmethod
     def _render_price_graph(timestamps, prices, title, item_currency) -> discord.File:
@@ -878,12 +1101,19 @@ class ScrapingFeature:
             item_id, user_id, url,
             old_price, old_stock_status, old_title, old_currency,
             old_alert_kind, old_alert_price,
-        ) = item
+        ) = item[:9]
+        # Older unit tests and pre-migration callers retain the original
+        # nine fields. Missing preferences safely mean legacy behaviour.
+        target_price = item[9] if len(item) > 9 else None
+        target_currency = item[10] if len(item) > 10 else None
+        target_alerted = bool(item[11]) if len(item) > 11 else False
+        restock_only = bool(item[12]) if len(item) > 12 else False
 
         # Each `fetch` is up to ~15s of blocking I/O. Running it in a worker
         # thread keeps the bot responsive to slash commands and messages
         # during the scrape pass.
         result = await asyncio.to_thread(self.scraper.fetch, url)
+        db.update_scraped_item_check_status(item_id, result.failure or "ok")
 
         # Transport-level failure (timeout, anti-bot block, 5xx): trust
         # nothing, change nothing. Try again next pass.
@@ -923,11 +1153,26 @@ class ScrapingFeature:
             last_alert_kind=old_alert_kind,
             last_alert_price=old_alert_price,
         )
+        source_currency = _effective_currency(result.currency or old_currency, url)
+        target_reached, converted_target_price = self._target_price_reached(
+            result.price,
+            source_currency,
+            target_price,
+            target_currency,
+        )
+        target_alert = target_reached is True and not target_alerted
+        if target_reached is not None and target_reached != target_alerted:
+            db.update_scraped_item_target_state(item_id, target_reached)
 
         if result.price is not None:
             db.add_price_history(item_id, result.price)
 
-        if price_changed or back_in_stock or decision.alert_kind:
+        should_notify = (
+            back_in_stock
+            if restock_only
+            else price_changed or back_in_stock or decision.alert_kind or target_alert
+        )
+        if should_notify:
             try:
                 user = await self.client.fetch_user(user_id)
                 if user:
@@ -966,11 +1211,18 @@ class ScrapingFeature:
                         new_src = _effective_currency(result.currency, url)
                         alert_text = self._format_alert_section(decision, new_src)
                         msg += alert_text
+                    if target_alert and target_price is not None and target_currency:
+                        msg += (
+                            f"Target reached. Now "
+                            f"{converted_target_price:.2f} {target_currency} "
+                            f"(target: {target_price:.2f} {target_currency}).\n"
+                        )
                     await user.send(msg, suppress_embeds=True)
                     logger.info(
                         f"Scrape DM sent to user {user_id} for {url} "
                         f"(price_changed={price_changed}, back_in_stock={back_in_stock}, "
-                        f"alert={decision.alert_kind})"
+                        f"alert={decision.alert_kind}, target_alert={target_alert}, "
+                        f"restock_only={restock_only})"
                     )
             except Exception as e:
                 logger.error(f"Could not send DM to user {user_id}: {e}")

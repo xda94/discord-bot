@@ -158,6 +158,32 @@ def init_db():
                 c.execute("ALTER TABLE scraped_items ADD COLUMN last_alert_kind TEXT")
             if "last_alert_price" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN last_alert_price REAL")
+            # Per-item notification preferences. A target contains both a
+            # number and currency so a user can, for example, track a Danish
+            # shop but ask to be notified below 400 RON. `target_alerted`
+            # makes the threshold a crossing alert rather than a 12-hour
+            # reminder while the price remains below it.
+            if "target_price" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN target_price REAL")
+            if "target_currency" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN target_currency TEXT")
+            if "target_alerted" not in columns:
+                c.execute(
+                    "ALTER TABLE scraped_items ADD COLUMN target_alerted "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            if "restock_only" not in columns:
+                c.execute(
+                    "ALTER TABLE scraped_items ADD COLUMN restock_only "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            # These fields are updated even for a failed attempt, allowing
+            # `/wishlist-show` to distinguish fresh data from a blocked or
+            # unsupported source without retaining page contents.
+            if "last_checked_at" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN last_checked_at REAL")
+            if "last_check_status" not in columns:
+                c.execute("ALTER TABLE scraped_items ADD COLUMN last_check_status TEXT")
 
             c.execute("""
                 CREATE TABLE IF NOT EXISTS price_history (
@@ -182,6 +208,37 @@ def init_db():
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_price_history_timestamp "
                 "ON price_history(timestamp)"
+            )
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_response_feedback (
+                    response_message_id INTEGER PRIMARY KEY,
+                    requester_user_id INTEGER NOT NULL,
+                    category TEXT NOT NULL CHECK (category IN ('mention', 'summon')),
+                    guild_id INTEGER,
+                    model TEXT,
+                    prompt_version TEXT,
+                    rating INTEGER CHECK (rating IN (-1, 1) OR rating IS NULL),
+                    created_at REAL NOT NULL,
+                    rated_at REAL
+                )
+            """)
+            c.execute("PRAGMA table_info(llm_response_feedback)")
+            feedback_columns = {row[1] for row in c.fetchall()}
+            if "guild_id" not in feedback_columns:
+                c.execute("ALTER TABLE llm_response_feedback ADD COLUMN guild_id INTEGER")
+            if "model" not in feedback_columns:
+                c.execute("ALTER TABLE llm_response_feedback ADD COLUMN model TEXT")
+            if "prompt_version" not in feedback_columns:
+                c.execute(
+                    "ALTER TABLE llm_response_feedback ADD COLUMN prompt_version TEXT"
+                )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_feedback_category_rating "
+                "ON llm_response_feedback(category, rating)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_feedback_guild "
+                "ON llm_response_feedback(guild_id, category, model, prompt_version)"
             )
             # Migration from the decommissioned Amadeus integration. Those
             # client-id/secret pairs cannot be used with SerpApi, so remove the
@@ -788,15 +845,18 @@ def get_all_scraped_items():
     """Return every tracked item across all users.
 
     Tuple shape: `(id, user_id, url, last_price, last_stock_status, title,
-    currency, last_alert_kind, last_alert_price)` — 9 fields. The two
-    `last_alert_*` columns are the LOW/HIGH alert state used by the
-    scrape loop's DM logic; they're NULL until an alert fires.
+    currency, last_alert_kind, last_alert_price, target_price,
+    target_currency, target_alerted, restock_only, last_checked_at,
+    last_check_status)` — 15 fields. The alert/preference columns are used
+    exclusively by the scrape loop; no page contents are persisted.
     """
     try:
         with _connect() as c:
             c.execute(
                 "SELECT id, user_id, url, last_price, last_stock_status, title, "
-                "currency, last_alert_kind, last_alert_price FROM scraped_items"
+                "currency, last_alert_kind, last_alert_price, target_price, "
+                "target_currency, target_alerted, restock_only, last_checked_at, "
+                "last_check_status FROM scraped_items"
             )
             return c.fetchall()
     except Exception:
@@ -804,6 +864,7 @@ def get_all_scraped_items():
         return []
 
 def get_user_scraped_items(user_id):
+    """Return the legacy five-field display projection for graph callers."""
     try:
         with _connect() as c:
             c.execute("SELECT url, last_price, last_stock_status, title, currency FROM scraped_items WHERE user_id = ?", (user_id,))
@@ -811,6 +872,101 @@ def get_user_scraped_items(user_id):
     except Exception:
         logger.exception(f"Failed to fetch scraped items for user {user_id}")
         return []
+
+
+def get_user_scraped_items_with_settings(user_id):
+    """Return display rows plus alert preferences and freshness metadata.
+
+    Tuple shape: `(url, price, stock, title, currency, target_price,
+    target_currency, restock_only, last_checked_at, last_check_status)`.
+    Kept separate from `get_user_scraped_items` so existing graph consumers
+    retain their intentionally small, stable tuple shape.
+    """
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT url, last_price, last_stock_status, title, currency, "
+                "target_price, target_currency, restock_only, last_checked_at, "
+                "last_check_status FROM scraped_items WHERE user_id = ?",
+                (user_id,),
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception(f"Failed to fetch detailed scraped items for user {user_id}")
+        return []
+
+
+def get_scraped_item(user_id, url):
+    """Return one owned item in the same shape as `get_all_scraped_items`."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT id, user_id, url, last_price, last_stock_status, title, "
+                "currency, last_alert_kind, last_alert_price, target_price, "
+                "target_currency, target_alerted, restock_only, last_checked_at, "
+                "last_check_status FROM scraped_items WHERE user_id = ? AND url = ?",
+                (user_id, url),
+            )
+            return c.fetchone()
+    except Exception:
+        logger.exception(f"Failed to fetch scraped item for {url}")
+        return None
+
+
+def set_scraped_item_target(user_id, url, price, currency):
+    """Set (or clear with `price=None`) an owned item's threshold alert.
+
+    Changing a target always re-arms it. This avoids a previous target's alert
+    state suppressing an alert for the newly configured threshold.
+    """
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE scraped_items SET target_price = ?, target_currency = ?, "
+                "target_alerted = 0 WHERE user_id = ? AND url = ?",
+                (price, currency.upper() if currency else None, user_id, url),
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(f"Failed to set target price for {url}")
+        return False
+
+
+def set_scraped_item_restock_only(user_id, url, enabled):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE scraped_items SET restock_only = ? WHERE user_id = ? AND url = ?",
+                (1 if enabled else 0, user_id, url),
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(f"Failed to set restock-only mode for {url}")
+        return False
+
+
+def update_scraped_item_check_status(item_id, status):
+    """Record the outcome of the most recent attempt without changing data."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE scraped_items SET last_checked_at = ?, last_check_status = ? "
+                "WHERE id = ?",
+                (time.time(), status, item_id),
+            )
+    except Exception:
+        logger.exception(f"Failed to update scrape check status for ID {item_id}")
+
+
+def update_scraped_item_target_state(item_id, alerted):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE scraped_items SET target_alerted = ? WHERE id = ?",
+                (1 if alerted else 0, item_id),
+            )
+    except Exception:
+        logger.exception(f"Failed to update target alert state for ID {item_id}")
 
 def update_scraped_item_status(item_id, price, in_stock, title=None, currency=None):
     """Update a tracked item's latest snapshot. Every field is COALESCEd, so
@@ -855,6 +1011,96 @@ def update_item_alert_state(item_id, kind, price):
             )
     except Exception:
         logger.exception(f"Failed to update alert state for item {item_id}")
+
+
+# --- LLM response feedback -------------------------------------------------
+
+def track_llm_response(
+    message_id,
+    requester_user_id,
+    category,
+    *,
+    guild_id=None,
+    model=None,
+    prompt_version=None,
+):
+    """Register a rateable bot response without retaining its text/prompt."""
+    if category not in ("mention", "summon"):
+        raise ValueError(f"Unsupported LLM feedback category: {category!r}")
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT OR IGNORE INTO llm_response_feedback "
+                "(response_message_id, requester_user_id, category, guild_id, model, "
+                "prompt_version, rating, created_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    message_id, requester_user_id, category, guild_id, model,
+                    prompt_version, time.time(),
+                ),
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(f"Failed to register LLM response feedback for message {message_id}")
+        return False
+
+
+def set_llm_response_rating(message_id, requester_user_id, rating):
+    """Record the requester's latest thumbs-up/down for a bot response.
+
+    The requester check prevents other channel members from skewing a user's
+    private signal. Adding the opposite reaction later simply replaces the
+    rating; we don't store reaction history.
+    """
+    if rating not in (-1, 1):
+        raise ValueError("LLM feedback rating must be -1 or 1")
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE llm_response_feedback SET rating = ?, rated_at = ? "
+                "WHERE response_message_id = ? AND requester_user_id = ?",
+                (rating, time.time(), message_id, requester_user_id),
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(f"Failed to record LLM feedback for message {message_id}")
+        return False
+
+
+def get_llm_response_feedback(message_id):
+    """Return one compact feedback row for diagnostics/tests, never text."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT requester_user_id, category, rating, guild_id, model, "
+                "prompt_version, created_at, rated_at "
+                "FROM llm_response_feedback WHERE response_message_id = ?",
+                (message_id,),
+            )
+            return c.fetchone()
+    except Exception:
+        logger.exception(f"Failed to read LLM feedback for message {message_id}")
+        return None
+
+
+def get_llm_feedback_summary(guild_id):
+    """Aggregate a guild's rated replies without exposing prompts or text."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT category, COALESCE(model, 'unknown'), "
+                "COALESCE(prompt_version, 'unknown'), COUNT(*), "
+                "SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) "
+                "FROM llm_response_feedback WHERE guild_id = ? "
+                "AND rating IS NOT NULL "
+                "GROUP BY category, model, prompt_version "
+                "ORDER BY category, model, prompt_version",
+                (guild_id,),
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception(f"Failed to summarize LLM feedback for guild {guild_id}")
+        return []
 
 
 def add_price_history(item_id, price):

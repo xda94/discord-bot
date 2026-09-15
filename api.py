@@ -3,7 +3,8 @@ import logging
 import os
 import sys
 import threading
-from datetime import datetime
+import time
+from datetime import date, datetime
 from functools import wraps
 
 from dotenv import load_dotenv
@@ -16,6 +17,8 @@ from db import (
     add_response,
     add_scraped_item,
     clear_guild_joke_config,
+    delete_flight_api_credentials,
+    delete_flight_tracker,
     delete_joke,
     delete_reminder,
     delete_scraped_item,
@@ -24,21 +27,45 @@ from db import (
     get_all_reminders,
     get_all_responses,
     get_all_scraped_items,
+    get_flight_price_history,
+    get_flight_tracker,
     get_guild_joke_config,
     get_joke_by_id,
+    get_llm_feedback_summary,
+    get_scraped_item,
+    get_top_keywords,
+    get_top_keywords_by_user,
+    get_user_flight_trackers,
     init_db,
+    is_guild_inactivity_enabled,
     remove_response,
     reset_all_guild_joke_sent,
+    set_flight_api_credentials,
+    set_guild_inactivity_enabled,
     set_guild_joke_config,
+    set_scraped_item_restock_only,
+    set_scraped_item_target,
     update_joke,
+    update_scraped_item_check_status,
+    update_scraped_item_status,
     get_setting,
     set_setting,
+    add_flight_tracker,
 )
+from flight_provider import (
+    SUPPORTED_CURRENCIES,
+    FlightProviderError,
+    SerpApiFlightProvider,
+    normalize_iata,
+    parse_iso_date,
+)
+from llm_client import LlamaCppError, get_allowed_models, get_mention_model
 from logger import setup_logger
 from scraper import (
     FAILURE_BLOCKED,
     FAILURE_UNSUPPORTED,
     PriceScraper,
+    _domain,
     _is_valid_http_url,
 )
 
@@ -133,6 +160,71 @@ def _ensure_db_initialized():
             init_db()
             _db_initialized = True
 
+
+def _is_int(value) -> bool:
+    """JSON booleans are ints in Python, but never valid Discord IDs."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _serialize_scraped_item(item):
+    if item is None:
+        return None
+    return {
+        "id": item[0],
+        "user_id": item[1],
+        "url": item[2],
+        "last_price": item[3],
+        "in_stock": bool(item[4]) if item[4] is not None else None,
+        "title": item[5],
+        "currency": item[6],
+        "last_alert_kind": item[7],
+        "last_alert_price": item[8],
+        "target_price": item[9],
+        "target_currency": item[10],
+        "target_alerted": bool(item[11]),
+        "restock_only": bool(item[12]),
+        "last_checked_at": item[13],
+        "last_check_status": item[14],
+    }
+
+
+def _validate_flight_tracker_payload(data):
+    """Pure validation shared by the HTTP flight configuration routes."""
+    required = ("user_id", "origin", "destination", "start_date", "end_date")
+    if not data or any(name not in data for name in required):
+        raise ValueError("Missing user_id, origin, destination, start_date, or end_date")
+    if not _is_int(data["user_id"]):
+        raise ValueError("user_id must be an integer")
+
+    origin = normalize_iata(data["origin"])
+    destination = normalize_iata(data["destination"])
+    if origin == destination:
+        raise ValueError("Origin and destination must be different")
+    start = parse_iso_date(data["start_date"])
+    end = parse_iso_date(data["end_date"])
+    if start < date.today():
+        raise ValueError("The start date cannot be in the past")
+    if end <= start:
+        raise ValueError("The end date must be after the start date")
+    adults = data.get("adults", 1)
+    if not _is_int(adults) or not 1 <= adults <= 9:
+        raise ValueError("adults must be an integer between 1 and 9")
+    currency = str(data.get("currency", "EUR")).upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        raise ValueError(
+            f"currency must be one of: {', '.join(SUPPORTED_CURRENCIES)}"
+        )
+    return {
+        "user_id": data["user_id"],
+        "origin": origin,
+        "destination": destination,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "adults": adults,
+        "currency": currency,
+    }
+
+
 # --- Keywords Routes ---
 
 @app.route("/keywords/add", methods=["POST"])
@@ -193,6 +285,31 @@ def api_keywords_get():
     )
     responses = get_all_responses(guild_id)
     return jsonify(responses)
+
+
+@app.route("/keywords/top", methods=["GET"])
+@require_token
+def api_keywords_top():
+    guild_id = request.args.get("guild_id", type=int)
+    user_id = request.args.get("user_id", type=int)
+    limit = request.args.get("limit", default=10, type=int)
+    if guild_id is None:
+        return jsonify({"error": "Missing guild_id query parameter"}), 400
+    if limit is None or not 1 <= limit <= 100:
+        return jsonify({"error": "limit must be an integer between 1 and 100"}), 400
+    rows = (
+        get_top_keywords_by_user(guild_id, user_id, limit)
+        if user_id is not None
+        else get_top_keywords(guild_id, limit)
+    )
+    return jsonify(
+        {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "keywords": [{"keyword": keyword, "count": count} for keyword, count in rows],
+        }
+    )
+
 
 # --- Reminder Routes ---
 
@@ -405,6 +522,81 @@ def api_delete_guild_joke_config(guild_id):
     return jsonify({"status": "deleted", "guild_id": guild_id})
 
 
+# --- LLM and inactivity configuration --------------------------------------
+
+@app.route("/llm/mention-model", methods=["GET"])
+@require_token
+def api_get_mention_model():
+    try:
+        allowed = get_allowed_models()
+        stored = get_setting("mention_model")
+        selected = stored if stored in allowed else get_mention_model()
+        return jsonify({"model": selected, "allowed_models": list(allowed)})
+    except LlamaCppError as exc:
+        logger.error("Could not read mention-model configuration: %s", exc)
+        return jsonify({"error": str(exc)}), 503
+
+
+@app.route("/llm/mention-model", methods=["PUT"])
+@require_token
+def api_set_mention_model():
+    data = request.get_json()
+    model = data.get("model") if isinstance(data, dict) else None
+    if not isinstance(model, str) or not model.strip():
+        return jsonify({"error": "model must be a non-empty string"}), 400
+    try:
+        allowed = get_allowed_models()
+    except LlamaCppError as exc:
+        return jsonify({"error": str(exc)}), 503
+    model = model.strip()
+    if model not in allowed:
+        return jsonify({"error": "Model is not allowed", "allowed_models": list(allowed)}), 400
+    set_setting("mention_model", model)
+    logger.info("Mention model changed through API")
+    return jsonify({"status": "updated", "model": model})
+
+
+@app.route("/llm/feedback/summary", methods=["GET"])
+@require_token
+def api_llm_feedback_summary():
+    guild_id = request.args.get("guild_id", type=int)
+    if guild_id is None:
+        return jsonify({"error": "Missing guild_id query parameter"}), 400
+    rows = get_llm_feedback_summary(guild_id)
+    groups = []
+    for category, model, prompt_version, total, positive, negative in rows:
+        groups.append(
+            {
+                "category": category,
+                "model": model,
+                "prompt_version": prompt_version,
+                "ratings": total,
+                "up": positive,
+                "down": negative,
+                "approval_percent": round(positive / total * 100, 1) if total else 0,
+                "ready_to_compare": total >= 10,
+            }
+        )
+    return jsonify({"guild_id": guild_id, "groups": groups})
+
+
+@app.route("/inactivity/guilds/<int:guild_id>", methods=["GET"])
+@require_token
+def api_get_guild_inactivity(guild_id):
+    return jsonify({"guild_id": guild_id, "enabled": is_guild_inactivity_enabled(guild_id)})
+
+
+@app.route("/inactivity/guilds/<int:guild_id>", methods=["PUT"])
+@require_token
+def api_set_guild_inactivity(guild_id):
+    data = request.get_json()
+    enabled = data.get("enabled") if isinstance(data, dict) else None
+    if not isinstance(enabled, bool):
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    set_guild_inactivity_enabled(guild_id, enabled)
+    return jsonify({"status": "updated", "guild_id": guild_id, "enabled": enabled})
+
+
 # --- Scrape Routes ---
 
 # Single shared scraper instance — `PriceScraper` is stateless beyond its
@@ -511,9 +703,11 @@ def api_remove_scrape():
 def api_get_all_scrapes():
     try:
         items = get_all_scraped_items()
-        # `get_all_scraped_items` returns a 9-tuple:
+        # `get_all_scraped_items` returns a 15-tuple:
         #   (id, user_id, url, last_price, last_stock_status, title,
-        #    currency, last_alert_kind, last_alert_price)
+        #    currency, last_alert_kind, last_alert_price, target_price,
+        #    target_currency, target_alerted, restock_only, last_checked_at,
+        #    last_check_status)
         # `len(i) > N` guards are belt-and-braces in case an older
         # schema (pre-alerts migration) is queried before init_db has
         # had a chance to ALTER the table.
@@ -528,12 +722,263 @@ def api_get_all_scrapes():
                 "currency": i[6] if len(i) > 6 else None,
                 "last_alert_kind": i[7] if len(i) > 7 else None,
                 "last_alert_price": i[8] if len(i) > 8 else None,
+                "target_price": i[9] if len(i) > 9 else None,
+                "target_currency": i[10] if len(i) > 10 else None,
+                "target_alerted": bool(i[11]) if len(i) > 11 else False,
+                "restock_only": bool(i[12]) if len(i) > 12 else False,
+                "last_checked_at": i[13] if len(i) > 13 else None,
+                "last_check_status": i[14] if len(i) > 14 else None,
             } for i in items
         ]
         return jsonify(result)
     except Exception:
         logger.exception("Error in /wishlist/all")
         return jsonify({"error": "Internal server error"}), 500
+
+
+@app.route("/wishlist/preferences", methods=["GET"])
+@require_token
+def api_get_wishlist_preferences():
+    user_id = request.args.get("user_id", type=int)
+    url = request.args.get("url", type=str)
+    if user_id is None or not url:
+        return jsonify({"error": "Missing user_id or url query parameter"}), 400
+    item = get_scraped_item(user_id, url)
+    if item is None:
+        return jsonify({"error": "Item not found"}), 404
+    return jsonify(_serialize_scraped_item(item))
+
+
+@app.route("/wishlist/preferences", methods=["PUT"])
+@require_token
+def api_set_wishlist_preferences():
+    data = request.get_json()
+    if not isinstance(data, dict) or not _is_int(data.get("user_id")) or not isinstance(
+        data.get("url"), str
+    ):
+        return jsonify({"error": "user_id (integer) and url (string) are required"}), 400
+    user_id = data["user_id"]
+    url = data["url"]
+    if get_scraped_item(user_id, url) is None:
+        return jsonify({"error": "Item not found"}), 404
+
+    changed = False
+    if data.get("clear_target") is True:
+        if not set_scraped_item_target(user_id, url, None, None):
+            return jsonify({"error": "Could not clear target"}), 500
+        changed = True
+    elif "target_price" in data or "target_currency" in data:
+        price = data.get("target_price")
+        currency = data.get("target_currency")
+        if (
+            not isinstance(price, (int, float))
+            or isinstance(price, bool)
+            or price <= 0
+            or not isinstance(currency, str)
+            or currency.upper() not in SUPPORTED_CURRENCIES
+        ):
+            return jsonify(
+                {
+                    "error": "target_price must be positive and target_currency "
+                    f"must be one of {', '.join(SUPPORTED_CURRENCIES)}",
+                }
+            ), 400
+        if not set_scraped_item_target(user_id, url, float(price), currency):
+            return jsonify({"error": "Could not set target"}), 500
+        changed = True
+
+    if "restock_only" in data:
+        if not isinstance(data["restock_only"], bool):
+            return jsonify({"error": "restock_only must be a boolean"}), 400
+        if not set_scraped_item_restock_only(user_id, url, data["restock_only"]):
+            return jsonify({"error": "Could not set restock_only"}), 500
+        changed = True
+
+    if not changed:
+        return jsonify({"error": "Provide target_price/target_currency, clear_target, or restock_only"}), 400
+    return jsonify(_serialize_scraped_item(get_scraped_item(user_id, url)))
+
+
+@app.route("/wishlist/refresh", methods=["POST"])
+@require_token
+def api_refresh_wishlist_item():
+    """Refresh data only; this route never sends a Discord DM or LLM request."""
+    data = request.get_json()
+    if not isinstance(data, dict) or not _is_int(data.get("user_id")) or not isinstance(
+        data.get("url"), str
+    ):
+        return jsonify({"error": "user_id (integer) and url (string) are required"}), 400
+    item = get_scraped_item(data["user_id"], data["url"])
+    if item is None:
+        return jsonify({"error": "Item not found"}), 404
+
+    result = _price_scraper.fetch(item[2])
+    status = result.failure or "ok"
+    update_scraped_item_check_status(item[0], status)
+    if result.failure == FAILURE_BLOCKED:
+        return jsonify(
+            {
+                "error": "blocked",
+                "source": _domain(item[2]),
+                "last_check_status": status,
+            }
+        ), 502
+    if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
+        return jsonify(
+            {
+                "error": "unsupported",
+                "source": _domain(item[2]),
+                "last_check_status": status,
+            }
+        ), 422
+
+    if result.price is not None and result.price != item[3]:
+        add_price_history(item[0], result.price)
+    update_scraped_item_status(
+        item[0], result.price, result.in_stock, result.title, result.currency
+    )
+    refreshed = _serialize_scraped_item(get_scraped_item(data["user_id"], data["url"]))
+    refreshed["source"] = _domain(item[2])
+    return jsonify(refreshed)
+
+
+# --- Flight tracker configuration ------------------------------------------
+
+@app.route("/flights/credentials", methods=["GET"])
+@require_token
+def api_get_flight_credentials_status():
+    user_id = request.args.get("user_id", type=int)
+    if user_id is None:
+        return jsonify({"error": "Missing user_id query parameter"}), 400
+    from db import get_flight_api_credentials
+
+    credentials = get_flight_api_credentials(user_id)
+    return jsonify(
+        {
+            "user_id": user_id,
+            "configured": credentials is not None,
+            "updated_at": credentials["updated_at"] if credentials else None,
+        }
+    )
+
+
+@app.route("/flights/credentials", methods=["POST"])
+@require_token
+def api_set_flight_credentials():
+    data = request.get_json()
+    if not isinstance(data, dict) or not _is_int(data.get("user_id")):
+        return jsonify({"error": "user_id must be an integer"}), 400
+    api_key = data.get("api_key")
+    if not isinstance(api_key, str) or not 1 <= len(api_key.strip()) <= 200:
+        return jsonify({"error": "api_key must be a non-empty string up to 200 characters"}), 400
+    try:
+        SerpApiFlightProvider(api_key=api_key.strip()).validate_credentials()
+    except FlightProviderError as exc:
+        return jsonify({"error": "Credential validation failed", "detail": str(exc)}), 400
+    if not set_flight_api_credentials(data["user_id"], api_key.strip()):
+        return jsonify({"error": "Could not store credentials"}), 500
+    logger.info("Validated and stored flight credentials through API for user %s", data["user_id"])
+    return jsonify({"status": "stored", "user_id": data["user_id"]}), 201
+
+
+@app.route("/flights/credentials", methods=["DELETE"])
+@require_token
+def api_delete_flight_credentials():
+    data = request.get_json()
+    user_id = data.get("user_id") if isinstance(data, dict) else None
+    if not _is_int(user_id):
+        return jsonify({"error": "user_id must be an integer"}), 400
+    if not delete_flight_api_credentials(user_id):
+        return jsonify({"error": "Credentials not found"}), 404
+    return jsonify({"status": "deleted", "user_id": user_id})
+
+
+@app.route("/flights/trackers", methods=["GET"])
+@require_token
+def api_get_flight_trackers():
+    user_id = request.args.get("user_id", type=int)
+    if user_id is None:
+        return jsonify({"error": "Missing user_id query parameter"}), 400
+    return jsonify({"user_id": user_id, "trackers": get_user_flight_trackers(user_id)})
+
+
+@app.route("/flights/trackers", methods=["POST"])
+@require_token
+def api_add_flight_tracker():
+    try:
+        values = _validate_flight_tracker_payload(request.get_json())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    from db import get_flight_api_credentials
+
+    if get_flight_api_credentials(values["user_id"]) is None:
+        return jsonify({"error": "No validated SerpApi credentials are configured for this user"}), 409
+    tracker_id = add_flight_tracker(
+        values["user_id"],
+        values["origin"],
+        values["destination"],
+        values["start_date"],
+        values["end_date"],
+        adults=values["adults"],
+        currency=values["currency"],
+    )
+    if not tracker_id:
+        return jsonify({"error": "That exact tracker already exists"}), 409
+    # Unlike the Discord command, this data/config route intentionally does
+    # not make an immediate paid provider request. The normal bot cadence will
+    # pick it up using the user's stored credentials.
+    return jsonify(get_flight_tracker(tracker_id, values["user_id"])), 201
+
+
+@app.route("/flights/trackers/<int:tracker_id>", methods=["GET"])
+@require_token
+def api_get_flight_tracker(tracker_id):
+    user_id = request.args.get("user_id", type=int)
+    if user_id is None:
+        return jsonify({"error": "Missing user_id query parameter"}), 400
+    tracker = get_flight_tracker(tracker_id, user_id)
+    if tracker is None:
+        return jsonify({"error": "Tracker not found"}), 404
+    return jsonify(tracker)
+
+
+@app.route("/flights/trackers/<int:tracker_id>", methods=["DELETE"])
+@require_token
+def api_delete_flight_tracker(tracker_id):
+    data = request.get_json()
+    user_id = data.get("user_id") if isinstance(data, dict) else None
+    if not _is_int(user_id):
+        return jsonify({"error": "user_id must be an integer"}), 400
+    if not delete_flight_tracker(user_id, tracker_id):
+        return jsonify({"error": "Tracker not found"}), 404
+    return jsonify({"status": "deleted", "id": tracker_id})
+
+
+@app.route("/flights/trackers/<int:tracker_id>/history", methods=["GET"])
+@require_token
+def api_get_flight_tracker_history(tracker_id):
+    user_id = request.args.get("user_id", type=int)
+    if user_id is None:
+        return jsonify({"error": "Missing user_id query parameter"}), 400
+    if get_flight_tracker(tracker_id, user_id) is None:
+        return jsonify({"error": "Tracker not found"}), 404
+    history = get_flight_price_history(tracker_id, user_id)
+    return jsonify(
+        {
+            "tracker_id": tracker_id,
+            "history": [
+                {
+                    "price": price,
+                    "currency": currency,
+                    "departure_date": departure,
+                    "return_date": returning,
+                    "checked_at": checked_at,
+                }
+                for price, currency, departure, returning, checked_at in history
+            ],
+        }
+    )
+
 
 # --- Settings Routes ---
 
