@@ -10,7 +10,11 @@ future refactor.
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
+from discord import app_commands
+
+import db
 
 from features.scraping import (
     ALERT_LOW_REALERT_DROP_PCT,
@@ -20,6 +24,66 @@ from features.scraping import (
     ScrapingFeature,
     _classify_price,
 )
+
+
+def test_wishlist_refresh_refreshes_all_eligible_owned_items(tmp_db, monkeypatch):
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+    feature = ScrapingFeature(client, tree)
+    first_url = "https://shop.example/first"
+    cooling_url = "https://shop.example/cooling"
+    other_user_url = "https://shop.example/not-mine"
+    db.add_scraped_item(123, first_url)
+    db.add_scraped_item(123, cooling_url)
+    db.add_scraped_item(456, other_user_url)
+
+    feature._manual_refresh_at[(123, cooling_url)] = 950.0
+    feature._manual_refresh_item = AsyncMock(return_value="Refreshed: First item")
+    monkeypatch.setattr("features.scraping.time.monotonic", lambda: 1_000.0)
+    monkeypatch.setattr("features.scraping.asyncio.sleep", AsyncMock())
+
+    interaction = MagicMock()
+    interaction.user.id = 123
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    refresh = tree.get_command("wishlist-refresh")
+    asyncio.run(refresh.callback(interaction))
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    assert feature._manual_refresh_item.await_count == 1
+    assert feature._manual_refresh_item.await_args.args[0][2] == first_url
+    message = interaction.followup.send.await_args.args[0]
+    assert "Refreshed 1 of 2 tracked item(s)." in message
+    assert "Skipped 1 item(s) still on cooldown" in message
+    assert "Refreshed: First item" in message
+
+
+def test_wishlist_refresh_with_url_refreshes_only_that_owned_item(tmp_db):
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+    feature = ScrapingFeature(client, tree)
+    first_url = "https://shop.example/first"
+    selected_url = "https://shop.example/selected"
+    db.add_scraped_item(123, first_url)
+    db.add_scraped_item(123, selected_url)
+
+    feature._manual_refresh_item = AsyncMock(return_value="Refreshed: Selected item")
+    interaction = MagicMock()
+    interaction.user.id = 123
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    refresh = tree.get_command("wishlist-refresh")
+    asyncio.run(refresh.callback(interaction, url=selected_url))
+
+    assert feature._manual_refresh_item.await_count == 1
+    assert feature._manual_refresh_item.await_args.args[0][2] == selected_url
+    message = interaction.followup.send.await_args.args[0]
+    assert "Refreshed the requested item." in message
+    assert "Refreshed: Selected item" in message
 
 
 # ---------------------------------------------------------------------------
