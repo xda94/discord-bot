@@ -28,6 +28,7 @@ from db import (
     get_all_responses,
     get_all_scraped_items,
     get_flight_price_history,
+    get_flight_api_credentials,
     get_flight_tracker,
     get_guild_joke_config,
     get_joke_by_id,
@@ -850,8 +851,6 @@ def api_get_flight_credentials_status():
     user_id = request.args.get("user_id", type=int)
     if user_id is None:
         return jsonify({"error": "Missing user_id query parameter"}), 400
-    from db import get_flight_api_credentials
-
     credentials = get_flight_api_credentials(user_id)
     return jsonify(
         {
@@ -909,8 +908,6 @@ def api_add_flight_tracker():
         values = _validate_flight_tracker_payload(request.get_json())
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    from db import get_flight_api_credentials
-
     if get_flight_api_credentials(values["user_id"]) is None:
         return jsonify({"error": "No validated SerpApi credentials are configured for this user"}), 409
     tracker_id = add_flight_tracker(

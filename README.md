@@ -321,7 +321,9 @@ automatically.
 
 ## REST API
 
-All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. Base URL: `http://<HOST>:<PORT>` (from `.env`).
+All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. Base URL: `http://<HOST>:<PORT>` (from `.env`). In Postman, set that value as a Bearer Token at collection level and send JSON request bodies with `Content-Type: application/json`.
+
+The API manages stored data and configuration only. It does not post to Discord, emulate Discord interactions, run shell commands, or request LLM completions. `POST /wishlist/add` and `POST /wishlist/refresh` are the narrow exceptions that fetch an already supplied HTTP(S) product page to update its saved tracking data; refresh never sends a notification.
 
 ### Keywords
 
@@ -330,6 +332,7 @@ All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. 
 | `POST` | `/keywords/add` | `{ "guild_id", "keyword", "response" }` |
 | `DELETE` | `/keywords/delete` | `{ "guild_id", "keyword", "response"? }` — omit `response` to delete all for keyword in that guild |
 | `GET` | `/keywords/get?guild_id=<id>` | Map of keyword → list of responses for one server |
+| `GET` | `/keywords/top?guild_id=<id>&user_id=<id?>&limit=<1-100?>` | Usage counts; `user_id` optionally limits results to one requester |
 
 ### Reminders
 
@@ -359,6 +362,16 @@ All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. 
 | `PUT` | `/jokes/guilds/<guild_id>` | `{ "channel_id", "send_time": "HH:MM" }` — create or update |
 | `DELETE` | `/jokes/guilds/<guild_id>` | Deactivate guild |
 
+### LLM feedback and guild activity
+
+| Method | Path | Body / notes |
+|---|---|---|
+| `GET` | `/llm/mention-model` | Active mention model and the environment-defined allow-list |
+| `PUT` | `/llm/mention-model` | `{ "model" }` — accepts only a model in `LLAMA_CPP_ALLOWED_MODELS` |
+| `GET` | `/llm/feedback/summary?guild_id=<id>` | Aggregated ratings by category, model, and prompt version; no prompt or response text |
+| `GET` | `/inactivity/guilds/<guild_id>` | Whether automatic inactivity messages are enabled |
+| `PUT` | `/inactivity/guilds/<guild_id>` | `{ "enabled": true }` |
+
 ### Wishlist
 
 | Method | Path | Body / notes |
@@ -366,8 +379,24 @@ All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. 
 | `POST` | `/wishlist/add` | `{ "user_id", "url" }` — **live scrape**; `201` with item fields, or `400` / `409` / `422` / `502` |
 | `DELETE` | `/wishlist/remove` | `{ "user_id", "url" }` |
 | `GET` | `/wishlist/all` | All tracked items incl. `last_alert_kind`, `last_alert_price` |
+| `GET` | `/wishlist/preferences?user_id=<id>&url=<url>` | One requester-owned item's current tracking data and preferences |
+| `PUT` | `/wishlist/preferences` | `{ "user_id", "url", "target_price", "target_currency", "restock_only" }`; use `{ "clear_target": true }` to clear a threshold |
+| `POST` | `/wishlist/refresh` | `{ "user_id", "url" }` — fetches and stores current item data only; no Discord notification |
 
 `POST /wishlist/add` may take up to ~15 s (HTTP timeout). It does not create rows for blocked or unsupported pages.
+
+### Flight tracker
+
+| Method | Path | Body / notes |
+|---|---|---|
+| `GET` | `/flights/credentials?user_id=<id>` | Credential status and timestamp only — never returns the key |
+| `POST` | `/flights/credentials` | `{ "user_id", "api_key" }` — validates the SerpApi key before storage |
+| `DELETE` | `/flights/credentials` | `{ "user_id" }` |
+| `GET` | `/flights/trackers?user_id=<id>` | All trackers belonging to one requester |
+| `POST` | `/flights/trackers` | `{ "user_id", "origin", "destination", "start_date", "end_date", "adults"?, "currency"? }`; requires stored credentials and does not make an immediate paid search |
+| `GET` | `/flights/trackers/<tracker_id>?user_id=<id>` | One requester-owned tracker |
+| `DELETE` | `/flights/trackers/<tracker_id>` | `{ "user_id" }` |
+| `GET` | `/flights/trackers/<tracker_id>/history?user_id=<id>` | Saved price observations for one requester-owned tracker |
 
 ---
 
