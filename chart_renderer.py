@@ -16,6 +16,21 @@ PRIMARY = "#60A5FA"
 TARGET = "#FBBF24"
 
 
+def _time_encoding(timestamps: list[datetime]) -> dict:
+    span = max(timestamps) - min(timestamps)
+    # Include hours for short histories and years when the range crosses one.
+    date_format = (
+        "%d %b %H:%M" if span.total_seconds() <= 2 * 86400
+        else "%d %b %Y" if min(timestamps).year != max(timestamps).year
+        else "%d %b"
+    )
+    return {
+        "field": "checked_at", "type": "temporal", "scale": {"type": "utc"},
+        "axis": {"title": "Date / time (UTC)", "format": date_format,
+                 "labelOverlap": "greedy", "tickCount": 6},
+    }
+
+
 def _base_config() -> dict:
     return {
         "background": BACKGROUND,
@@ -87,16 +102,7 @@ def render_price_history_png(
         f"Current {current:.2f} {currency}  •  Lowest {minimum:.2f} {currency}  •  Change {change:+.1f}%",
     ]
 
-    temporal = {
-        "field": "checked_at",
-        "type": "temporal",
-        "axis": {
-            "title": None,
-            "format": "%d %b",
-            "labelOverlap": "greedy",
-            "tickCount": 8,
-        },
-    }
+    temporal = _time_encoding(timestamps)
     quantitative = {
         "field": "price",
         "type": "quantitative",
@@ -122,7 +128,7 @@ def render_price_history_png(
                 "type": "line",
                 "color": PRIMARY,
                 "strokeWidth": 3,
-                "interpolate": "monotone",
+                "interpolate": "linear",
                 "point": {"filled": True, "fill": BACKGROUND, "size": 65},
             },
             "encoding": {"x": temporal, "y": quantitative},
@@ -201,25 +207,33 @@ def render_price_history_png(
 def render_multi_price_history_png(
     series: list[tuple[str, list[tuple[datetime, float]]]],
     currency: str,
+    percentage: bool = False,
 ) -> bytes:
     values = []
     endpoints = []
-    for label, points in series:
+    for index, (label, points) in enumerate(series, 1):
         short_label = f"{label[:37]}…" if len(label) > 38 else label
+        # Identity must never depend on a (possibly duplicate/truncated) title.
+        series_label = f"{index}. {short_label}"
+        baseline = float(points[0][1])
+        if percentage and baseline <= 0:
+            raise ValueError("Percentage comparison requires a positive starting price")
+        def plotted_price(price):
+            return float(price) / baseline - 1 if percentage else float(price)
         for timestamp, price in points:
             values.append(
                 {
-                    "item": short_label,
+                    "item": series_label,
                     "checked_at": timestamp.isoformat(),
-                    "price": float(price),
+                    "price": plotted_price(price),
                 }
             )
         last_timestamp, last_price = points[-1]
         endpoints.append(
             {
-                "item": short_label,
+                "item": series_label,
                 "checked_at": last_timestamp.isoformat(),
-                "price": float(last_price),
+                "price": plotted_price(last_price),
             }
         )
 
@@ -233,20 +247,14 @@ def render_multi_price_history_png(
             "symbolStrokeWidth": 4,
         },
     }
-    x = {
-        "field": "checked_at",
-        "type": "temporal",
-        "axis": {
-            "title": None,
-            "format": "%d %b",
-            "labelOverlap": "greedy",
-            "tickCount": 8,
-        },
-    }
+    x = _time_encoding([timestamp for _, points in series for timestamp, _ in points])
     y = {
         "field": "price",
         "type": "quantitative",
-        "axis": {"title": f"Price ({currency})", "format": ".2f"},
+        "axis": {
+            "title": "Change from first observation (%)" if percentage else f"Price ({currency})",
+            "format": "+.1%" if percentage else ".2f",
+        },
         "scale": {"zero": False, "nice": True},
     }
     spec = {
@@ -258,7 +266,8 @@ def render_multi_price_history_png(
             "text": "Price evolution — all tracked items",
             "subtitle": [
                 f"{len(series)} product{'s' if len(series) != 1 else ''}",
-                f"All prices converted to {currency}",
+                "Each product starts at 0% in the selected period" if percentage
+                else f"All prices shown in {currency}",
             ],
         },
         "data": {"values": values},
@@ -267,7 +276,7 @@ def render_multi_price_history_png(
                 "mark": {
                     "type": "line",
                     "strokeWidth": 3,
-                    "interpolate": "monotone",
+                    "interpolate": "linear",
                     "point": {"filled": True, "size": 45},
                 },
                 "encoding": {"x": x, "y": y, "color": color},
