@@ -1,10 +1,14 @@
-from unittest.mock import MagicMock
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import requests
 
 from llm_client import LlamaCppError, get_default_model, query_llm
 from features.llm_mention import (
+    AskJob,
+    LLMMentionFeature,
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
     get_ask_cooldown_seconds,
@@ -12,6 +16,59 @@ from features.llm_mention import (
     requests_ahead,
     split_discord_messages,
 )
+
+
+@pytest.mark.parametrize("summon_only", [False, True])
+@pytest.mark.parametrize("label", ["", "Robeeque: "])
+def test_mention_reply_tags_requester_and_preserves_feedback(summon_only, label):
+    feature = object.__new__(LLMMentionFeature)
+    feature.feedback = SimpleNamespace(register_reply=AsyncMock())
+    original = SimpleNamespace(reply=AsyncMock())
+    user = SimpleNamespace(id=123, display_name="Robeeque")
+    job = AskJob(
+        user=user, question="hello", model="discord-bot", reply_to=original,
+        summon_only=summon_only,
+    )
+
+    asyncio.run(feature._reply_mention(job, label + "Salut!"))
+
+    sent = original.reply.await_args
+    assert sent.args == ("<@123> Salut!",)
+    assert sent.kwargs["mention_author"] is False
+    assert sent.kwargs["allowed_mentions"].to_dict() == {
+        "parse": [], "users": [123]
+    }
+    feature.feedback.register_reply.assert_awaited_once()
+    feedback = feature.feedback.register_reply.await_args
+    assert feedback.args[0] is original.reply.return_value
+    assert feedback.kwargs["requester_user_id"] == 123
+    assert feedback.kwargs["category"] == ("summon" if summon_only else "mention")
+
+
+def test_long_mention_reply_only_pings_requester_in_first_chunk():
+    feature = object.__new__(LLMMentionFeature)
+    feature.feedback = None
+    original = SimpleNamespace(reply=AsyncMock())
+    channel = SimpleNamespace(send=AsyncMock())
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="hello", model="discord-bot", reply_to=original, channel=channel,
+    )
+    text = "@everyone <@456> <@&789> " + "x" * 5000
+
+    asyncio.run(feature._reply_mention(job, text))
+
+    first = original.reply.await_args
+    chunks = [first.args[0]] + [call.args[0] for call in channel.send.await_args_list]
+    assert len(chunks) > 1
+    assert chunks[0].startswith("<@123> ")
+    # The existing splitter trims whitespace at chunk boundaries.
+    assert "".join(chunks).replace(" ", "") == ("<@123> " + text).replace(" ", "")
+    assert all(len(chunk) <= DISCORD_SAFE_LIMIT for chunk in chunks)
+    assert first.kwargs["allowed_mentions"].to_dict() == {"parse": [], "users": [123]}
+    for call in channel.send.await_args_list:
+        assert call.kwargs["reference"] is original
+        assert call.kwargs["allowed_mentions"].to_dict() == {"parse": []}
 
 
 def test_get_ask_cooldown_seconds(monkeypatch):

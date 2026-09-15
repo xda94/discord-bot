@@ -250,8 +250,22 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 | `/wishlist-restock-only <url> <enabled>` | Suppress price/target DMs for this item while continuing to track it; only back-in-stock changes notify. |
 | `/wishlist-refresh [url]` | With a URL, fetch only that tracked item; omit it to refresh your entire wishlist. Reports source, freshness, stock, price, and target progress. Five-minute cooldown per item; cooling items are skipped during an all-item refresh. |
 | `/wishlist-show [currency]` | List your items. Default: each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
-| `/wishlist-graph <url> [currency]` | PNG price history for one URL (up to 180 days). |
-| `/wishlist-graph-all [currency]` | Combined graph for all your items; default currency = majority across your list. |
+| `/wishlist-graph <url> [currency] [days]` | PNG price history for one URL. Any whole-number period from 1–180 days; default 180. |
+| `/wishlist-graph-all [currency] [days] [percentage]` | Combined graph; default currency = majority across your list. Set `percentage:true` to compare changes from each product's first observation in the selected period. |
+
+Graph replies have **7 / 30 / 90 days** buttons and a **Custom days** dialog
+(1–180). For example, `/wishlist-graph-all days:45 percentage:true` compares
+45 days of relative price changes. The combined graph also has a button to
+switch between prices and percentage changes. Percentage mode starts each
+product at 0%; products with a zero or negative starting price are skipped.
+It uses each product's native observations and needs no exchange rates.
+
+Controls belong to the requester and expire after ten minutes of inactivity
+or a bot restart. They redraw saved data without fetching product pages.
+An empty period keeps the controls available to select a longer range.
+Charts use straight lines between observations, unique numbered product labels,
+and date/time labels in UTC that adapt to the history span. Custom periods
+cannot recover history already removed by the 180-day retention policy.
 
 **Currency** — read from the page when possible; TLD fallback (e.g. `.ro` → RON, `.dk` → DKK).
 
@@ -297,7 +311,7 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
 | `/llm-set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
-| `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → one direct LLM answer. |
+| `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
 | `/llm-feedback-summary` | Manage Server only; compare this server’s rated reply configurations. |
 
@@ -314,7 +328,13 @@ automatically.
 
 All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. Base URL: `http://<HOST>:<PORT>` (from `.env`). In Postman, set that value as a Bearer Token at collection level and send JSON request bodies with `Content-Type: application/json`.
 
-The API manages stored data and configuration only. It does not post to Discord, emulate Discord interactions, run shell commands, or request LLM completions. `POST /wishlist/add` and `POST /wishlist/refresh` are the narrow exceptions that fetch an already supplied HTTP(S) product page to update its saved tracking data; refresh never sends a notification.
+The API manages stored data and configuration. It does not post to Discord,
+emulate Discord interactions, or run shell commands. `POST /wishlist/add` and
+`POST /wishlist/refresh` fetch product pages to update saved tracking data;
+the shared scraper can invoke local LLM extraction when ordinary extraction
+fails. Refresh never sends a notification. Flight credential setup validates
+the key with SerpApi. This API is an operator interface: `user_id` selects data
+and does not authenticate a Discord user.
 
 ### Keywords
 
@@ -436,6 +456,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
+| `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature` | Queued @bot mention prompts through llama.cpp |

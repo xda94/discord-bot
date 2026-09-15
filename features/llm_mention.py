@@ -155,10 +155,22 @@ class LLMMentionFeature:
                 self._user_last_ask[job.user.id] = time.time()
 
     async def _reply_mention(self, job: AskJob, text: str) -> None:
-        parts = split_discord_messages(text)
-        if not parts or job.reply_to is None:
+        if not text.strip() or job.reply_to is None:
             return
-        reply = await job.reply_to.reply(parts[0], mention_author=False)
+        # Discord mentions require the user's ID. A model-generated display
+        # name (e.g. "Robeeque:") is only text, so add the mention ourselves.
+        text = text.strip()
+        name_label = f"{job.user.display_name}:"
+        if text.startswith(name_label):
+            text = text[len(name_label):].lstrip()
+        parts = split_discord_messages(text, first_prefix=f"<@{job.user.id}> ")
+        reply = await job.reply_to.reply(
+            parts[0],
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions(
+                users=[job.user], roles=False, everyone=False, replied_user=False
+            ),
+        )
         if self.feedback is not None:
             await self.feedback.register_reply(
                 reply,
@@ -171,7 +183,11 @@ class LLMMentionFeature:
             )
         if job.channel is not None:
             for part in parts[1:]:
-                await job.channel.send(part, reference=job.reply_to)
+                await job.channel.send(
+                    part,
+                    reference=job.reply_to,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
 
     async def _process_job(self, job: AskJob) -> None:
         try:

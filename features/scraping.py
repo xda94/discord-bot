@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph
 from chart_renderer import render_multi_price_history_png, render_price_history_png
 from tease_llm import generate_price_change_message
 
@@ -44,7 +45,7 @@ logger = logging.getLogger("discord_bot")
 # ~2.5 MB at steady state. Backed by
 # `idx_price_history_timestamp` so the periodic cleanup stays fast as
 # the table grows.
-PRICE_HISTORY_RETENTION_DAYS = 180
+PRICE_HISTORY_RETENTION_DAYS = GRAPH_MAX_DAYS
 MANUAL_REFRESH_COOLDOWN_SECONDS = 300
 
 
@@ -758,174 +759,51 @@ class ScrapingFeature:
         @app_commands.describe(
             url="The URL of the item",
             currency="Display currency (default: the item's own currency)",
+            days="Days of saved history, 1–180 (default 180)",
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph(
             interaction: discord.Interaction,
             url: str,
             currency: Optional[app_commands.Choice[str]] = None,
+            days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
         ):
-            await interaction.response.defer(ephemeral=True)
-
-            history = db.get_price_history(interaction.user.id, url)
-            if not history:
-                await interaction.followup.send(
-                    "No price history found for this URL in your list.", ephemeral=True
-                )
-                return
-
-            title = history[0][2] or "Price History"
-
-            item_info = db.get_scraped_item(interaction.user.id, url)
-            stored_currency = item_info[6] if item_info else None
-            item_currency = _effective_currency(stored_currency, url)
-
-            # Default to the item's own currency when the user didn't ask
-            # otherwise — graphing one item in some other currency is just
-            # unnecessary conversion noise. Fall back to RON only if the
-            # item's currency can't be determined at all.
-            if currency:
-                target_currency = currency.value
-                auto_chosen = False
-            else:
-                target_currency = item_currency or CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
-                auto_chosen = True
-
-            logger.info(
-                f"Command /wishlist-graph called by {interaction.user} for {url} "
-                f"(currency={target_currency}{' [auto]' if auto_chosen else ''})"
+            item = db.get_scraped_item(interaction.user.id, url)
+            target_currency = (
+                currency.value if currency else
+                _effective_currency(item[6], url) if item else None
+            ) or CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+            await send_graph(
+                interaction, url=url, currency=target_currency, days=days,
+                percentage=False, converter=feature.converter,
+                effective_currency=_effective_currency,
             )
-
-            # Convert each point to the requested display currency. If a point
-            # can't be converted we drop it — better an honest gap than a misleading
-            # number labelled in the wrong unit.
-            #
-            # Timestamps stay as real datetimes until the renderer serializes
-            # the inline Vega-Lite dataset.
-            timestamps: list[datetime] = []
-            prices: list[float] = []
-            for raw_price, ts, _ in history:
-                converted = feature.converter.to_currency(
-                    raw_price, item_currency, target_currency
-                )
-                if converted is None:
-                    continue
-                timestamps.append(datetime.fromtimestamp(ts))
-                prices.append(converted)
-
-            if not prices:
-                await interaction.followup.send(
-                    f"Couldn't render this graph in **{target_currency}** — the item's "
-                    f"currency is unknown or no exchange rate is available. "
-                    f"Try a different currency.",
-                    ephemeral=True,
-                )
-                return
-
-            target_display = None
-            if item_info and item_info[9] is not None and item_info[10]:
-                target_display = feature.converter.to_currency(
-                    item_info[9], item_info[10], target_currency
-                )
-            file = await asyncio.to_thread(
-                feature._render_price_graph,
-                timestamps,
-                prices,
-                title,
-                target_currency,
-                target_display,
-            )
-            await interaction.followup.send(file=file, ephemeral=True)
 
         @self.tree.command(
             name="wishlist-graph-all",
             description="Combined price history graph for ALL your tracked items",
         )
         @app_commands.describe(
-            currency="Display currency (default: the majority currency across your tracked items)"
+            currency="Display currency (default: majority currency across your items)",
+            days="Days of saved history, 1–180 (default 180)",
+            percentage="Compare percentage changes instead of prices (default false)",
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph_all(
             interaction: discord.Interaction,
             currency: Optional[app_commands.Choice[str]] = None,
+            days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
+            percentage: bool = False,
         ):
-            await interaction.response.defer(ephemeral=True)
-
             items = db.get_user_scraped_items(interaction.user.id)
-            if not items:
-                await interaction.followup.send(
-                    "You are not tracking any items.", ephemeral=True
-                )
-                return
-
-            # Default to the majority currency across the user's items, so the
-            # chart can show as many items as possible without conversion. The
-            # user can still override with the dropdown.
-            if currency:
-                target_currency = currency.value
-                auto_chosen = False
-            else:
-                target_currency = _majority_currency(
-                    (url, stored_currency) for url, _p, _s, _t, stored_currency in items
-                )
-                auto_chosen = True
-
-            logger.info(
-                f"Command /wishlist-graph-all called by {interaction.user} "
-                f"(currency={target_currency}{' [auto]' if auto_chosen else ''})"
+            target_currency = currency.value if currency else _majority_currency(
+                (url, stored_currency) for url, _p, _s, _t, stored_currency in items
             )
-
-            # Build one (label, [(datetime, price_in_target), ...]) series per item.
-            # All series share a single Y-axis in `target_currency` so
-            # cross-currency comparisons are valid.
-            series: list[tuple[str, list[tuple[datetime, float]]]] = []
-            skipped_no_history = 0
-            skipped_no_currency = 0
-
-            for url, _last_price, _stock, title, stored_currency in items:
-                history = db.get_price_history(interaction.user.id, url)
-                if not history:
-                    skipped_no_history += 1
-                    continue
-
-                item_currency = _effective_currency(stored_currency, url)
-                points: list[tuple[datetime, float]] = []
-                for price, ts, _row_title in history:
-                    converted = feature.converter.to_currency(
-                        price, item_currency, target_currency
-                    )
-                    if converted is not None:
-                        points.append((datetime.fromtimestamp(ts), converted))
-
-                if not points:
-                    skipped_no_currency += 1
-                    continue
-
-                series.append((title or _domain(url), points))
-
-            if not series:
-                await interaction.followup.send(
-                    f"No price history available yet for any of your tracked items "
-                    f"(in **{target_currency}**).",
-                    ephemeral=True,
-                )
-                return
-
-            file = await asyncio.to_thread(
-                feature._render_multi_price_graph, series, target_currency
+            await send_graph(
+                interaction, url=None, currency=target_currency, days=days,
+                percentage=percentage, converter=feature.converter,
+                effective_currency=_effective_currency,
             )
-            parts = [
-                f"Combined price history for **{len(series)}** tracked item"
-                f"{'s' if len(series) != 1 else ''} (normalized to **{target_currency}**).",
-            ]
-            if skipped_no_history:
-                parts.append(f"_Skipped (no history yet): {skipped_no_history}._")
-            if skipped_no_currency:
-                parts.append(
-                    f"_Skipped (no rate to convert into {target_currency}): "
-                    f"{skipped_no_currency}._"
-                )
-            await interaction.followup.send("\n".join(parts), file=file, ephemeral=True)
 
     def _format_show_price(
         self,
