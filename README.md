@@ -254,6 +254,10 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 |---|---|
 | `/wishlist-item <url>` | Track URL; live scrape on add. Checked every 12 h; DMs on price/stock changes. |
 | `/wishlist-item-delete <url>` | Remove item and its price history. |
+| `/wishlist-target-price <url> <price> <currency>` | Notify once when an item reaches the configured price or lower; target currency may differ from the shop currency. |
+| `/wishlist-target-clear <url>` | Remove one target-price alert. |
+| `/wishlist-restock-only <url> <enabled>` | Suppress price/target DMs for this item while continuing to track it; only back-in-stock changes notify. |
+| `/wishlist-refresh <url>` | Fetch one item immediately and report its source, freshness, stock, price, and target progress. Five-minute per-item cooldown. |
 | `/wishlist-show [currency]` | List your items. Default: each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
 | `/wishlist-graph <url> [currency]` | PNG price history for one URL (up to 180 days). |
 | `/wishlist-graph-all [currency]` | Combined graph for all your items; default currency = majority across your list. |
@@ -272,6 +276,10 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 - Red — above historical median (“maybe wait”); one alert per high period until price returns to median or below.
 
 Flat prices do not trigger spurious “all-time low” messages.
+
+**Target alerts and source status** — a target fires once when its price crosses
+at or below the chosen amount, then re-arms only after rising above it. The item
+list reports the source domain and the outcome/time of its latest check.
 
 ### Flight tracker (per user)
 
@@ -300,6 +308,14 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/llm_inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
 | `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
+| `/llm_feedback_summary` | Manage Server only; compare this server’s rated reply configurations. |
+
+LLM mention replies include 👍 and 👎 reactions. Only the user who made the
+request can rate the answer; the database retains only reply metadata, server,
+model alias, prompt version, final rating, and timestamps—not prompts or
+response text. `/llm_feedback_summary` marks a model/prompt combination
+ready to compare only after ten ratings; it never changes a model or prompt
+automatically.
 
 ---
 
@@ -402,5 +418,6 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `flights.py` | `FlightTrackerFeature` | `/flight_tracker_*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature` | Queued @bot mention prompts through llama.cpp |
+| `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |

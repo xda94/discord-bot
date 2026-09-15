@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 import db
+from features.llm_feedback import LLMFeedbackFeature
 from llm_client import get_allowed_models, get_mention_model
 from mention_utils import extract_mention_text
 from tease_llm import generate_mention_reply, generate_summon_reply
@@ -52,6 +53,8 @@ def get_selected_model() -> str:
 
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
+MENTION_PROMPT_VERSION = "mention-v1"
+SUMMON_PROMPT_VERSION = "summon-v1"
 
 
 def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
@@ -116,10 +119,12 @@ class LLMMentionFeature:
         tree: app_commands.CommandTree,
         *,
         bot_id: int,
+        feedback: LLMFeedbackFeature | None = None,
     ):
         self.client = client
         self.tree = tree
         self.bot_id = bot_id
+        self.feedback = feedback
         self._user_last_ask: dict[int, float] = {}
         self._user_pending: set[int] = set()
         self._queue: asyncio.Queue[AskJob] = asyncio.Queue()
@@ -153,7 +158,17 @@ class LLMMentionFeature:
         parts = split_discord_messages(text)
         if not parts or job.reply_to is None:
             return
-        await job.reply_to.reply(parts[0], mention_author=False)
+        reply = await job.reply_to.reply(parts[0], mention_author=False)
+        if self.feedback is not None:
+            await self.feedback.register_reply(
+                reply,
+                requester_user_id=job.user.id,
+                category="summon" if job.summon_only else "mention",
+                model=job.model,
+                prompt_version=(
+                    SUMMON_PROMPT_VERSION if job.summon_only else MENTION_PROMPT_VERSION
+                ),
+            )
         if job.channel is not None:
             for part in parts[1:]:
                 await job.channel.send(part, reference=job.reply_to)

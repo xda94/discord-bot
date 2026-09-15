@@ -317,6 +317,33 @@ def test_decision_returns_dataclass_instance():
     assert isinstance(decision, AlertDecision)
 
 
+def test_target_price_uses_configured_currency(monkeypatch):
+    feature = object.__new__(ScrapingFeature)
+    feature.converter = MagicMock()
+    feature.converter.to_currency.return_value = 399.5
+
+    reached, converted = feature._target_price_reached(
+        80.0, "EUR", 400.0, "RON"
+    )
+
+    assert reached is True
+    assert converted == 399.5
+    feature.converter.to_currency.assert_called_once_with(80.0, "EUR", "RON")
+
+
+def test_target_price_preserves_state_when_conversion_is_unavailable():
+    feature = object.__new__(ScrapingFeature)
+    feature.converter = MagicMock()
+    feature.converter.to_currency.return_value = None
+
+    reached, converted = feature._target_price_reached(
+        80.0, "EUR", 400.0, "RON"
+    )
+
+    assert reached is None
+    assert converted is None
+
+
 def test_price_change_dm_includes_llm_reaction(monkeypatch):
     feature = object.__new__(ScrapingFeature)
     feature.scraper = MagicMock()

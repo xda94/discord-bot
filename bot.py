@@ -26,6 +26,7 @@ from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
 from features.keywords import KeywordsFeature
+from features.llm_feedback import LLMFeedbackFeature
 from features.reminders import RemindersFeature
 from features.response_gate import ResponseGate
 from features.scraping import ScrapingFeature
@@ -89,7 +90,8 @@ scraping = ScrapingFeature(client, tree)
 flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
-llm_mention = LLMMentionFeature(client, tree, bot_id=BOT_ID)
+llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
+llm_mention = LLMMentionFeature(client, tree, bot_id=BOT_ID, feedback=llm_feedback)
 help_feature = HelpFeature(client, tree)
 
 # Features that observe every message. Mentions are checked before keywords/teases.
@@ -119,6 +121,11 @@ async def on_message(message: discord.Message):
         # dispatch chain to stop (currently only KeywordsFeature does this).
         if await handler.handle_message(message):
             return
+
+
+@client.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    await llm_feedback.handle_raw_reaction_add(payload)
 
 
 # discord.py's `client.run()` installs its own SIGINT handler and closes the

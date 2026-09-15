@@ -195,6 +195,40 @@ def test_delete_scraped_item_removes_price_history(tmp_db):
     assert db.get_user_scraped_items(123) == []
 
 
+def test_scraped_item_preferences_and_check_status_round_trip(tmp_db):
+    url = "https://example.com/x"
+    item_id = db.add_scraped_item(123, url, price=99.0, stock=False, currency="EUR")
+
+    assert db.set_scraped_item_target(123, url, 400.0, "ron")
+    assert db.set_scraped_item_restock_only(123, url, True)
+    db.update_scraped_item_check_status(item_id, "ok")
+    db.update_scraped_item_target_state(item_id, True)
+
+    item = db.get_scraped_item(123, url)
+    assert item[9:13] == (400.0, "RON", 1, 1)
+    assert item[13] is not None
+    assert item[14] == "ok"
+
+    assert db.set_scraped_item_target(123, url, None, None)
+    cleared = db.get_scraped_item(123, url)
+    assert cleared[9:12] == (None, None, 0)
+
+
+# ---------------------------------------------------------------------------
+# LLM response feedback
+# ---------------------------------------------------------------------------
+
+def test_llm_feedback_keeps_only_compact_rating_metadata(tmp_db):
+    assert db.track_llm_response(1001, 123, "mention")
+    assert db.get_llm_response_feedback(1001)[0:3] == (123, "mention", None)
+
+    assert not db.set_llm_response_rating(1001, 999, 1)
+    assert db.set_llm_response_rating(1001, 123, -1)
+    row = db.get_llm_response_feedback(1001)
+    assert row[0:3] == (123, "mention", -1)
+    assert row[7] is not None
+
+
 # ---------------------------------------------------------------------------
 # Guild activity (used by InactivityFeature)
 # ---------------------------------------------------------------------------

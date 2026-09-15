@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import time
+from typing import Optional
 from datetime import date
 
 import discord
@@ -234,7 +235,7 @@ class FlightTrackerFeature:
             start_date: str,
             end_date: str,
             adults: int = 1,
-            currency: app_commands.Choice[str] | None = None,
+            currency: Optional[app_commands.Choice[str]] = None,
         ):
             currency_value = currency.value if currency else "EUR"
             try:
