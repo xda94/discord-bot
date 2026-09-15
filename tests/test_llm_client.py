@@ -117,6 +117,34 @@ def test_query_llm_translates_json_output_format(monkeypatch):
     assert "format" not in payload
 
 
+def test_query_llm_sends_json_response_schema(monkeypatch):
+    response = MagicMock()
+    response.ok = True
+    response.json.return_value = {
+        "choices": [{"message": {"content": '{"memory": null}'}}]
+    }
+    mock_post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", mock_post)
+    schema = {
+        "type": "object",
+        "properties": {"memory": {"type": "string"}},
+        "required": ["memory"],
+    }
+
+    query_llm(
+        "extract",
+        options={"format": "json", "temperature": 0.0},
+        response_schema=schema,
+    )
+
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
+    assert "response_schema" not in payload
+
+
 def test_query_llm_sends_optional_api_key(monkeypatch):
     monkeypatch.setenv("LLAMA_CPP_API_KEY", "secret")
     response = MagicMock()

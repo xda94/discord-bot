@@ -71,6 +71,7 @@ def query_llm(
     model: str | None = None,
     *,
     options: dict | None = None,
+    response_schema: dict | None = None,
     base_url: str = LLAMA_CPP_BASE_URL,
     timeout: int | None = None,
 ) -> str:
@@ -98,8 +99,16 @@ def query_llm(
         generation_options = dict(options)
         output_format = generation_options.pop("format", None)
         if output_format == "json":
-            payload["response_format"] = {"type": "json_object"}
+            response_format = {"type": "json_object"}
+            if response_schema is not None:
+                response_format["schema"] = response_schema
+            payload["response_format"] = response_format
         payload.update(generation_options)
+    elif response_schema is not None:
+        payload["response_format"] = {
+            "type": "json_object",
+            "schema": response_schema,
+        }
 
     headers = {"Content-Type": "application/json"}
     api_key = os.getenv("LLAMA_CPP_API_KEY", "").strip()

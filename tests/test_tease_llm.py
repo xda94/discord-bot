@@ -158,16 +158,31 @@ def test_memory_update_prompt_excludes_sensitive_and_untrusted_data():
 
 
 def test_generate_memory_update_parses_and_caps_profile(monkeypatch):
-    monkeypatch.setattr(
-        "tease_llm.query_llm",
-        lambda *args, **kwargs: '{"memory": "' + ("word " * 1000) + '"}',
+    query = MagicMock(
+        return_value='{"memory": "' + ("word " * 1000) + '"}'
     )
+    monkeypatch.setattr("tease_llm.query_llm", query)
     result = generate_memory_update(
         "", ["I like Python"], model="discord-bot", max_chars=2000
     )
     assert result.successful is True
     assert result.profile is not None
     assert len(result.profile) <= 2000
+    response_schema = query.call_args.kwargs["response_schema"]
+    assert response_schema["required"] == ["memory"]
+    assert response_schema["additionalProperties"] is False
+
+
+def test_generate_memory_update_logs_failure_reason(monkeypatch, caplog):
+    monkeypatch.setattr("tease_llm.query_llm", lambda *args, **kwargs: "not json")
+
+    result = generate_memory_update(
+        "", ["I like Python"], model="discord-bot", max_chars=2000
+    )
+
+    assert result.successful is False
+    assert "JSONDecodeError" in caplog.text
+    assert "Expecting value" in caplog.text
 
 
 def test_generate_memory_update_distinguishes_no_change_from_failure(monkeypatch):
