@@ -162,6 +162,21 @@ class MemoryUpdateResult:
     profile: str | None = None
 
 
+MEMORY_UPDATE_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "memory": {
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"},
+            ]
+        }
+    },
+    "required": ["memory"],
+    "additionalProperties": False,
+}
+
+
 def build_memory_update_prompt(
     existing_profile: str,
     observations: list[str],
@@ -272,6 +287,7 @@ def generate_memory_update(
             ),
             model=model,
             options={"format": "json", "temperature": 0.0, "max_tokens": 512},
+            response_schema=MEMORY_UPDATE_RESPONSE_SCHEMA,
         )
         data = json.loads(raw)
         if not isinstance(data, dict) or "memory" not in data:
@@ -285,8 +301,12 @@ def generate_memory_update(
             successful=True,
             profile=_truncate_memory(memory, max_chars),
         )
-    except (LlamaCppError, ValueError, TypeError, json.JSONDecodeError):
-        logger.warning("Persistent user-memory consolidation failed")
+    except (LlamaCppError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Persistent user-memory consolidation failed (%s): %s",
+            type(exc).__name__,
+            exc,
+        )
         return MemoryUpdateResult(successful=False)
 
 
