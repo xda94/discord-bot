@@ -1,0 +1,222 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+from discord import app_commands
+
+import db
+from features.user_memory import (
+    MEMORY_MAX_CHARS,
+    OBSERVATION_MAX_CHARS,
+    OBSERVATION_MAX_MESSAGES,
+    UserMemoryFeature,
+)
+
+
+def _build_feature():
+    client = discord.Client(intents=discord.Intents.none())
+    tree = app_commands.CommandTree(client)
+    return client, tree, UserMemoryFeature(client, tree)
+
+
+def _message(*, user_id=7, guild_id=100, channel_id=10, content="hello"):
+    guild = SimpleNamespace(id=guild_id) if guild_id is not None else None
+    return SimpleNamespace(
+        author=SimpleNamespace(id=user_id),
+        guild=guild,
+        channel=SimpleNamespace(id=channel_id),
+        clean_content=content,
+    )
+
+
+def test_capture_requires_enabled_channel_and_keeps_requester_scope(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    enabled = _message(content="I like mechanical keyboards")
+    disabled = _message(channel_id=11, content="private note")
+
+    asyncio.run(feature.handle_message(enabled))
+    asyncio.run(feature.handle_message(disabled))
+
+    context = feature.context_for(enabled)
+    assert context.enabled is True
+    assert context.batch is not None
+    assert context.batch.observations == ("I like mechanical keyboards",)
+    assert feature.context_for(disabled).enabled is False
+    asyncio.run(client.close())
+
+
+def test_buffer_keeps_last_twenty_messages_with_bounded_text(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    message = _message()
+    for index in range(30):
+        message.clean_content = f"{index}:" + ("x" * 120)
+        asyncio.run(feature.handle_message(message))
+
+    batch = feature.context_for(message).batch
+    assert batch is not None
+    assert len(batch.observations) <= OBSERVATION_MAX_MESSAGES
+    assert sum(len(text) for text in batch.observations) <= OBSERVATION_MAX_CHARS
+    assert batch.observations[-1].startswith("29:")
+    asyncio.run(client.close())
+
+
+def test_commit_acknowledges_only_snapshot_and_persists_capped_profile(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    message = _message(content="first")
+    asyncio.run(feature.handle_message(message))
+    batch = feature.context_for(message).batch
+    assert batch is not None
+
+    message.clean_content = "arrived while summarizing"
+    asyncio.run(feature.handle_message(message))
+    assert feature.commit_batch(batch, "word " * 1000)
+
+    saved = db.get_llm_user_memory(100, 7)
+    assert saved is not None
+    assert len(saved) <= MEMORY_MAX_CHARS
+    remaining = feature.context_for(message).batch
+    assert remaining is not None
+    assert remaining.observations == ("arrived while summarizing",)
+    asyncio.run(client.close())
+
+
+def test_invalidation_prevents_in_flight_profile_recreation(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    message = _message(content="remember this")
+    asyncio.run(feature.handle_message(message))
+    batch = feature.context_for(message).batch
+    assert batch is not None
+
+    feature._purge_buffers(100)
+
+    assert feature.commit_batch(batch, "# Preferences\n- Something") is False
+    assert db.get_llm_user_memory(100, 7) is None
+    asyncio.run(client.close())
+
+
+def test_dm_memory_requires_explicit_opt_in(tmp_db):
+    client, _, feature = _build_feature()
+    message = _message(guild_id=None, channel_id=99, content="DM fact")
+    asyncio.run(feature.handle_message(message))
+    assert feature.context_for(message).enabled is False
+
+    db.set_llm_memory_preference(0, 7, True)
+    feature._preference_cache.clear()
+    asyncio.run(feature.handle_message(message))
+    assert feature.context_for(message).batch.observations == ("DM fact",)
+    asyncio.run(client.close())
+
+
+def test_llm_memory_activation_is_public_and_channel_scoped(tmp_db):
+    client, tree, feature = _build_feature()
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.channel_id = 10
+    interaction.user.guild_permissions.manage_guild = True
+    interaction.user.guild_permissions.administrator = False
+    interaction.response.send_message = AsyncMock()
+
+    asyncio.run(tree.get_command("llm-memory").callback(interaction, "activate"))
+
+    assert db.is_llm_memory_channel_enabled(100, 10) is True
+    sent = interaction.response.send_message.await_args
+    assert "enabled in this channel" in sent.args[0]
+    assert "ephemeral" not in sent.kwargs
+    assert (100, 10) in feature._enabled_channels
+    asyncio.run(client.close())
+
+
+def test_llm_memory_command_rejects_dm_and_missing_permission(tmp_db):
+    client, tree, _ = _build_feature()
+    command = tree.get_command("llm-memory")
+
+    dm_interaction = MagicMock()
+    dm_interaction.guild_id = None
+    dm_interaction.channel_id = 10
+    dm_interaction.response.send_message = AsyncMock()
+    asyncio.run(command.callback(dm_interaction, "activate"))
+    assert dm_interaction.response.send_message.await_args.kwargs["ephemeral"] is True
+
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.channel_id = 10
+    interaction.user.guild_permissions.manage_guild = False
+    interaction.user.guild_permissions.administrator = False
+    interaction.response.send_message = AsyncMock()
+    asyncio.run(command.callback(interaction, "activate"))
+    assert db.is_llm_memory_channel_enabled(100, 10) is False
+    assert interaction.response.send_message.await_args.kwargs["ephemeral"] is True
+    asyncio.run(client.close())
+
+
+def test_channel_deactivation_discards_only_that_channels_observations(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    db.set_llm_memory_channel_enabled(100, 11, True)
+    db.set_llm_user_memory(100, 7, "Saved profile")
+    client, tree, feature = _build_feature()
+    first = _message(channel_id=10, content="first channel")
+    second = _message(channel_id=11, content="second channel")
+    asyncio.run(feature.handle_message(first))
+    asyncio.run(feature.handle_message(second))
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.channel_id = 10
+    interaction.user.guild_permissions.manage_guild = True
+    interaction.user.guild_permissions.administrator = False
+    interaction.response.send_message = AsyncMock()
+
+    asyncio.run(tree.get_command("llm-memory").callback(interaction, "deactivate"))
+
+    remaining = feature.context_for(second)
+    assert remaining.batch is not None
+    assert remaining.batch.observations == ("second channel",)
+    assert db.get_llm_user_memory(100, 7) == "Saved profile"
+    assert feature.context_for(first).enabled is False
+    asyncio.run(client.close())
+
+
+def test_user_opt_out_erases_profile_and_buffer(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    db.set_llm_user_memory(100, 7, "Saved profile")
+    client, tree, feature = _build_feature()
+    message = _message(content="pending")
+    asyncio.run(feature.handle_message(message))
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.user.id = 7
+    interaction.response.send_message = AsyncMock()
+
+    asyncio.run(tree.get_command("memory-opt-out").callback(interaction))
+
+    assert db.get_llm_memory_preference(100, 7) is False
+    assert db.get_llm_user_memory(100, 7) is None
+    assert feature.context_for(message).enabled is False
+    interaction.response.send_message.assert_awaited_once()
+    assert interaction.response.send_message.await_args.kwargs["ephemeral"] is True
+    asyncio.run(client.close())
+
+
+def test_server_purge_requires_exact_confirmation_and_preserves_opt_out(tmp_db):
+    db.set_llm_user_memory(100, 7, "Saved profile")
+    db.set_llm_memory_preference(100, 8, False)
+    client, tree, _ = _build_feature()
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.user.guild_permissions.manage_guild = True
+    interaction.user.guild_permissions.administrator = False
+    interaction.response.send_message = AsyncMock()
+
+    command = tree.get_command("llm-memory-purge")
+    asyncio.run(command.callback(interaction, "purge"))
+    assert db.get_llm_user_memory(100, 7) == "Saved profile"
+
+    interaction.response.send_message.reset_mock()
+    asyncio.run(command.callback(interaction, "PURGE"))
+    assert db.get_llm_user_memory(100, 7) is None
+    assert db.get_llm_memory_preference(100, 8) is False
+    asyncio.run(client.close())

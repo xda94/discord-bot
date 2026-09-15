@@ -240,6 +240,46 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_llm_feedback_guild "
                 "ON llm_response_feedback(guild_id, category, model, prompt_version)"
             )
+            # Persistent conversational memory is opt-in at the channel level.
+            # Raw Discord messages are deliberately never stored in SQLite;
+            # only the compact profile produced from the process-local buffer
+            # is persisted here.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_memory_channels (
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (guild_id, channel_id)
+                )
+            """)
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_memory_channels_guild "
+                "ON llm_memory_channels(guild_id, enabled)"
+            )
+            # scope_id is the guild ID for server memory and 0 for the user's
+            # separate DM profile. Discord snowflakes are always positive, so
+            # zero cannot collide with a real guild.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_user_memories (
+                    scope_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    profile TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (scope_id, user_id)
+                )
+            """)
+            # Preferences live separately from profiles so a server-wide
+            # profile purge cannot silently opt users back in.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_memory_preferences (
+                    scope_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (scope_id, user_id)
+                )
+            """)
             # Migration from the decommissioned Amadeus integration. Those
             # client-id/secret pairs cannot be used with SerpApi, so remove the
             # obsolete credential table and require each user to log in again
@@ -658,6 +698,174 @@ def set_setting(key, value):
         logger.info(f"Setting '{key}' set to '{value}'")
     except Exception:
         logger.exception(f"Failed to set setting '{key}'")
+
+
+# --- Persistent per-user LLM memory ---------------------------------------
+
+def is_llm_memory_channel_enabled(guild_id, channel_id):
+    """Return whether persistent memory is enabled in one guild channel."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT enabled FROM llm_memory_channels "
+                "WHERE guild_id = ? AND channel_id = ?",
+                (guild_id, channel_id),
+            )
+            row = c.fetchone()
+        return bool(row[0]) if row else False
+    except Exception:
+        logger.exception(
+            "Failed to read LLM memory channel setting for guild %s channel %s",
+            guild_id,
+            channel_id,
+        )
+        return False
+
+
+def get_enabled_llm_memory_channels():
+    """Return enabled (guild_id, channel_id) pairs for startup caching."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT guild_id, channel_id FROM llm_memory_channels "
+                "WHERE enabled = 1"
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception("Failed to list enabled LLM memory channels")
+        return []
+
+
+def set_llm_memory_channel_enabled(guild_id, channel_id, enabled):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO llm_memory_channels "
+                "(guild_id, channel_id, enabled, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(guild_id, channel_id) DO UPDATE SET "
+                "enabled = excluded.enabled, updated_at = excluded.updated_at",
+                (guild_id, channel_id, int(bool(enabled)), time.time()),
+            )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to update LLM memory channel setting for guild %s channel %s",
+            guild_id,
+            channel_id,
+        )
+        return False
+
+
+def get_llm_user_memory(scope_id, user_id):
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT profile FROM llm_user_memories "
+                "WHERE scope_id = ? AND user_id = ?",
+                (scope_id, user_id),
+            )
+            row = c.fetchone()
+        return row[0] if row else None
+    except Exception:
+        logger.exception(
+            "Failed to read LLM user memory for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return None
+
+
+def set_llm_user_memory(scope_id, user_id, profile):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO llm_user_memories "
+                "(scope_id, user_id, profile, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(scope_id, user_id) DO UPDATE SET "
+                "profile = excluded.profile, updated_at = excluded.updated_at",
+                (scope_id, user_id, profile, time.time()),
+            )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to save LLM user memory for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return False
+
+
+def delete_llm_user_memory(scope_id, user_id):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM llm_user_memories WHERE scope_id = ? AND user_id = ?",
+                (scope_id, user_id),
+            )
+            removed = c.rowcount > 0
+        return removed
+    except Exception:
+        logger.exception(
+            "Failed to delete LLM user memory for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return None
+
+
+def purge_guild_llm_user_memories(guild_id):
+    """Delete profiles for a guild while preserving user preferences."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM llm_user_memories WHERE scope_id = ?",
+                (guild_id,),
+            )
+            removed = c.rowcount
+        return removed
+    except Exception:
+        logger.exception("Failed to purge LLM user memories for guild %s", guild_id)
+        return None
+
+
+def get_llm_memory_preference(scope_id, user_id):
+    """Return True/False for an explicit preference, or None when unset."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT enabled FROM llm_memory_preferences "
+                "WHERE scope_id = ? AND user_id = ?",
+                (scope_id, user_id),
+            )
+            row = c.fetchone()
+        return bool(row[0]) if row else None
+    except Exception:
+        logger.exception(
+            "Failed to read LLM memory preference for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return None
+
+
+def set_llm_memory_preference(scope_id, user_id, enabled):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO llm_memory_preferences "
+                "(scope_id, user_id, enabled, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(scope_id, user_id) DO UPDATE SET "
+                "enabled = excluded.enabled, updated_at = excluded.updated_at",
+                (scope_id, user_id, int(bool(enabled)), time.time()),
+            )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to update LLM memory preference for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return False
 
 
 def set_guild_joke_config(guild_id, channel_id, send_time):

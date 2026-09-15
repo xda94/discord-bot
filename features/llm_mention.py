@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import time
@@ -11,9 +12,14 @@ from discord import app_commands
 
 import db
 from features.llm_feedback import LLMFeedbackFeature
+from features.user_memory import MEMORY_MAX_CHARS, MemoryBatch, UserMemoryFeature
 from llm_client import get_allowed_models, get_mention_model
 from mention_utils import extract_mention_text
-from tease_llm import generate_mention_reply, generate_summon_reply
+from tease_llm import (
+    generate_memory_update,
+    generate_mention_reply,
+    generate_summon_reply,
+)
 
 logger = logging.getLogger("discord_bot")
 
@@ -54,7 +60,47 @@ def get_selected_model() -> str:
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
 MENTION_PROMPT_VERSION = "mention-v1"
+MEMORY_MENTION_PROMPT_VERSION = "mention-v2-memory"
 SUMMON_PROMPT_VERSION = "summon-v1"
+REFERENCE_CONTEXT_CHAR_BUDGET = 3000
+
+
+def budget_reference_context(
+    user_memory: str,
+    context_messages: list[str],
+    *,
+    max_chars: int = REFERENCE_CONTEXT_CHAR_BUDGET,
+) -> tuple[str, list[str]]:
+    """Prioritize the compact profile, then keep the newest channel context."""
+    def escaped_prefix(value: str, budget: int) -> tuple[str, int]:
+        used = 0
+        end = 0
+        for end, character in enumerate(value, start=1):
+            cost = len(html.escape(character, quote=False))
+            if used + cost > budget:
+                return value[:end - 1], used
+            used += cost
+        return value[:end], used
+
+    memory, memory_cost = escaped_prefix(user_memory, max_chars)
+    remaining = max(0, max_chars - memory_cost)
+    selected_reversed: list[str] = []
+    for message in reversed(context_messages):
+        if remaining <= 0:
+            break
+        escaped_cost = len(html.escape(message, quote=False))
+        if escaped_cost <= remaining:
+            selected_reversed.append(message)
+            remaining -= escaped_cost
+            continue
+        # Preserve at least the newest partial message when the remaining
+        # budget cannot fit it in full. The author label is at the beginning.
+        if not selected_reversed:
+            partial, _ = escaped_prefix(message, remaining)
+            if partial:
+                selected_reversed.append(partial)
+        break
+    return memory, list(reversed(selected_reversed))
 
 
 def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
@@ -108,6 +154,10 @@ class AskJob:
     reply_to: discord.Message | None = None
     summon_only: bool = False
     context_messages: list[str] = field(default_factory=list)
+    user_memory: str = ""
+    memory_enabled: bool = False
+    memory_batch: MemoryBatch | None = None
+    prompt_version: str = MENTION_PROMPT_VERSION
 
 
 class LLMMentionFeature:
@@ -120,11 +170,13 @@ class LLMMentionFeature:
         *,
         bot_id: int,
         feedback: LLMFeedbackFeature | None = None,
+        memory: UserMemoryFeature | None = None,
     ):
         self.client = client
         self.tree = tree
         self.bot_id = bot_id
         self.feedback = feedback
+        self.memory = memory
         self._user_last_ask: dict[int, float] = {}
         self._user_pending: set[int] = set()
         self._queue: asyncio.Queue[AskJob] = asyncio.Queue()
@@ -177,9 +229,7 @@ class LLMMentionFeature:
                 requester_user_id=job.user.id,
                 category="summon" if job.summon_only else "mention",
                 model=job.model,
-                prompt_version=(
-                    SUMMON_PROMPT_VERSION if job.summon_only else MENTION_PROMPT_VERSION
-                ),
+                prompt_version=job.prompt_version,
             )
         if job.channel is not None:
             for part in parts[1:]:
@@ -204,6 +254,8 @@ class LLMMentionFeature:
                     job.question,
                     model=job.model,
                     context_messages=job.context_messages,
+                    user_memory=job.user_memory,
+                    memory_enabled=job.memory_enabled,
                 )
         except Exception:
             logger.exception("Unexpected error in mention reply")
@@ -213,6 +265,25 @@ class LLMMentionFeature:
             return
 
         await self._reply_mention(job, reply)
+
+        # The user-facing answer is deliberately sent before this second model
+        # call. A consolidation failure never suppresses or delays delivery of
+        # a reply that was already generated successfully.
+        if (
+            not job.summon_only
+            and self.memory is not None
+            and job.memory_batch is not None
+            and self.memory.can_process_batch(job.memory_batch)
+        ):
+            result = await asyncio.to_thread(
+                generate_memory_update,
+                job.user_memory,
+                list(job.memory_batch.observations),
+                model=job.model,
+                max_chars=MEMORY_MAX_CHARS,
+            )
+            if result.successful:
+                self.memory.commit_batch(job.memory_batch, result.profile)
 
     def _begin_job_checks(self, user_id: int) -> str | None:
         if user_id in self._user_pending:
@@ -255,6 +326,19 @@ class LLMMentionFeature:
                 context_messages.append(f"{past_msg.author.display_name}: {past_msg.clean_content}")
             context_messages.reverse()
 
+        memory_enabled = False
+        user_memory = ""
+        memory_batch = None
+        if not summon_only and self.memory is not None:
+            memory_context = self.memory.context_for(message)
+            memory_enabled = memory_context.enabled
+            user_memory = memory_context.profile
+            memory_batch = memory_context.batch
+
+        user_memory, context_messages = budget_reference_context(
+            user_memory, context_messages
+        )
+
         job = AskJob(
             user=message.author,
             question=text,
@@ -263,6 +347,18 @@ class LLMMentionFeature:
             reply_to=message,
             summon_only=summon_only,
             context_messages=context_messages,
+            user_memory=user_memory,
+            memory_enabled=memory_enabled,
+            memory_batch=memory_batch,
+            prompt_version=(
+                SUMMON_PROMPT_VERSION
+                if summon_only
+                else (
+                    MEMORY_MENTION_PROMPT_VERSION
+                    if memory_enabled
+                    else MENTION_PROMPT_VERSION
+                )
+            ),
         )
         await self._enqueue_job(job)
         return True

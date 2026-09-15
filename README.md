@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, persistent per-user LLM memory, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -77,7 +77,7 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
-| `LLM_CONTEXT_MESSAGES` | No (bot) | Number of recent channel messages to include as context for mentions. Default: `0`. |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent channel messages considered for mentions. Persistent memory plus recent history share a 3,000-character reference budget, with memory taking priority. Default: `0`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
 | `TEASE_LLAMA_CPP_MODEL` | No (bot) | Model alias for tease rewrites. Defaults to `LLAMA_CPP_DEFAULT_MODEL`. |
 | `TEASE_LLAMA_CPP_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. |
@@ -311,6 +311,12 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
 | `/llm-set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
+| `/llm-memory <activate\|deactivate\|status>` | Manage persistent user memory in the current channel. Requires **Manage Server** permission; memory defaults to disabled. |
+| `/llm-memory-purge <confirmation>` | Delete every saved user profile in this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
+| `/memory-show` | Privately show your saved profile for the current server or DM. |
+| `/memory-forget` | Erase your profile and pending observations here without opting out. |
+| `/memory-opt-out` | Stop memory and erase your profile and pending observations in the current server or DM. |
+| `/memory-opt-in` | Re-enable memory for you; required before memory can operate in DMs. |
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
 | `/llm-feedback-summary` | Manage Server only; compare this server’s rated reply configurations. |
@@ -321,6 +327,16 @@ model alias, prompt version, final rating, and timestamps—not prompts or
 response text. `/llm-feedback-summary` marks a model/prompt combination
 ready to compare only after ten ratings; it never changes a model or prompt
 automatically.
+
+Persistent memory is separate from recent channel history. When a server
+manager activates it, the bot posts a public notice and begins keeping a small
+RAM-only buffer of text written in that channel. After a member next receives a
+successful non-empty mention reply, the buffer is consolidated into a compact
+profile of at most 2,000 characters. Only that profile is stored in SQLite.
+Profiles are scoped per server, used only for the same requester in enabled
+channels, and never supplied to another user's prompt. DM memory has its own
+profile and requires `/memory-opt-in`. Source messages are not persisted and
+unsummarized observations disappear on restart.
 
 ---
 
@@ -461,5 +477,6 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature` | Queued @bot mention prompts through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
+| `user_memory.py` | `UserMemoryFeature` | Channel-controlled RAM observations and persistent per-user profiles |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |
