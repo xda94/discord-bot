@@ -17,7 +17,7 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Local LLM inference through `llama-server` |
 | `curl_cffi` (optional) | TLS fingerprinting for bot-protected shops; falls back to `requests` |
 
-**Why two Python entry points?** `scraper.py` holds pure HTTP/HTML parsing with no Discord or Matplotlib imports. `api.py` imports only `scraper.py`, so the API process stays light. `features/scraping.py` adds Discord commands, graphs, currency conversion, and alerts on top of the same scraper.
+**Why two Python entry points?** `scraper.py` holds pure HTTP/HTML parsing with no Discord or chart-renderer imports. `api.py` imports only `scraper.py`, so the API process stays light. `features/scraping.py` adds Discord commands, graphs, currency conversion, and alerts on top of the same scraper.
 
 ---
 
@@ -29,7 +29,7 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 - SQLite3 (usually bundled with Python)
 - Node.js + npm (for PM2)
 - `llama-server` with a compatible GGUF instruct/chat model
-- For graphs: Matplotlib (in `requirements.txt`)
+- For graphs: `vl-convert-python` (installed from `requirements.txt`)
 
 ### Install dependencies
 
@@ -40,16 +40,7 @@ pip install -r requirements.txt
 
 With a venv, use `./venv/bin/pip` instead of `pip`.
 
-**Low-resource ARM devices (e.g. Raspberry Pi Zero W)** — prefer system packages to avoid long compiles:
-
-```bash
-sudo apt update
-sudo apt install python3-flask python3-requests python3-bs4 python3-matplotlib \
-  python3-psutil python3-dotenv python3-cffi python3-certifi
-pip install --break-system-packages discord.py curl_cffi
-```
-
-On Pi Zero W, `curl_cffi` may fail to build; the scraper still works via plain `requests`, but sites with anti-bot TLS checks (e.g. some Romanian retailers) may not scrape.
+Wishlist graphs use the self-contained Vega-Lite renderer from `vl-convert-python`; PNG generation does not require Chrome or an external chart service.
 
 Check optional TLS impersonation:
 
@@ -257,7 +248,7 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 | `/wishlist-target-price <url> <price> <currency>` | Notify once when an item reaches the configured price or lower; target currency may differ from the shop currency. |
 | `/wishlist-target-clear <url>` | Remove one target-price alert. |
 | `/wishlist-restock-only <url> <enabled>` | Suppress price/target DMs for this item while continuing to track it; only back-in-stock changes notify. |
-| `/wishlist-refresh <url>` | Fetch one item immediately and report its source, freshness, stock, price, and target progress. Five-minute per-item cooldown. |
+| `/wishlist-refresh [url]` | With a URL, fetch only that tracked item; omit it to refresh your entire wishlist. Reports source, freshness, stock, price, and target progress. Five-minute cooldown per item; cooling items are skipped during an all-item refresh. |
 | `/wishlist-show [currency]` | List your items. Default: each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
 | `/wishlist-graph <url> [currency]` | PNG price history for one URL (up to 180 days). |
 | `/wishlist-graph-all [currency]` | Combined graph for all your items; default currency = majority across your list. |
@@ -423,7 +414,8 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 |---|---|
 | `bot.py` | Discord client, feature wiring, `on_message` / `on_ready` |
 | `api.py` | Flask API (lazy `init_db` on first request) |
-| `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** discord/matplotlib |
+| `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** Discord/chart renderer imports |
+| `chart_renderer.py` | Local Vega-Lite wishlist chart specifications and PNG rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
 | `db.py` | SQLite schema and queries |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` env for log file location |

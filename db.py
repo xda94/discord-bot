@@ -863,6 +863,29 @@ def get_all_scraped_items():
         logger.exception("Failed to fetch all scraped items")
         return []
 
+
+def get_user_scraped_items_for_refresh(user_id):
+    """Return all of one user's items in the scrape-loop tuple shape.
+
+    This is deliberately separate from the legacy display projection so a
+    manual all-items refresh can reuse ``_manual_refresh_item`` without ever
+    loading another user's wishlist.
+    """
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT id, user_id, url, last_price, last_stock_status, title, "
+                "currency, last_alert_kind, last_alert_price, target_price, "
+                "target_currency, target_alerted, restock_only, last_checked_at, "
+                "last_check_status FROM scraped_items WHERE user_id = ?",
+                (user_id,),
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception(f"Failed to fetch refreshable scraped items for user {user_id}")
+        return []
+
+
 def get_user_scraped_items(user_id):
     """Return the legacy five-field display projection for graph callers."""
     try:
@@ -1122,7 +1145,7 @@ def clean_old_price_history(days=180):
     `(scrape passes per day) × days × (tracked items)` rows once the bot
     has been running longer than the retention window. At the default of
     180 days, 12 h cadence, and 100 tracked items that's ~36 k rows /
-    ~2.5 MB — well within SQLite and the Pi Zero W's resources.
+    ~2.5 MB — well within SQLite's practical limits.
 
     **This is a sliding window, not a hard cutoff.** An item tracked for
     two years always shows its most recent `days` of price changes; it

@@ -1,11 +1,11 @@
 from __future__ import annotations
-"""Pure web-scraping utilities — no Discord or Matplotlib dependencies.
+"""Pure web-scraping utilities — no Discord or chart-renderer dependencies.
 
 Split out of `features/scraping.py` so that:
 
   - `api.py` (Flask) can validate a URL synchronously at POST time without
-    pulling discord.py + matplotlib into the API process (those drag ~100 MB
-    of RSS on a Pi Zero W and are completely unused on the API side).
+    pulling discord.py + chart rendering into the API process, where neither
+    is used.
   - The bot side still gets the same `PriceScraper` via re-exports in
     `features/scraping.py`, so nothing else has to change.
 

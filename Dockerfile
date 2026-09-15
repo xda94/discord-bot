@@ -7,11 +7,11 @@ ENV PYTHONUNBUFFERED=1 \
     DB_FILE=/data/responses.db \
     LOG_DIR=/data/logs
 
-# Matplotlib runtime libs; libcurl4 for curl_cffi wheels on slim images.
+# Predictable chart typography plus the runtime library used by curl_cffi
+# wheels on slim images.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libfreetype6 \
-        libpng16-16 \
+        fonts-dejavu-core \
         libcurl4 \
     && rm -rf /var/lib/apt/lists/*
 

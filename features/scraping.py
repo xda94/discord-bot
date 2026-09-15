@@ -11,19 +11,18 @@ from datetime import datetime
 from typing import Optional
 
 import discord
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import requests
 from discord import app_commands
 from discord.ext import tasks
 
 import db
+from chart_renderer import render_multi_price_history_png, render_price_history_png
 from tease_llm import generate_price_change_message
 
 # Re-export the pure scraping primitives from `scraper.py` so existing
 # call-sites and tests can keep importing them from `features.scraping`.
 # Splitting them out of this module lets `api.py` reuse `PriceScraper`
-# without dragging discord.py + matplotlib into the API process.
+# without dragging discord.py + the chart renderer into the API process.
 from scraper import (  # noqa: F401  (re-exported for back-compat)
     FAILURE_BLOCKED,
     FAILURE_UNSUPPORTED,
@@ -35,9 +34,6 @@ from scraper import (  # noqa: F401  (re-exported for back-compat)
 
 logger = logging.getLogger("discord_bot")
 
-# Non-interactive matplotlib backend, safe inside an async bot process.
-plt.switch_backend("Agg")
-
 # Size of the rolling per-item price-history window. At every scrape pass
 # the loop trims rows older than this many days, so each tracked item
 # always shows roughly the most recent N days of history regardless of how
@@ -45,7 +41,7 @@ plt.switch_backend("Agg")
 # the window just slides forward one pass at a time.
 #
 # At a 12 h scrape cadence and 100 tracked items this is ~36 k rows /
-# ~2.5 MB at steady state — fine for the Pi. Backed by
+# ~2.5 MB at steady state. Backed by
 # `idx_price_history_timestamp` so the periodic cleanup stays fast as
 # the table grows.
 PRICE_HISTORY_RETENTION_DAYS = 180
@@ -584,31 +580,100 @@ class ScrapingFeature:
 
         @self.tree.command(
             name="wishlist-refresh",
-            description="Refresh one tracked item now (five-minute cooldown)",
+            description="Refresh one item by URL, or all items when omitted",
         )
-        @app_commands.describe(url="The tracked item URL")
-        async def wishlist_refresh(interaction: discord.Interaction, url: str):
-            item = db.get_scraped_item(interaction.user.id, url)
-            if item is None:
+        @app_commands.describe(url="Optional tracked URL; omit to refresh your whole wishlist")
+        async def wishlist_refresh(
+            interaction: discord.Interaction, url: Optional[str] = None
+        ):
+            single_item = url is not None
+            if single_item:
+                item = db.get_scraped_item(interaction.user.id, url)
+                items = [item] if item is not None else []
+            else:
+                items = db.get_user_scraped_items_for_refresh(interaction.user.id)
+            if not items:
+                message = (
+                    "That URL is not in your tracking list."
+                    if single_item
+                    else "You are not tracking any items."
+                )
                 await interaction.response.send_message(
-                    "That URL is not in your tracking list.", ephemeral=True
+                    message, ephemeral=True
                 )
                 return
 
-            key = (interaction.user.id, url)
             now = time.monotonic()
-            previous = feature._manual_refresh_at.get(key, 0.0)
-            remaining = MANUAL_REFRESH_COOLDOWN_SECONDS - (now - previous)
-            if remaining > 0:
+            eligible_items = []
+            cooldowns = []
+            for item in items:
+                key = (interaction.user.id, item[2])
+                previous = feature._manual_refresh_at.get(key)
+                remaining = (
+                    MANUAL_REFRESH_COOLDOWN_SECONDS - (now - previous)
+                    if previous is not None
+                    else 0.0
+                )
+                if remaining > 0:
+                    cooldowns.append(remaining)
+                    continue
+                feature._manual_refresh_at[key] = now
+                eligible_items.append(item)
+
+            if not eligible_items:
+                message = (
+                    "That item is still on cooldown."
+                    if single_item
+                    else "All your tracked items are still on cooldown."
+                )
                 await interaction.response.send_message(
-                    f"Please wait {int(remaining) + 1}s before refreshing this item again.",
+                    f"{message} Try again in up to {int(max(cooldowns)) + 1}s.",
                     ephemeral=True,
                 )
                 return
-            feature._manual_refresh_at[key] = now
+
             await interaction.response.defer(ephemeral=True)
-            result = await feature._manual_refresh_item(item)
-            await interaction.followup.send(result, ephemeral=True, suppress_embeds=True)
+            results = []
+            for index, item in enumerate(eligible_items):
+                try:
+                    result = await feature._manual_refresh_item(item)
+                    # Keep a pathological product title or URL from making a
+                    # whole Discord follow-up exceed its 2,000-character cap.
+                    if len(result) > 1600:
+                        result = f"{result[:1597]}..."
+                    results.append(result)
+                except Exception:
+                    # A malformed row or unexpected scraper failure must not
+                    # prevent later owned items from being refreshed.
+                    logger.exception("Manual refresh failed for %s", item[2])
+                    results.append(f"Refresh failed unexpectedly: {_domain(item[2])}")
+                if index < len(eligible_items) - 1:
+                    await asyncio.sleep(feature.SCRAPE_LOOP_GAP_SECONDS)
+
+            header = (
+                "Refreshed the requested item."
+                if single_item
+                else f"Refreshed {len(eligible_items)} of {len(items)} tracked item(s)."
+            )
+            if cooldowns:
+                header += (
+                    f" Skipped {len(cooldowns)} item(s) still on cooldown "
+                    f"(up to {int(max(cooldowns)) + 1}s remaining)."
+                )
+            chunks = []
+            current = header
+            for result in results:
+                block = f"\n\n{result}"
+                if len(current) + len(block) > 1900:
+                    chunks.append(current)
+                    current = result
+                else:
+                    current += block
+            chunks.append(current)
+            for chunk in chunks:
+                await interaction.followup.send(
+                    chunk, ephemeral=True, suppress_embeds=True
+                )
 
         @self.tree.command(
             name="wishlist-show", description="Show your tracked items and their current prices"
@@ -711,13 +776,8 @@ class ScrapingFeature:
 
             title = history[0][2] or "Price History"
 
-            item_info = next(
-                (item for item in db.get_user_scraped_items(interaction.user.id) if item[0] == url),
-                None,
-            )
-            stored_currency = (
-                item_info[4] if item_info and len(item_info) > 4 else None
-            )
+            item_info = db.get_scraped_item(interaction.user.id, url)
+            stored_currency = item_info[6] if item_info else None
             item_currency = _effective_currency(stored_currency, url)
 
             # Default to the item's own currency when the user didn't ask
@@ -740,11 +800,8 @@ class ScrapingFeature:
             # can't be converted we drop it — better an honest gap than a misleading
             # number labelled in the wrong unit.
             #
-            # Timestamps are kept as real `datetime` objects (not pre-formatted
-            # strings) so matplotlib treats the x-axis as a true time axis.
-            # That lets `ConciseDateFormatter` in `_render_price_graph` pick
-            # readable labels regardless of range — hours within a day, days
-            # within a month, months across half a year.
+            # Timestamps stay as real datetimes until the renderer serializes
+            # the inline Vega-Lite dataset.
             timestamps: list[datetime] = []
             prices: list[float] = []
             for raw_price, ts, _ in history:
@@ -765,7 +822,19 @@ class ScrapingFeature:
                 )
                 return
 
-            file = feature._render_price_graph(timestamps, prices, title, target_currency)
+            target_display = None
+            if item_info and item_info[9] is not None and item_info[10]:
+                target_display = feature.converter.to_currency(
+                    item_info[9], item_info[10], target_currency
+                )
+            file = await asyncio.to_thread(
+                feature._render_price_graph,
+                timestamps,
+                prices,
+                title,
+                target_currency,
+                target_display,
+            )
             await interaction.followup.send(file=file, ephemeral=True)
 
         @self.tree.command(
@@ -842,7 +911,9 @@ class ScrapingFeature:
                 )
                 return
 
-            file = feature._render_multi_price_graph(series, target_currency)
+            file = await asyncio.to_thread(
+                feature._render_multi_price_graph, series, target_currency
+            )
             parts = [
                 f"Combined price history for **{len(series)}** tracked item"
                 f"{'s' if len(series) != 1 else ''} (normalized to **{target_currency}**).",
@@ -988,103 +1059,23 @@ class ScrapingFeature:
         return "\n".join(lines)
 
     @staticmethod
-    def _render_price_graph(timestamps, prices, title, item_currency) -> discord.File:
-        """Render a single-item price-evolution chart.
-
-        `timestamps` must be a list of `datetime` objects (not pre-formatted
-        strings) so matplotlib treats the x-axis as a real time axis.
-        That's what lets `ConciseDateFormatter` adapt the tick labels to
-        the visible range — hours within a day, days within a month,
-        months across a half-year. Without it, long-range charts crowd
-        the axis to the point of being unreadable.
-        """
-        fig, ax = plt.subplots(figsize=(10, 6), facecolor="#2f3136")
-        ax.set_facecolor("#36393f")
-        ax.plot(timestamps, prices, marker="o", linestyle="-", color="#7289da", linewidth=2)
-
-        ax.set_title(f"Price Evolution: {title[:50]}", color="white", fontsize=14)
-        ax.set_xlabel("Date & Time", color="white")
-        ax.set_ylabel(f"Price ({item_currency})", color="white")
-        ax.tick_params(axis="x", colors="white")
-        ax.tick_params(axis="y", colors="white")
-        for spine in ax.spines.values():
-            spine.set_color("white")
-        ax.grid(True, color="#4f545c", linestyle="--", linewidth=0.5)
-
-        # Auto-pick a date locator + matching concise formatter so the labels
-        # stay readable from a single-day range up to multi-month history.
-        locator = mdates.AutoDateLocator()
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-        # `autofmt_xdate` handles rotation/alignment for whichever ticks the
-        # locator picked — replaces the old fixed `rotation=45`.
-        fig.autofmt_xdate()
-        plt.tight_layout()
-
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
-        plt.close(fig)
-        buf.seek(0)
-        return discord.File(buf, filename="price_history.png")
+    def _render_price_graph(
+        timestamps, prices, title, item_currency, target_price=None
+    ) -> discord.File:
+        """Render a modern single-item Vega-Lite chart entirely in memory."""
+        png = render_price_history_png(
+            timestamps, prices, title, item_currency, target_price
+        )
+        return discord.File(io.BytesIO(png), filename="price_history.png")
 
     @staticmethod
     def _render_multi_price_graph(
         series: list[tuple[str, list[tuple[datetime, float]]]],
         currency_label: str,
     ) -> discord.File:
-        """Render a multi-line price chart.
-
-        `series` is a list of `(label, [(datetime, price), ...])` tuples, one
-        per tracked item. All Y-values must already be in the same currency,
-        named by `currency_label` (used only for the axis title).
-        """
-        fig, ax = plt.subplots(figsize=(12, 7), facecolor="#2f3136")
-        ax.set_facecolor("#36393f")
-
-        for label, points in series:
-            xs = [p[0] for p in points]
-            ys = [p[1] for p in points]
-            # Trim long product names so the legend stays readable.
-            legend_label = (label[:40] + "…") if len(label) > 40 else label
-            ax.plot(
-                xs, ys,
-                marker="o", linestyle="-", linewidth=2, markersize=4,
-                label=legend_label,
-            )
-
-        ax.set_title(
-            "Price Evolution — All Tracked Items", color="white", fontsize=14,
-        )
-        ax.set_xlabel("Date & Time", color="white")
-        ax.set_ylabel(f"Price ({currency_label})", color="white")
-        ax.tick_params(axis="x", colors="white")
-        ax.tick_params(axis="y", colors="white")
-        for spine in ax.spines.values():
-            spine.set_color("white")
-        ax.grid(True, color="#4f545c", linestyle="--", linewidth=0.5)
-        ax.legend(
-            loc="best", facecolor="#36393f", edgecolor="#4f545c",
-            labelcolor="white", fontsize=8,
-        )
-
-        # Auto-pick a date locator + matching `ConciseDateFormatter` so the
-        # axis labels adapt to whatever range the user is looking at — hours
-        # within a day, days within a month, months across a half-year —
-        # rather than getting crammed at a fixed `"dd/mm HH:MM"` granularity
-        # that becomes illegible past ~30 ticks.
-        locator = mdates.AutoDateLocator()
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-        # `autofmt_xdate` rotates/right-aligns the (now-formatted) labels so
-        # they don't overlap on dense ranges.
-        fig.autofmt_xdate()
-        plt.tight_layout()
-
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png", facecolor=fig.get_facecolor())
-        plt.close(fig)
-        buf.seek(0)
-        return discord.File(buf, filename="price_history_all.png")
+        """Render an all-items Vega-Lite chart entirely in memory."""
+        png = render_multi_price_history_png(series, currency_label)
+        return discord.File(io.BytesIO(png), filename="price_history_all.png")
 
     # Politeness delay between item fetches so we're not hammering a host
     # when a user has multiple URLs on the same domain in one pass.
