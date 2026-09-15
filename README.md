@@ -73,7 +73,7 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_BASE_URL` | No (bot) | `llama-server` base URL. Default: `http://127.0.0.1:8080`. Docker defaults to `http://host.docker.internal:8080`. A URL ending in `/v1` is also accepted. |
 | `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
-| `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm_set`. A single-server setup normally lists one alias. |
+| `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm-set`. A single-server setup normally lists one alias. |
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
@@ -195,7 +195,7 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
 | Reminders | 10 s | Delivers due reminders |
-| Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm_inactivity` is activated |
+| Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm-inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
 | Teases | On message | Random mood lines rewritten via llama.cpp |
 
@@ -207,8 +207,8 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 
 | Command | Description |
 |---|---|
-| `/keyword_add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
-| `/topkeywords [user]` | Most triggered keywords in the server. |
+| `/keyword-add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
+| `/top-keywords [user]` | Most triggered keywords in the server. |
 | `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style. |
 | `/help` | Full command list (chunked for Discord’s 2000-character limit). |
 
@@ -224,10 +224,10 @@ The joke **pool** is global; **schedule and “already sent” history** are per
 
 | Command | Description |
 |---|---|
-| `/joke_add <text>` | Add text to the shared pool. |
-| `/joke_activation <time>` | Enable daily joke in **this channel** at `HH:MM` (e.g. `14:00`). Each server configures independently. |
-| `/joke_deactivation` | Disable for this server (sent history kept). |
-| `/joke_status` | Ephemeral: channel, time, last sent date, or not activated. |
+| `/joke-add <text>` | Add text to the shared pool. |
+| `/joke-activation <time>` | Enable daily joke in **this channel** at `HH:MM` (e.g. `14:00`). Each server configures independently. |
+| `/joke-deactivation` | Disable for this server (sent history kept). |
+| `/joke-status` | Ephemeral: channel, time, last sent date, or not activated. |
 
 On first boot after upgrading from single-guild jokes, the bot migrates the old global channel/time settings into one `guild_joke_config` row automatically.
 
@@ -235,9 +235,9 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 
 | Command | Description |
 |---|---|
-| `/sponsor_set [user] [plan]` | Password modal; optional plan tier and custom message (top tier). |
-| `/sponsor_plans` | Plans, prices, append chance on keyword replies. |
-| `/sponsor_who` | Current sponsor and time until 1-year expiry. |
+| `/sponsor-set [user] [plan]` | Password modal; optional plan tier and custom message (top tier). |
+| `/sponsor-plans` | Plans, prices, append chance on keyword replies. |
+| `/sponsor-who` | Current sponsor and time until 1-year expiry. |
 
 ### Wishlist (price tracking)
 
@@ -276,35 +276,35 @@ list reports the source domain and the outcome/time of its latest check.
 
 | Command | Description |
 |---|---|
-| `/flight_tracker_add <origin> <destination> <start_date> <end_date> [adults] [currency]` | Save a fixed-date round-trip watch and run its first search immediately. On first use, opens the private SerpApi login modal. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
-| `/flight_tracker_show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
-| `/flight_tracker_delete <tracker_id>` | Delete only your own tracker and its price history. |
-| `/flight_tracker_login` | Validate and set/replace your own SerpApi API Key. |
-| `/flight_tracker_logout` | Remove your saved SerpApi key. Existing trackers remain saved but checks pause until the next login. |
+| `/flight-tracker-add <origin> <destination> <start-date> <end-date> [adults] [currency]` | Save a fixed-date round-trip watch and run its first search immediately. On first use, opens the private SerpApi login modal. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
+| `/flight-tracker-show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
+| `/flight-tracker-delete <tracker-id>` | Delete only your own tracker and its price history. |
+| `/flight-tracker-login` | Validate and set/replace your own SerpApi API Key. |
+| `/flight-tracker-logout` | Remove your saved SerpApi key. Existing trackers remain saved but checks pause until the next login. |
 
-Exact example: `/flight_tracker_add origin:OTP destination:BKK start_date:2026-12-30 end_date:2027-01-13`.
+Exact example: `/flight-tracker-add origin:OTP destination:BKK start-date:2026-12-30 end-date:2027-01-13`.
 
 Only fixed departure and return dates are supported. Flexible date windows were intentionally removed because each date pair would consume a separate SerpApi search and quickly exhaust the free quota.
 
-Each Discord user supplies one **SerpApi API Key**. If no login exists when `/flight_tracker_add` is used, the bot opens a modal, validates the key through SerpApi's Account API, saves it, and then creates the tracker. Later adds reuse that same user's key and quota. Keys are stored in the local SQLite database and are never shown by commands or written to logs. Because SQLite storage is not encrypted, filesystem/database access must be restricted to the bot operator; use `/flight_tracker_logout` to remove a user's key.
+Each Discord user supplies one **SerpApi API Key**. If no login exists when `/flight-tracker-add` is used, the bot opens a modal, validates the key through SerpApi's Account API, saves it, and then creates the tracker. Later adds reuse that same user's key and quota. Keys are stored in the local SQLite database and are never shown by commands or written to logs. Because SQLite storage is not encrypted, filesystem/database access must be restricted to the bot operator; use `/flight-tracker-logout` to remove a user's key.
 
-The free SerpApi plan currently includes 250 searches per month. To stay below that, each five-hour scheduled pass checks at most one tracker per user/API key, selecting the least-recently checked one. This caps scheduled usage at about 144 successful searches per user in a 30-day month regardless of how many trackers are saved; multiple trackers rotate and are therefore checked less often individually. Immediate searches performed by `/flight_tracker_add` use additional credits from the remaining headroom. See the [SerpApi Google Flights documentation](https://serpapi.com/google-flights-api) and [pricing](https://serpapi.com/pricing).
+The free SerpApi plan currently includes 250 searches per month. To stay below that, each five-hour scheduled pass checks at most one tracker per user/API key, selecting the least-recently checked one. This caps scheduled usage at about 144 successful searches per user in a 30-day month regardless of how many trackers are saved; multiple trackers rotate and are therefore checked less often individually. Immediate searches performed by `/flight-tracker-add` use additional credits from the remaining headroom. See the [SerpApi Google Flights documentation](https://serpapi.com/google-flights-api) and [pricing](https://serpapi.com/pricing).
 
 ### System
 
 | Command | Description |
 |---|---|
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
-| `/llm_set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
-| `/llm_inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
+| `/llm-set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
+| `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
 | `@bot` | Silent reply in-thread — no model/Q/thinking UI. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
-| `/llm_feedback_summary` | Manage Server only; compare this server’s rated reply configurations. |
+| `/llm-feedback-summary` | Manage Server only; compare this server’s rated reply configurations. |
 
 LLM mention replies include 👍 and 👎 reactions. Only the user who made the
 request can rate the answer; the database retains only reply metadata, server,
 model alias, prompt version, final rating, and timestamps—not prompts or
-response text. `/llm_feedback_summary` marks a model/prompt combination
+response text. `/llm-feedback-summary` marks a model/prompt combination
 ready to compare only after ten ratings; it never changes a model or prompt
 automatically.
 
@@ -427,7 +427,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | Module | Class | Role |
 |---|---|---|
 | `response_gate.py` | `ResponseGate` | Cooldown between keyword replies and teases |
-| `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword_add`, `/topkeywords` |
+| `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword-add`, `/top-keywords` |
 | `teases.py` | `TeasesFeature` | Mood teases (LLM-enhanced), `/mood` |
 | `tease_llm.py` | — | LLM prompts and generation helpers for teases and mentions |
 | `llm_client.py` | — | Shared llama.cpp `/v1/chat/completions` client |
@@ -436,7 +436,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
 | `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
-| `flights.py` | `FlightTrackerFeature` | `/flight_tracker_*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
+| `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature` | Queued @bot mention prompts through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |

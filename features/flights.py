@@ -190,7 +190,7 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
 
 
 class FlightTrackerFeature:
-    """Own the /flight_tracker_* commands and five-hour background loop."""
+    """Own the /flight-tracker-* commands and five-hour background loop."""
 
     def __init__(
         self,
@@ -216,7 +216,7 @@ class FlightTrackerFeature:
         feature = self
 
         @self.tree.command(
-            name="flight_tracker_add",
+            name="flight-tracker-add",
             description="Add a fixed-date round-trip flight price tracker",
         )
         @app_commands.describe(
@@ -228,6 +228,7 @@ class FlightTrackerFeature:
             currency="Price currency (default EUR)",
         )
         @app_commands.choices(currency=FLIGHT_CURRENCY_CHOICES)
+        @app_commands.rename(start_date="start-date", end_date="end-date")
         async def flight_add(
             interaction: discord.Interaction,
             origin: str,
@@ -259,7 +260,7 @@ class FlightTrackerFeature:
             await feature._add_tracker(interaction, values)
 
         @self.tree.command(
-            name="flight_tracker_show", description="Show your saved flight trackers"
+            name="flight-tracker-show", description="Show your saved flight trackers"
         )
         async def flight_show(interaction: discord.Interaction):
             trackers = db.get_user_flight_trackers(interaction.user.id)
@@ -286,13 +287,14 @@ class FlightTrackerFeature:
                 await interaction.followup.send(chunk, ephemeral=True)
 
         @self.tree.command(
-            name="flight_tracker_delete", description="Delete one of your flight trackers"
+            name="flight-tracker-delete", description="Delete one of your flight trackers"
         )
-        @app_commands.describe(tracker_id="Numeric ID shown by /flight_tracker_show")
+        @app_commands.describe(tracker_id="Numeric ID shown by /flight-tracker-show")
+        @app_commands.rename(tracker_id="tracker-id")
         async def flight_delete(interaction: discord.Interaction, tracker_id: int):
             if db.delete_flight_tracker(interaction.user.id, tracker_id):
                 logger.info(
-                    f"Command /flight_tracker_delete by user {interaction.user.id}: "
+                    f"Command /flight-tracker-delete by user {interaction.user.id}: "
                     f"tracker {tracker_id}"
                 )
                 await interaction.response.send_message(
@@ -305,14 +307,14 @@ class FlightTrackerFeature:
                 )
 
         @self.tree.command(
-            name="flight_tracker_login",
+            name="flight-tracker-login",
             description="Set or replace your private SerpApi API key",
         )
         async def flight_login(interaction: discord.Interaction):
             await interaction.response.send_modal(_FlightCredentialsModal(feature))
 
         @self.tree.command(
-            name="flight_tracker_logout",
+            name="flight-tracker-logout",
             description="Remove your saved SerpApi API key",
         )
         async def flight_logout(interaction: discord.Interaction):
@@ -320,7 +322,7 @@ class FlightTrackerFeature:
             feature._forget_provider(interaction.user.id)
             message = (
                 "Your SerpApi login was removed. Existing trackers are paused until you "
-                "run `/flight_tracker_login` or `/flight_tracker_add` and log in again."
+                "run `/flight-tracker-login` or `/flight-tracker-add` and log in again."
                 if removed
                 else "You do not have a SerpApi login saved."
             )
@@ -341,7 +343,7 @@ class FlightTrackerFeature:
         credentials = db.get_flight_api_credentials(user_id)
         if credentials is None:
             raise FlightProviderError(
-                "No SerpApi login is saved. Run /flight_tracker_login first."
+                "No SerpApi login is saved. Run /flight-tracker-login first."
             )
         api_key = credentials["api_key"]
         cached = self._providers.get(user_id)
@@ -361,7 +363,7 @@ class FlightTrackerFeature:
 
         tracker = db.get_flight_tracker(tracker_id, interaction.user.id)
         logger.info(
-            f"Command /flight_tracker_add by user {interaction.user.id}: "
+            f"Command /flight-tracker-add by user {interaction.user.id}: "
             f"tracker {tracker_id} {values['origin']}-{values['destination']}"
         )
         try:
@@ -410,7 +412,7 @@ class FlightTrackerFeature:
         return offer
 
     async def _process_tracker(self, tracker: dict) -> None:
-        # Keep completed trips in `/flight_tracker_show` until the owner
+        # Keep completed trips in `/flight-tracker-show` until the owner
         # deletes them, but stop spending provider quota on dates that passed.
         if (
             tracker["last_checked_at"] is not None

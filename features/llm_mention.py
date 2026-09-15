@@ -111,7 +111,7 @@ class AskJob:
 
 
 class LLMMentionFeature:
-    """@bot mention prompts via llama.cpp and /llm_set command."""
+    """@bot mention prompts via llama.cpp and /llm-set command."""
 
     def __init__(
         self,
@@ -253,7 +253,7 @@ class LLMMentionFeature:
 
     def _register_commands(self) -> None:
         @self.tree.command(
-            name="llm_set",
+            name="llm-set",
             description="Set the model used when the bot is mentioned",
         )
         @app_commands.describe(
@@ -264,7 +264,7 @@ class LLMMentionFeature:
             interaction: discord.Interaction,
             model: str,
         ):
-            logger.info(f"Command /llm_set called by {interaction.user} (model={model})")
+            logger.info(f"Command /llm-set called by {interaction.user} (model={model})")
             try:
                 allowed = get_allowed_models()
                 if model not in allowed:

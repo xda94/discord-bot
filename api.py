@@ -433,7 +433,7 @@ def api_reset_jokes():
 
 # --- Per-Guild Joke Schedule Routes ---
 #
-# `GET /jokes/guilds` — list every guild that has /joke_activation set
+# `GET /jokes/guilds` — list every guild that has /joke-activation set
 # `GET /jokes/guilds/<guild_id>` — one guild's config, or 404
 # `PUT /jokes/guilds/<guild_id>` — activate / update (body: channel_id, send_time)
 # `DELETE /jokes/guilds/<guild_id>` — deactivate that guild

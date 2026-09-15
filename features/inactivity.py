@@ -51,7 +51,7 @@ class InactivityFeature:
 
     def _register_commands(self) -> None:
         @self.tree.command(
-            name="llm_inactivity",
+            name="llm-inactivity",
             description="Activate or deactivate LLM inactivity nudges in this server",
         )
         @app_commands.describe(action="Whether to activate or deactivate the nudges")
@@ -67,7 +67,7 @@ class InactivityFeature:
             action: str,
         ):
             logger.info(
-                f"Command /llm_inactivity called by {interaction.user} "
+                f"Command /llm-inactivity called by {interaction.user} "
                 f"in guild {interaction.guild_id} with action {action}"
             )
             if interaction.guild_id is None:
