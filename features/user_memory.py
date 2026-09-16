@@ -12,7 +12,7 @@ import db
 logger = logging.getLogger("discord_bot")
 
 DM_SCOPE_ID = 0
-MEMORY_MAX_CHARS = 2000
+MEMORY_MAX_CHARS = 4000
 OBSERVATION_MAX_CHARS = 2000
 OBSERVATION_MAX_MESSAGES = 20
 PRIVATE_MESSAGE_CHUNK = 1900
@@ -225,9 +225,12 @@ class UserMemoryFeature:
         key = (batch.scope_id, batch.user_id)
         if profile is not None:
             normalized = _trim_profile(profile)
-            if not normalized or not db.set_llm_user_memory(
-                batch.scope_id, batch.user_id, normalized
-            ):
+            if normalized:
+                if not db.set_llm_user_memory(
+                    batch.scope_id, batch.user_id, normalized
+                ):
+                    return False
+            elif db.delete_llm_user_memory(batch.scope_id, batch.user_id) is None:
                 return False
 
         observations = self._buffers.get(key)

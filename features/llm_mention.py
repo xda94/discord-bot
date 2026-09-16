@@ -13,7 +13,12 @@ from discord import app_commands
 import db
 from features.llm_feedback import LLMFeedbackFeature
 from features.user_memory import MEMORY_MAX_CHARS, MemoryBatch, UserMemoryFeature
-from llm_client import get_allowed_models, get_mention_model
+from llm_client import (
+    LlamaCppError,
+    get_allowed_models,
+    get_mention_model,
+    llama_supports_vision,
+)
 from mention_utils import extract_mention_text
 from tease_llm import (
     generate_memory_update,
@@ -61,8 +66,107 @@ DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
 MENTION_PROMPT_VERSION = "mention-v1"
 MEMORY_MENTION_PROMPT_VERSION = "mention-v2-memory"
+VISION_MENTION_PROMPT_VERSION = "mention-v3-vision"
+VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v4-vision-memory"
 SUMMON_PROMPT_VERSION = "summon-v1"
-REFERENCE_CONTEXT_CHAR_BUDGET = 3000
+REFERENCE_CONTEXT_CHAR_BUDGET = 6000
+VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_PIXELS = 25_000_000
+IMAGE_DESCRIPTION_REQUEST = (
+    "Describe the visible contents of the attached image accurately and concisely."
+)
+_IMAGE_EXTENSIONS = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+_KNOWN_IMAGE_EXTENSIONS = set(_IMAGE_EXTENSIONS) | {
+    ".bmp",
+    ".gif",
+    ".heic",
+    ".heif",
+    ".webp",
+}
+
+
+def _normalized_content_type(attachment: discord.Attachment) -> str:
+    content_type = (getattr(attachment, "content_type", None) or "").lower()
+    return content_type.partition(";")[0].strip()
+
+
+def _is_image_attachment(attachment: discord.Attachment) -> bool:
+    content_type = _normalized_content_type(attachment)
+    suffix = os.path.splitext(getattr(attachment, "filename", ""))[1].lower()
+    return content_type.startswith("image/") or suffix in _KNOWN_IMAGE_EXTENSIONS
+
+
+def _expected_image_mime(attachment: discord.Attachment) -> str | None:
+    content_type = _normalized_content_type(attachment)
+    if content_type in {"image/jpeg", "image/jpg"}:
+        return "image/jpeg"
+    if content_type == "image/png":
+        return "image/png"
+    if content_type.startswith("image/"):
+        return None
+    suffix = os.path.splitext(getattr(attachment, "filename", ""))[1].lower()
+    return _IMAGE_EXTENSIONS.get(suffix)
+
+
+def select_image_attachment(
+    attachments: list[discord.Attachment],
+) -> tuple[discord.Attachment | None, str | None, int, str | None]:
+    """Select and validate the first direct image using Discord metadata."""
+    images = [
+        attachment for attachment in attachments if _is_image_attachment(attachment)
+    ]
+    if not images:
+        return None, None, 0, None
+
+    attachment = images[0]
+    mime = _expected_image_mime(attachment)
+    if mime is None:
+        return (
+            None,
+            None,
+            len(images),
+            "I can currently inspect only PNG or JPEG images.",
+        )
+    size = getattr(attachment, "size", None)
+    if not isinstance(size, int) or size < 1 or size > MAX_IMAGE_BYTES:
+        return (
+            None,
+            None,
+            len(images),
+            "That image is too large. Please use a PNG or JPEG under 8 MiB.",
+        )
+    width = getattr(attachment, "width", None)
+    height = getattr(attachment, "height", None)
+    if (
+        not isinstance(width, int)
+        or isinstance(width, bool)
+        or width < 1
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or height < 1
+    ):
+        return None, None, len(images), "I could not validate that image's dimensions."
+    if width * height > MAX_IMAGE_PIXELS:
+        return (
+            None,
+            None,
+            len(images),
+            "That image has too many pixels. Please use an image under 25 megapixels.",
+        )
+    return attachment, mime, len(images), None
+
+
+def detect_image_mime(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return None
 
 
 def budget_reference_context(
@@ -155,8 +259,11 @@ class AskJob:
     summon_only: bool = False
     context_messages: list[str] = field(default_factory=list)
     user_memory: str = ""
+    memory_profile: str = ""
     memory_enabled: bool = False
     memory_batch: MemoryBatch | None = None
+    image_attachment: discord.Attachment | None = None
+    image_mime: str | None = None
     prompt_version: str = MENTION_PROMPT_VERSION
 
 
@@ -239,7 +346,59 @@ class LLMMentionFeature:
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
 
+    @staticmethod
+    async def _reply_job_error(job: AskJob, text: str) -> None:
+        if job.reply_to is None:
+            return
+        await job.reply_to.reply(
+            text,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     async def _process_job(self, job: AskJob) -> None:
+        image_bytes = None
+        if job.image_attachment is not None:
+            try:
+                vision_enabled = await asyncio.to_thread(llama_supports_vision)
+            except LlamaCppError as exc:
+                logger.warning("Could not verify llama.cpp vision support: %s", exc)
+                await self._reply_job_error(
+                    job,
+                    "I can't inspect images right now because the vision service is unavailable.",
+                )
+                return
+            if not vision_enabled:
+                await self._reply_job_error(
+                    job,
+                    "I can't inspect images because llama.cpp vision support is disabled.",
+                )
+                return
+            try:
+                image_bytes = await job.image_attachment.read()
+            except Exception as exc:
+                logger.warning(
+                    "Discord image download failed (%s)", type(exc).__name__
+                )
+                await self._reply_job_error(
+                    job,
+                    "I couldn't download that image. It may have been deleted; please upload it again.",
+                )
+                return
+            if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
+                await self._reply_job_error(
+                    job,
+                    "The downloaded image is empty or exceeds the 8 MiB limit.",
+                )
+                return
+            detected_mime = detect_image_mime(image_bytes)
+            if detected_mime is None or detected_mime != job.image_mime:
+                await self._reply_job_error(
+                    job,
+                    "That attachment is not a valid PNG or JPEG image.",
+                )
+                return
+
         try:
             if job.summon_only:
                 reply = await asyncio.to_thread(
@@ -256,12 +415,22 @@ class LLMMentionFeature:
                     context_messages=job.context_messages,
                     user_memory=job.user_memory,
                     memory_enabled=job.memory_enabled,
+                    image_bytes=image_bytes,
+                    image_mime=job.image_mime,
                 )
         except Exception:
             logger.exception("Unexpected error in mention reply")
+            if job.image_attachment is not None:
+                await self._reply_job_error(
+                    job, "I couldn't process that image. Please try again in a moment."
+                )
             return
 
         if not reply:
+            if job.image_attachment is not None:
+                await self._reply_job_error(
+                    job, "I couldn't process that image. Please try again in a moment."
+                )
             return
 
         await self._reply_mention(job, reply)
@@ -277,7 +446,7 @@ class LLMMentionFeature:
         ):
             result = await asyncio.to_thread(
                 generate_memory_update,
-                job.user_memory,
+                job.memory_profile,
                 list(job.memory_batch.observations),
                 model=job.model,
                 max_chars=MEMORY_MAX_CHARS,
@@ -303,64 +472,121 @@ class LLMMentionFeature:
         if text is None:
             return False
 
+        image_attachment, image_mime, image_count, image_error = (
+            select_image_attachment(list(getattr(message, "attachments", [])))
+        )
+        if image_error is not None:
+            await message.reply(
+                image_error,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return True
+
         user_id = message.author.id
         blocked = self._begin_job_checks(user_id)
         if blocked:
             await message.reply(blocked, mention_author=False)
             return True
 
-        summon_only = not text
+        has_image = image_attachment is not None
+        summon_only = not text and not has_image
+        question = text or (IMAGE_DESCRIPTION_REQUEST if has_image else "")
         logger.info(
-            "Bot mention from %s (summon=%s, len=%s)",
+            "Bot mention from %s (summon=%s, image=%s, len=%s)",
             message.author,
             summon_only,
+            has_image,
             len(text),
         )
-        
+
         model = get_selected_model()
 
         limit = get_llm_context_messages()
         context_messages = []
         if limit > 0:
-            async for past_msg in message.channel.history(limit=limit, before=message):
-                context_messages.append(f"{past_msg.author.display_name}: {past_msg.clean_content}")
+            async for past_msg in message.channel.history(
+                limit=limit, before=message
+            ):
+                context_messages.append(
+                    f"{past_msg.author.display_name}: {past_msg.clean_content}"
+                )
             context_messages.reverse()
 
         memory_enabled = False
         user_memory = ""
+        memory_profile = ""
         memory_batch = None
         if not summon_only and self.memory is not None:
             memory_context = self.memory.context_for(message)
             memory_enabled = memory_context.enabled
-            user_memory = memory_context.profile
+            memory_profile = memory_context.profile
+            user_memory = memory_profile
             memory_batch = memory_context.batch
 
         user_memory, context_messages = budget_reference_context(
-            user_memory, context_messages
+            user_memory,
+            context_messages,
+            max_chars=(
+                VISION_REFERENCE_CONTEXT_CHAR_BUDGET
+                if has_image
+                else REFERENCE_CONTEXT_CHAR_BUDGET
+            ),
         )
 
         job = AskJob(
             user=message.author,
-            question=text,
+            question=question,
             model=model,
             channel=message.channel,
             reply_to=message,
             summon_only=summon_only,
             context_messages=context_messages,
             user_memory=user_memory,
+            memory_profile=memory_profile,
             memory_enabled=memory_enabled,
             memory_batch=memory_batch,
+            image_attachment=image_attachment,
+            image_mime=image_mime,
             prompt_version=(
                 SUMMON_PROMPT_VERSION
                 if summon_only
                 else (
-                    MEMORY_MENTION_PROMPT_VERSION
-                    if memory_enabled
-                    else MENTION_PROMPT_VERSION
+                    VISION_MEMORY_MENTION_PROMPT_VERSION
+                    if has_image and memory_enabled
+                    else (
+                        VISION_MENTION_PROMPT_VERSION
+                        if has_image
+                        else (
+                            MEMORY_MENTION_PROMPT_VERSION
+                            if memory_enabled
+                            else MENTION_PROMPT_VERSION
+                        )
+                    )
                 )
             ),
         )
+        ahead = requests_ahead(
+            processing=self._processing,
+            queue_size=self._queue.qsize(),
+        )
         await self._enqueue_job(job)
+        notices = []
+        if ahead > 0:
+            noun = "request" if ahead == 1 else "requests"
+            notices.append(
+                f"⏳ I'm working on **{ahead} {noun}** already; yours is queued."
+            )
+        if image_count > 1:
+            notices.append(
+                "I can inspect one image per request, so I'll use the first image."
+            )
+        if notices:
+            await message.reply(
+                "\n".join(notices),
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         return True
 
     def _register_commands(self) -> None:

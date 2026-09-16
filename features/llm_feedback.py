@@ -19,8 +19,9 @@ class LLMFeedbackFeature:
     """Own compact, requester-only ratings for mention-generated replies.
 
     The database stores reply metadata and the final rating, never the prompt,
-    response body, channel, or conversation history. Reactions are preferred
-    over a command because they are attached to the exact answer being rated.
+    response body, channel, or conversation history. Only a reaction manually
+    added by the original requester is accepted; the bot does not seed feedback
+    reactions on its own replies.
     """
 
     def __init__(
@@ -43,7 +44,7 @@ class LLMFeedbackFeature:
         model: str,
         prompt_version: str,
     ) -> None:
-        """Persist a rateable reply and add its two feedback affordances."""
+        """Persist a rateable reply without adding reactions on the bot's behalf."""
         message_id = getattr(message, "id", None)
         if message_id is None:
             logger.warning("Cannot register LLM feedback for a reply without an ID")
@@ -51,29 +52,14 @@ class LLMFeedbackFeature:
 
         guild = getattr(message, "guild", None)
         guild_id = getattr(guild, "id", None)
-        if not db.track_llm_response(
+        db.track_llm_response(
             message_id,
             requester_user_id,
             category,
             guild_id=guild_id,
             model=model,
             prompt_version=prompt_version,
-        ):
-            return
-
-        for emoji in (THUMBS_UP, THUMBS_DOWN):
-            try:
-                await message.add_reaction(emoji)
-            except discord.Forbidden:
-                logger.warning(
-                    "Cannot add LLM feedback reactions to message %s; "
-                    "check Add Reactions permission.",
-                    message_id,
-                )
-                return
-            except discord.HTTPException:
-                logger.warning("Failed to add LLM feedback reaction to message %s", message_id)
-                return
+        )
 
     async def handle_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         """Accept only the original requester's 👍/👎 on registered replies."""

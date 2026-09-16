@@ -84,6 +84,21 @@ def test_commit_acknowledges_only_snapshot_and_persists_capped_profile(tmp_db):
     asyncio.run(client.close())
 
 
+def test_commit_can_remove_last_saved_fact(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    db.set_llm_user_memory(100, 7, "- Old fact")
+    client, _, feature = _build_feature()
+    message = _message(content="That is no longer true")
+    asyncio.run(feature.handle_message(message))
+    batch = feature.context_for(message).batch
+
+    assert batch is not None
+    assert feature.commit_batch(batch, "") is True
+    assert db.get_llm_user_memory(100, 7) is None
+    assert feature.context_for(message).batch is None
+    asyncio.run(client.close())
+
+
 def test_invalidation_prevents_in_flight_profile_recreation(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()
@@ -219,4 +234,26 @@ def test_server_purge_requires_exact_confirmation_and_preserves_opt_out(tmp_db):
     asyncio.run(command.callback(interaction, "PURGE"))
     assert db.get_llm_user_memory(100, 7) is None
     assert db.get_llm_memory_preference(100, 8) is False
+    asyncio.run(client.close())
+
+
+def test_memory_show_chunks_larger_profile_privately(tmp_db):
+    profile = "x" * 3900
+    db.set_llm_user_memory(100, 7, profile)
+    client, tree, _ = _build_feature()
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.user.id = 7
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    asyncio.run(tree.get_command("memory-show").callback(interaction))
+
+    first = interaction.response.send_message.await_args
+    followups = interaction.followup.send.await_args_list
+    chunks = [first.args[0]] + [call.args[0] for call in followups]
+    assert len(chunks) == 3
+    assert "".join(chunks) == f"**What I remember about you**\n{profile}"
+    assert first.kwargs["ephemeral"] is True
+    assert all(call.kwargs["ephemeral"] is True for call in followups)
     asyncio.run(client.close())

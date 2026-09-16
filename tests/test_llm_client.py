@@ -8,6 +8,7 @@ from llm_client import (
     get_allowed_models,
     get_default_model,
     get_mention_model,
+    llama_supports_vision,
     query_llm,
 )
 
@@ -98,6 +99,63 @@ def test_query_llm_sends_chat_completion_options(monkeypatch):
         "temperature": 0.8,
     }
     assert mock_post.call_args.args[0] == "http://localhost:8080/v1/chat/completions"
+
+
+def test_query_llm_sends_multimodal_image_content(monkeypatch):
+    response = MagicMock()
+    response.ok = True
+    response.json.return_value = {
+        "choices": [{"message": {"content": "A small PNG."}}]
+    }
+    mock_post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    result = query_llm(
+        "Describe it.",
+        image_bytes=b"\x89PNG",
+        image_mime="image/png",
+    )
+
+    assert result == "A small PNG."
+    content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+    assert content == [
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,iVBORw=="},
+        },
+        {"type": "text", "text": "Describe it."},
+    ]
+
+
+def test_query_llm_requires_complete_supported_image_input():
+    with pytest.raises(LlamaCppError, match="provided together"):
+        query_llm("Describe it.", image_bytes=b"png")
+    with pytest.raises(LlamaCppError, match="Unsupported image MIME"):
+        query_llm(
+            "Describe it.", image_bytes=b"webp", image_mime="image/webp"
+        )
+
+
+@pytest.mark.parametrize(("vision", "expected"), [(True, True), (False, False)])
+def test_llama_supports_vision_reads_server_props(monkeypatch, vision, expected):
+    response = MagicMock()
+    response.ok = True
+    response.json.return_value = {"modalities": {"vision": vision}}
+    mock_get = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "get", mock_get)
+
+    assert llama_supports_vision(base_url="http://localhost:8080/v1") is expected
+    assert mock_get.call_args.args[0] == "http://localhost:8080/props"
+
+
+def test_llama_supports_vision_rejects_invalid_props(monkeypatch):
+    response = MagicMock()
+    response.ok = True
+    response.json.return_value = {"modalities": {}}
+    monkeypatch.setattr(requests, "get", MagicMock(return_value=response))
+
+    with pytest.raises(LlamaCppError, match="invalid vision-capability"):
+        llama_supports_vision()
 
 
 def test_query_llm_translates_json_output_format(monkeypatch):

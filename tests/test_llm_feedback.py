@@ -6,7 +6,7 @@ import db
 from features.llm_feedback import LLMFeedbackFeature, THUMBS_DOWN, THUMBS_UP
 
 
-def test_feedback_reactions_are_added_and_only_requester_can_rate(tmp_db):
+def test_feedback_reactions_are_not_seeded_and_only_requester_can_rate(tmp_db):
     feature = object.__new__(LLMFeedbackFeature)
     feature.bot_id = 999
     message = MagicMock()
@@ -24,11 +24,14 @@ def test_feedback_reactions_are_added_and_only_requester_can_rate(tmp_db):
         )
     )
 
-    assert message.add_reaction.await_count == 2
-    assert [call.args[0] for call in message.add_reaction.await_args_list] == [
-        THUMBS_UP,
-        THUMBS_DOWN,
-    ]
+    message.add_reaction.assert_not_awaited()
+
+    asyncio.run(
+        feature.handle_raw_reaction_add(
+            SimpleNamespace(user_id=999, message_id=12345, emoji=THUMBS_UP)
+        )
+    )
+    assert db.get_llm_response_feedback(12345)[2] is None
 
     asyncio.run(
         feature.handle_raw_reaction_add(
