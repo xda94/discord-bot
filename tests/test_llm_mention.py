@@ -12,13 +12,72 @@ from features.llm_mention import (
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
     MEMORY_MENTION_PROMPT_VERSION,
+    MAX_IMAGE_BYTES,
+    REFERENCE_CONTEXT_CHAR_BUDGET,
+    IMAGE_DESCRIPTION_REQUEST,
+    VISION_MEMORY_MENTION_PROMPT_VERSION,
+    VISION_MENTION_PROMPT_VERSION,
     budget_reference_context,
+    detect_image_mime,
     get_ask_cooldown_seconds,
     get_selected_model,
     requests_ahead,
+    select_image_attachment,
     split_discord_messages,
 )
 from features.user_memory import MemoryBatch
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
+JPEG_BYTES = b"\xff\xd8\xffimage"
+
+
+def _attachment(
+    *,
+    filename="image.png",
+    content_type="image/png",
+    size=len(PNG_BYTES),
+    width=100,
+    height=100,
+    data=PNG_BYTES,
+):
+    return SimpleNamespace(
+        filename=filename,
+        content_type=content_type,
+        size=size,
+        width=width,
+        height=height,
+        read=AsyncMock(return_value=data),
+    )
+
+
+def _mention_message(*, text="", attachments=None, user_id=123):
+    bot = SimpleNamespace(id=999888777, display_name="Bot")
+    content = f"<@{bot.id}> {text}".strip()
+    return SimpleNamespace(
+        author=SimpleNamespace(id=user_id, display_name="Alice"),
+        content=content,
+        clean_content=content,
+        mentions=[bot],
+        role_mentions=[],
+        channel_mentions=[],
+        attachments=list(attachments or []),
+        channel=SimpleNamespace(),
+        guild=None,
+        reply=AsyncMock(),
+    )
+
+
+def _handling_feature(*, processing=False, queue_size=0):
+    feature = object.__new__(LLMMentionFeature)
+    feature.bot_id = 999888777
+    feature.memory = None
+    feature._user_pending = set()
+    feature._user_last_ask = {}
+    feature._processing = processing
+    feature._queue = SimpleNamespace(qsize=lambda: queue_size)
+    feature._enqueue_job = AsyncMock()
+    return feature
 
 
 @pytest.mark.parametrize("summon_only", [False, True])
@@ -95,23 +154,155 @@ def test_requests_ahead():
     assert requests_ahead(processing=False, queue_size=2) == 2
 
 
+def test_image_signature_detection():
+    assert detect_image_mime(PNG_BYTES) == "image/png"
+    assert detect_image_mime(JPEG_BYTES) == "image/jpeg"
+    assert detect_image_mime(b"RIFF-webp") is None
+
+
+def test_image_selection_uses_first_supported_direct_image():
+    first = _attachment(filename="first.jpg", content_type="image/jpeg")
+    second = _attachment(filename="second.png")
+
+    attachment, mime, count, error = select_image_attachment([first, second])
+
+    assert attachment is first
+    assert mime == "image/jpeg"
+    assert count == 2
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    ("attachment", "message"),
+    [
+        (
+            _attachment(filename="image.webp", content_type="image/webp"),
+            "only PNG or JPEG",
+        ),
+        (_attachment(size=MAX_IMAGE_BYTES + 1), "under 8 MiB"),
+        (_attachment(width=5001, height=5001), "under 25 megapixels"),
+        (_attachment(width=None), "validate that image's dimensions"),
+    ],
+)
+def test_image_selection_rejects_unsupported_or_excessive_images(
+    attachment, message
+):
+    selected, mime, count, error = select_image_attachment([attachment])
+
+    assert selected is None
+    assert mime is None
+    assert count == 1
+    assert message in error
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_question"),
+    [
+        ("", IMAGE_DESCRIPTION_REQUEST),
+        ("What error does this show?", "What error does this show?"),
+    ],
+)
+def test_image_mention_enqueues_description_or_caption(
+    monkeypatch, text, expected_question
+):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    attachment = _attachment()
+    message = _mention_message(text=text, attachments=[attachment])
+
+    assert asyncio.run(feature.handle_message(message)) is True
+
+    job = feature._enqueue_job.await_args.args[0]
+    assert job.question == expected_question
+    assert job.summon_only is False
+    assert job.image_attachment is attachment
+    assert job.image_mime == "image/png"
+    assert job.prompt_version == VISION_MENTION_PROMPT_VERSION
+    attachment.read.assert_not_awaited()
+    message.reply.assert_not_awaited()
+
+
+def test_queued_multi_image_request_gets_one_combined_notice(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature(processing=True, queue_size=1)
+    first = _attachment(filename="first.png")
+    second = _attachment(filename="second.jpg", content_type="image/jpeg")
+    message = _mention_message(attachments=[first, second])
+
+    asyncio.run(feature.handle_message(message))
+
+    job = feature._enqueue_job.await_args.args[0]
+    assert job.image_attachment is first
+    notice = message.reply.await_args.args[0]
+    assert "2 requests" in notice
+    assert "yours is queued" in notice
+    assert "use the first image" in notice
+    assert message.reply.await_args.kwargs["mention_author"] is False
+
+
+def test_pending_user_is_not_allowed_to_enqueue_another_image(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    feature._user_pending.add(123)
+    message = _mention_message(attachments=[_attachment()])
+
+    asyncio.run(feature.handle_message(message))
+
+    feature._enqueue_job.assert_not_awaited()
+    assert "already working" in message.reply.await_args.args[0]
+
+
+def test_image_mention_uses_vision_memory_feedback_version(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    feature.memory = SimpleNamespace(
+        context_for=MagicMock(
+            return_value=SimpleNamespace(
+                enabled=True,
+                profile="m" * 4000,
+                batch=None,
+            )
+        )
+    )
+    message = _mention_message(attachments=[_attachment()])
+
+    asyncio.run(feature.handle_message(message))
+
+    job = feature._enqueue_job.await_args.args[0]
+    assert job.prompt_version == VISION_MEMORY_MENTION_PROMPT_VERSION
+    assert len(job.user_memory) == 4000
+    assert job.memory_profile == "m" * 4000
+
+
+def test_invalid_image_is_rejected_before_queueing(monkeypatch):
+    feature = _handling_feature()
+    message = _mention_message(
+        attachments=[_attachment(filename="image.webp", content_type="image/webp")]
+    )
+
+    asyncio.run(feature.handle_message(message))
+
+    feature._enqueue_job.assert_not_awaited()
+    assert "only PNG or JPEG" in message.reply.await_args.args[0]
+
+
 def test_reference_budget_prioritizes_memory_and_newest_history():
     memory, history = budget_reference_context(
-        "m" * 2000,
-        ["old:" + "x" * 900, "new:" + "y" * 900],
+        "m" * 4000,
+        ["old:" + "x" * 1500, "new:" + "y" * 1500],
     )
-    assert len(memory) == 2000
-    assert len(memory) + sum(len(item) for item in history) <= 3000
+    assert len(memory) == 4000
+    assert len(memory) + sum(len(item) for item in history) <= 6000
     assert len(history) == 1
     assert history[0].startswith("new:")
 
 
 def test_reference_budget_counts_escaped_prompt_size():
-    memory, history = budget_reference_context("<" * 1000, [">" * 1000])
+    memory, history = budget_reference_context("<" * 2000, [">" * 2000])
     escaped_size = len(memory.replace("<", "&lt;")) + sum(
         len(item.replace(">", "&gt;")) for item in history
     )
-    assert escaped_size <= 3000
+    assert escaped_size <= REFERENCE_CONTEXT_CHAR_BUDGET
 
 
 def test_memory_enabled_reply_uses_distinct_feedback_prompt_version():
@@ -207,6 +398,214 @@ def test_failed_memory_consolidation_does_not_commit(monkeypatch):
 
     feature._reply_mention.assert_awaited_once()
     feature.memory.commit_batch.assert_not_called()
+
+
+def test_memory_consolidation_uses_complete_unbudgeted_profile(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+    )
+    feature._reply_mention = AsyncMock()
+    batch = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("I like Python",),
+    )
+    full_profile = "<" * 4000
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="hello",
+        model="discord-bot",
+        user_memory="<" * 1500,
+        memory_profile=full_profile,
+        memory_batch=batch,
+    )
+    update = MagicMock(
+        return_value=SimpleNamespace(successful=True, profile="- Likes Python")
+    )
+    monkeypatch.setattr(
+        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
+    )
+    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
+
+    asyncio.run(feature._process_job(job))
+
+    assert update.call_args.args[0] == full_profile
+    feature.memory.commit_batch.assert_called_once_with(batch, "- Likes Python")
+
+
+def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.feedback = None
+    feature._reply_mention = AsyncMock()
+    feature._reply_job_error = AsyncMock()
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+    )
+    attachment = _attachment()
+    batch = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("Please describe this",),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question="Please describe this",
+        model="discord-bot",
+        reply_to=SimpleNamespace(reply=AsyncMock()),
+        image_attachment=attachment,
+        image_mime="image/png",
+        memory_batch=batch,
+        memory_profile="- Likes concise replies",
+    )
+    reply = MagicMock(return_value="A blue diagram.")
+    update = MagicMock(
+        return_value=SimpleNamespace(successful=True, profile=None)
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+    monkeypatch.setattr("features.llm_mention.generate_mention_reply", reply)
+    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
+
+    asyncio.run(feature._process_job(job))
+
+    attachment.read.assert_awaited_once_with()
+    assert reply.call_args.kwargs["image_bytes"] == PNG_BYTES
+    assert reply.call_args.kwargs["image_mime"] == "image/png"
+    feature._reply_mention.assert_awaited_once_with(job, "A blue diagram.")
+    feature._reply_job_error.assert_not_awaited()
+    assert update.call_args.args == (
+        "- Likes concise replies",
+        ["Please describe this"],
+    )
+    assert "image_bytes" not in update.call_args.kwargs
+
+
+def test_vision_job_stops_before_download_when_projector_is_disabled(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment()
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachment=attachment,
+        image_mime="image/png",
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: False)
+
+    asyncio.run(feature._process_job(job))
+
+    attachment.read.assert_not_awaited()
+    assert "vision support is disabled" in feature._reply_job_error.await_args.args[1]
+
+
+def test_vision_job_stops_before_download_when_capability_check_fails(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment()
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachment=attachment,
+        image_mime="image/png",
+    )
+
+    def unavailable():
+        raise LlamaCppError("server unavailable")
+
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", unavailable)
+
+    asyncio.run(feature._process_job(job))
+
+    attachment.read.assert_not_awaited()
+    assert "vision service is unavailable" in feature._reply_job_error.await_args.args[1]
+
+
+def test_vision_job_rechecks_downloaded_size(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment(data=PNG_BYTES + b"x" * MAX_IMAGE_BYTES)
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachment=attachment,
+        image_mime="image/png",
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+
+    asyncio.run(feature._process_job(job))
+
+    assert "exceeds the 8 MiB limit" in feature._reply_job_error.await_args.args[1]
+
+
+def test_vision_job_reports_deleted_attachment(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment()
+    attachment.read.side_effect = RuntimeError("deleted")
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachment=attachment,
+        image_mime="image/png",
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+
+    asyncio.run(feature._process_job(job))
+
+    assert "upload it again" in feature._reply_job_error.await_args.args[1]
+
+
+def test_vision_job_rejects_spoofed_image_bytes(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment(data=b"not an image")
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachment=attachment,
+        image_mime="image/png",
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+
+    asyncio.run(feature._process_job(job))
+
+    assert "not a valid PNG or JPEG" in feature._reply_job_error.await_args.args[1]
+
+
+def test_vision_inference_failure_gets_user_facing_reply(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_job_error = AsyncMock()
+    feature.memory = None
+    attachment = _attachment()
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachment=attachment,
+        image_mime="image/png",
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+    monkeypatch.setattr(
+        "features.llm_mention.generate_mention_reply",
+        lambda *args, **kwargs: None,
+    )
+
+    asyncio.run(feature._process_job(job))
+
+    assert "couldn't process that image" in feature._reply_job_error.await_args.args[1]
 
 
 def test_summon_never_consolidates_memory(monkeypatch):

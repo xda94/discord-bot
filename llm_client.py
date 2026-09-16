@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 
@@ -66,12 +67,66 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{base}/v1/chat/completions"
 
 
+def _server_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return f"{base}/{path.lstrip('/')}"
+
+
+def _request_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    api_key = os.getenv("LLAMA_CPP_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def llama_supports_vision(
+    *,
+    base_url: str = LLAMA_CPP_BASE_URL,
+    timeout: int = 15,
+) -> bool:
+    """Return llama-server's advertised vision capability."""
+    try:
+        response = requests.get(
+            _server_url(base_url, "/props"),
+            headers=_request_headers(),
+            timeout=(10, timeout),
+        )
+    except requests.exceptions.Timeout as exc:
+        raise LlamaCppError(
+            "llama.cpp did not respond while checking vision support."
+        ) from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise LlamaCppError(
+            f"Could not reach llama.cpp at {base_url} while checking vision support."
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise LlamaCppError(f"Could not check llama.cpp vision support: {exc}") from exc
+
+    if not response.ok:
+        detail = response.text.strip() or response.reason
+        raise LlamaCppError(
+            f"llama.cpp vision check returned HTTP {response.status_code}: {detail}"
+        )
+    try:
+        data = response.json()
+        return data["modalities"]["vision"] is True
+    except (ValueError, KeyError, TypeError) as exc:
+        raise LlamaCppError(
+            "llama.cpp returned an invalid vision-capability response."
+        ) from exc
+
+
 def query_llm(
     prompt: str,
     model: str | None = None,
     *,
     options: dict | None = None,
     response_schema: dict | None = None,
+    image_bytes: bytes | None = None,
+    image_mime: str | None = None,
     base_url: str = LLAMA_CPP_BASE_URL,
     timeout: int | None = None,
 ) -> str:
@@ -89,9 +144,29 @@ def query_llm(
     if model not in set(get_allowed_models()):
         raise LlamaCppError(f"Model not allowed: {model}")
 
+    if (image_bytes is None) != (image_mime is None):
+        raise LlamaCppError("Image bytes and MIME type must be provided together.")
+
+    message_content: str | list[dict]
+    if image_bytes is None:
+        message_content = prompt
+    else:
+        if image_mime not in {"image/png", "image/jpeg"}:
+            raise LlamaCppError(f"Unsupported image MIME type: {image_mime}")
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        message_content = [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{image_mime};base64,{encoded}",
+                },
+            },
+            {"type": "text", "text": prompt},
+        ]
+
     payload: dict = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": message_content}],
         "stream": False,
     }
 
@@ -110,16 +185,11 @@ def query_llm(
             "schema": response_schema,
         }
 
-    headers = {"Content-Type": "application/json"}
-    api_key = os.getenv("LLAMA_CPP_API_KEY", "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
     try:
         response = requests.post(
             _chat_completions_url(base_url),
             json=payload,
-            headers=headers,
+            headers=_request_headers(),
             timeout=(10, timeout),
         )
     except requests.exceptions.Timeout as exc:
