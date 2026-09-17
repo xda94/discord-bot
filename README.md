@@ -202,6 +202,32 @@ After `git pull`, restart both if either `db.py` schema or slash commands change
 
 ---
 
+## Local dashboard
+
+The API process serves a responsive administration dashboard at
+`http://<mini-pc-ip>:<PORT>/`. It uses the existing REST API and has no build
+step or separate frontend process. For direct access from a trusted local
+network, use:
+
+```env
+HOST=0.0.0.0
+PORT=9999
+# Leave API_TOKEN unset for the no-login LAN dashboard.
+```
+
+Restart `discord-api` after changing those values, then open the mini PC's LAN
+IP from a phone or computer on the same network. The dashboard manages
+keywords, reminders, jokes, wishlist items, flight trackers, and bot settings.
+It also shows saved keyword/LLM/price analytics and live mini PC CPU, memory,
+disk, and uptime metrics. Server and user IDs select records; they are not an
+authentication mechanism.
+
+If `API_TOKEN` is configured, REST data routes remain protected. The current
+dashboard is intended for the agreed trusted-LAN, no-token deployment and does
+not add an account or token-entry screen.
+
+---
+
 ## Background tasks
 
 | Feature | Interval | What it does |
@@ -380,6 +406,18 @@ opt-in DM scope) and is never supplied to another user.
 
 All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. Base URL: `http://<HOST>:<PORT>` (from `.env`). In Postman, set that value as a Bearer Token at collection level and send JSON request bodies with `Content-Type: application/json`.
 
+JSON bodies accept Discord IDs as integers or decimal strings. Browser clients
+can send `X-Discord-ID-Format: string` to receive `guild_id`, `user_id`, and
+`channel_id` fields as strings without JavaScript precision loss. Database row
+IDs such as reminder, joke, item, and tracker IDs remain numeric.
+
+### Dashboard and host
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/` | Local dashboard HTML; CSS and JavaScript are served below `/static/` |
+| `GET` | `/system/stats` | CPU, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
+
 The API manages stored data and configuration. It does not post to Discord,
 emulate Discord interactions, or run shell commands. `POST /wishlist/add` and
 `POST /wishlist/refresh` fetch product pages to update saved tracking data;
@@ -443,6 +481,7 @@ and does not authenticate a Discord user.
 | `DELETE` | `/wishlist/remove` | `{ "user_id", "url" }` |
 | `GET` | `/wishlist/all` | All tracked items incl. `last_alert_kind`, `last_alert_price` |
 | `GET` | `/wishlist/preferences?user_id=<id>&url=<url>` | One requester-owned item's current tracking data and preferences |
+| `GET` | `/wishlist/history?user_id=<id>&url=<url>` | Item metadata plus chronological saved price observations; 404 when the item is not owned/found |
 | `PUT` | `/wishlist/preferences` | `{ "user_id", "url", "target_price", "target_currency", "restock_only" }`; use `{ "clear_target": true }` to clear a threshold |
 | `POST` | `/wishlist/refresh` | `{ "user_id", "url" }` — fetches and stores current item data only; no Discord notification |
 
@@ -486,6 +525,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 |---|---|
 | `bot.py` | Discord client, feature wiring, `on_message` / `on_ready` |
 | `api.py` | Flask API (lazy `init_db` on first request) |
+| `templates/dashboard.html`, `static/dashboard.*` | Build-free local administration dashboard |
 | `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** Discord/chart renderer imports |
 | `chart_renderer.py` | Local Vega-Lite wishlist chart specifications and PNG rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |

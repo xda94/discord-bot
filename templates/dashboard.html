@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Bot Control</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">B</span>
+      <div><strong>Bot Control</strong><small>Local dashboard</small></div>
+    </div>
+    <nav aria-label="Dashboard sections">
+      <button class="nav-item active" data-page="overview"><span>⌂</span>Overview</button>
+      <button class="nav-item" data-page="keywords"><span>#</span>Keywords</button>
+      <button class="nav-item" data-page="reminders"><span>◷</span>Reminders</button>
+      <button class="nav-item" data-page="jokes"><span>☺</span>Jokes</button>
+      <button class="nav-item" data-page="wishlist"><span>♡</span>Wishlist</button>
+      <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
+      <button class="nav-item" data-page="settings"><span>⚙</span>Bot settings</button>
+    </nav>
+    <div class="sidebar-note"><span class="status-dot"></span><div><strong>LAN administration</strong><small>IDs select data; they do not sign in users.</small></div></div>
+  </aside>
+
+  <main class="shell">
+    <header class="topbar">
+      <button class="menu-button" id="menu-button" aria-label="Toggle menu">☰</button>
+      <div><p class="eyebrow">DISCORD BOT</p><h1 id="page-title">Overview</h1></div>
+      <div class="scope-controls">
+        <label>Server ID<input id="global-guild-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord server ID"></label>
+        <label>User ID<input id="global-user-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord user ID"></label>
+      </div>
+    </header>
+
+    <div class="content">
+      <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+      <section class="page active" id="page-overview" data-title="Overview">
+        <div class="page-heading"><div><p class="eyebrow">AT A GLANCE</p><h2>Everything in one place</h2><p>Live machine health and saved bot data for the selected server and user.</p></div><button class="button secondary" data-action="refresh-overview">Refresh</button></div>
+        <div class="metric-grid" id="system-metrics">
+          <article class="metric"><span>CPU</span><strong data-metric="cpu">—</strong><div class="meter"><i data-meter="cpu"></i></div></article>
+          <article class="metric"><span>Memory</span><strong data-metric="memory">—</strong><small data-detail="memory">Waiting for host</small><div class="meter"><i data-meter="memory"></i></div></article>
+          <article class="metric"><span>Disk</span><strong data-metric="disk">—</strong><small data-detail="disk">Waiting for host</small><div class="meter"><i data-meter="disk"></i></div></article>
+          <article class="metric"><span>Host uptime</span><strong data-metric="uptime">—</strong><small data-detail="timezone">Mini PC local time</small></article>
+        </div>
+        <div class="summary-grid">
+          <article class="panel"><div class="panel-title"><div><p class="eyebrow">SAVED DATA</p><h3>Records</h3></div></div><div class="count-grid" id="record-counts"><div><strong>—</strong><span>Keywords</span></div><div><strong>—</strong><span>Reminders</span></div><div><strong>—</strong><span>Jokes</span></div><div><strong>—</strong><span>Wishlist</span></div></div></article>
+          <article class="panel"><div class="panel-title"><div><p class="eyebrow">SELECTED SERVER</p><h3>Top keywords</h3></div><span class="scope-pill">server</span></div><div id="overview-keywords" class="empty">Enter a server ID above.</div></article>
+          <article class="panel"><div class="panel-title"><div><p class="eyebrow">RATED REPLIES</p><h3>LLM feedback</h3></div><span class="scope-pill">server</span></div><div id="overview-feedback" class="empty">Enter a server ID above.</div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-keywords" data-title="Keywords">
+        <div class="page-heading"><div><p class="eyebrow">SERVER-SCOPED</p><h2>Keyword responses</h2><p>One keyword can have multiple randomized responses.</p></div><button class="button secondary" data-action="load-keywords">Refresh</button></div>
+        <div class="two-column">
+          <article class="panel"><h3>Add response</h3><form id="keyword-form" class="form-stack"><label>Keyword<input name="keyword" required maxlength="100" placeholder="hello"></label><label>Bot response<textarea name="response" required maxlength="1900" placeholder="Hey there!"></textarea></label><button class="button primary">Add response</button></form></article>
+          <article class="panel"><div class="panel-title"><div><h3>Usage ranking</h3><p>Optionally filtered to the selected user.</p></div></div><div id="keyword-ranking" class="empty">Enter a server ID to load rankings.</div></article>
+        </div>
+        <article class="panel table-panel"><div class="panel-title"><h3>Configured responses</h3><span class="scope-pill">server</span></div><div id="keywords-list" class="empty">Enter a server ID to load responses.</div></article>
+      </section>
+
+      <section class="page" id="page-reminders" data-title="Reminders">
+        <div class="page-heading"><div><p class="eyebrow">GLOBAL QUEUE</p><h2>Scheduled reminders</h2><p>Times entered here use this browser’s local timezone.</p></div><button class="button secondary" data-action="load-reminders">Refresh</button></div>
+        <div class="two-column narrow-first">
+          <article class="panel"><h3>Create reminder</h3><form id="reminder-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+"></label><label>When<input name="when" type="datetime-local" required></label><label>Message<textarea name="message" required maxlength="1900"></textarea></label><button class="button primary">Schedule</button></form></article>
+          <article class="panel table-panel"><div class="panel-title"><h3>Pending reminders</h3><span class="scope-pill global">global</span></div><div id="reminders-list" class="empty">Loading reminders…</div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-jokes" data-title="Jokes">
+        <div class="page-heading"><div><p class="eyebrow">GLOBAL POOL · SERVER SCHEDULES</p><h2>Daily jokes</h2><p>Schedules run in the mini PC’s local timezone.</p></div><button class="button danger ghost" data-action="reset-jokes">Reset sent history</button></div>
+        <div class="two-column">
+          <article class="panel"><h3>Add joke</h3><form id="joke-form" class="form-stack"><label>Joke text<textarea name="text" required maxlength="1900"></textarea></label><button class="button primary">Add to pool</button></form></article>
+          <article class="panel"><h3>Server schedule</h3><form id="joke-schedule-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+"></label><label>Mini PC local time<input name="send_time" type="time" required></label><div class="button-row"><button class="button primary">Save schedule</button><button type="button" class="button danger ghost" data-action="delete-joke-schedule">Remove</button></div></form></article>
+        </div>
+        <div class="two-column"><article class="panel table-panel"><div class="panel-title"><h3>Joke pool</h3><span class="scope-pill global">global</span></div><div id="jokes-list" class="empty">Loading jokes…</div></article><article class="panel table-panel"><div class="panel-title"><h3>Active schedules</h3><span class="scope-pill">server</span></div><div id="joke-schedules-list" class="empty">Loading schedules…</div></article></div>
+      </section>
+
+      <section class="page" id="page-wishlist" data-title="Wishlist">
+        <div class="page-heading"><div><p class="eyebrow">USER-SCOPED</p><h2>Price tracking</h2><p>Refreshes update saved data and do not send a Discord DM.</p></div><button class="button secondary" data-action="load-wishlist">Refresh list</button></div>
+        <article class="panel compact"><form id="wishlist-add-form" class="inline-form"><label>Product URL<input name="url" type="url" required placeholder="https://shop.example/product"></label><button class="button primary">Track product</button></form></article>
+        <div class="wishlist-layout"><article class="panel table-panel"><div class="panel-title"><h3>Tracked products</h3><span class="scope-pill">user</span></div><div id="wishlist-list" class="empty">Enter a user ID to load products.</div></article><article class="panel detail-panel" id="wishlist-detail"><div class="empty">Select a product to inspect history and preferences.</div></article></div>
+      </section>
+
+      <section class="page" id="page-flights" data-title="Flights">
+        <div class="page-heading"><div><p class="eyebrow">USER-SCOPED</p><h2>Flight tracking</h2><p>New trackers wait for the bot’s normal scheduled check.</p></div><button class="button secondary" data-action="load-flights">Refresh</button></div>
+        <div class="two-column">
+          <article class="panel"><div class="panel-title"><h3>SerpApi credentials</h3><span id="credential-status" class="scope-pill">unknown</span></div><form id="credential-form" class="form-stack"><label>API key<input name="api_key" type="password" autocomplete="off" required maxlength="200" placeholder="Never returned or saved in this browser"></label><div class="button-row"><button class="button primary">Validate & save</button><button type="button" class="button danger ghost" data-action="delete-credentials">Remove</button></div></form></article>
+          <article class="panel"><h3>Add exact-date tracker</h3><form id="flight-form" class="form-grid"><label>Origin<input name="origin" required minlength="3" maxlength="3" placeholder="OTP"></label><label>Destination<input name="destination" required minlength="3" maxlength="3" placeholder="BKK"></label><label>Outbound<input name="start_date" type="date" required></label><label>Return<input name="end_date" type="date" required></label><label>Adults<input name="adults" type="number" min="1" max="9" value="1" required></label><label>Currency<select name="currency"><option>EUR</option><option>RON</option><option>USD</option><option>GBP</option><option>DKK</option></select></label><button class="button primary span-all">Add tracker</button></form></article>
+        </div>
+        <div class="wishlist-layout"><article class="panel table-panel"><div class="panel-title"><h3>Trackers</h3><span class="scope-pill">user</span></div><div id="flights-list" class="empty">Enter a user ID to load trackers.</div></article><article class="panel detail-panel" id="flight-detail"><div class="empty">Select a tracker to inspect its saved prices.</div></article></div>
+      </section>
+
+      <section class="page" id="page-settings" data-title="Bot settings">
+        <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>Bot settings</h2><p>Model selection is global; inactivity and feedback use the selected server.</p></div><button class="button secondary" data-action="load-settings">Refresh</button></div>
+        <div class="three-column">
+          <article class="panel"><div class="panel-title"><h3>Mention model</h3><span class="scope-pill global">global</span></div><form id="model-form" class="form-stack"><label>Allowed model<select name="model" id="model-select"><option>Loading…</option></select></label><button class="button primary">Save model</button></form></article>
+          <article class="panel"><div class="panel-title"><h3>Inactivity nudges</h3><span class="scope-pill">server</span></div><div id="inactivity-state" class="empty">Enter a server ID.</div><div class="button-row"><button class="button primary" data-action="set-inactivity" data-enabled="true">Enable</button><button class="button secondary" data-action="set-inactivity" data-enabled="false">Disable</button></div></article>
+          <article class="panel"><div class="panel-title"><h3>Setting by key</h3><span class="scope-pill global">global</span></div><form id="setting-form" class="form-stack"><label>Key<input name="key" required pattern="[A-Za-z0-9_.-]+"></label><label>Value<textarea name="value" required></textarea></label><div class="button-row"><button type="button" class="button secondary" data-action="read-setting">Read</button><button class="button primary">Save</button></div></form></article>
+        </div>
+        <article class="panel table-panel"><div class="panel-title"><div><h3>LLM feedback</h3><p>At least 10 ratings in a group are needed before comparison.</p></div><span class="scope-pill">server</span></div><div id="settings-feedback" class="empty">Enter a server ID to load feedback.</div></article>
+      </section>
+    </div>
+  </main>
+  <div class="scrim" id="scrim"></div>
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+</body>
+</html>
