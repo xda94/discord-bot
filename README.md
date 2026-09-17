@@ -212,19 +212,21 @@ network, use:
 ```env
 HOST=0.0.0.0
 PORT=9999
-# Leave API_TOKEN unset for the no-login LAN dashboard.
+API_TOKEN=choose-a-long-random-secret
 ```
 
 Restart `discord-api` after changing those values, then open the mini PC's LAN
-IP from a phone or computer on the same network. The dashboard manages
+IP from a phone or computer on the same network and sign in with the same
+`API_TOKEN`. The token is stored only in that browser tab's session storage,
+sent as an `Authorization: Bearer` header, and removed on logout or an
+unauthorized response. The dashboard manages
 keywords, reminders, jokes, wishlist items, flight trackers, and bot settings.
 It also shows saved keyword/LLM/price analytics and live mini PC CPU, memory,
 disk, and uptime metrics. Server and user IDs select records; they are not an
 authentication mechanism.
 
-If `API_TOKEN` is configured, REST data routes remain protected. The current
-dashboard is intended for the agreed trusted-LAN, no-token deployment and does
-not add an account or token-entry screen.
+The HTML and static assets remain loadable so the login screen can open. All
+dashboard data and mutations use the existing bearer-protected REST routes.
 
 ---
 
