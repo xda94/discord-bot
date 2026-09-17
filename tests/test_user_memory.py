@@ -7,7 +7,6 @@ from discord import app_commands
 
 import db
 from features.user_memory import (
-    MEMORY_MAX_CHARS,
     OBSERVATION_MAX_CHARS,
     OBSERVATION_MAX_MESSAGES,
     UserMemoryFeature,
@@ -63,7 +62,7 @@ def test_buffer_keeps_last_twenty_messages_with_bounded_text(tmp_db):
     asyncio.run(client.close())
 
 
-def test_commit_acknowledges_only_snapshot_and_persists_capped_profile(tmp_db):
+def test_commit_acknowledges_only_snapshot_and_persists_entry(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()
     message = _message(content="first")
@@ -73,28 +72,60 @@ def test_commit_acknowledges_only_snapshot_and_persists_capped_profile(tmp_db):
 
     message.clean_content = "arrived while summarizing"
     asyncio.run(feature.handle_message(message))
-    assert feature.commit_batch(batch, "word " * 1000)
+    assert feature.commit_delta(
+        batch,
+        (
+            {
+                "kind": "fact",
+                "content": "Likes mechanical keyboards",
+                "source_text": "first",
+            },
+        ),
+        (),
+    )
 
-    saved = db.get_llm_user_memory(100, 7)
-    assert saved is not None
-    assert len(saved) <= MEMORY_MAX_CHARS
+    saved = db.get_llm_memory_entries(100, 7)
+    assert [row[2] for row in saved] == ["Likes mechanical keyboards"]
     remaining = feature.context_for(message).batch
     assert remaining is not None
     assert remaining.observations == ("arrived while summarizing",)
     asyncio.run(client.close())
 
 
-def test_commit_can_remove_last_saved_fact(tmp_db):
+def test_commit_corrects_only_targeted_saved_fact(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
-    db.set_llm_user_memory(100, 7, "- Old fact")
+    db.apply_llm_memory_delta(
+        100,
+        7,
+        (
+            {"kind": "fact", "content": "Prefers Python", "source_text": "old"},
+            {"kind": "fact", "content": "Owns a cat", "source_text": "cat"},
+        ),
+        (),
+        (),
+    )
     client, _, feature = _build_feature()
-    message = _message(content="That is no longer true")
+    message = _message(content="I prefer Rust now")
     asyncio.run(feature.handle_message(message))
     batch = feature.context_for(message).batch
-
     assert batch is not None
-    assert feature.commit_batch(batch, "") is True
-    assert db.get_llm_user_memory(100, 7) is None
+    rows = db.get_llm_memory_entries(100, 7)
+    target_id = next(row[0] for row in rows if row[2] == "Prefers Python")
+    assert feature.commit_delta(
+        batch,
+        (),
+        (
+            {
+                "id": target_id,
+                "kind": "fact",
+                "content": "Prefers Rust",
+                "source_text": "I prefer Rust now",
+            },
+        ),
+    )
+    updated = db.get_llm_memory_entries(100, 7)
+    assert {row[2] for row in updated} == {"Prefers Rust", "Owns a cat"}
+    assert any(row[0] == target_id and row[2] == "Prefers Rust" for row in updated)
     assert feature.context_for(message).batch is None
     asyncio.run(client.close())
 
@@ -109,8 +140,12 @@ def test_invalidation_prevents_in_flight_profile_recreation(tmp_db):
 
     feature._purge_buffers(100)
 
-    assert feature.commit_batch(batch, "# Preferences\n- Something") is False
-    assert db.get_llm_user_memory(100, 7) is None
+    assert feature.commit_delta(
+        batch,
+        ({"kind": "fact", "content": "Something", "source_text": "remember"},),
+        (),
+    ) is False
+    assert db.get_llm_memory_entries(100, 7) == []
     asyncio.run(client.close())
 
 

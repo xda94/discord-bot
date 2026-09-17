@@ -20,7 +20,7 @@ logger = setup_logger("discord_bot", "bot.log")
 
 import db
 from features.azi_se_spala import AziSeSpalaFeature
-from features.llm_mention import LLMMentionFeature
+from features.llm_mention import ContextReactionFeature, LLMMentionFeature
 from features.help_feature import HelpFeature
 from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
@@ -100,13 +100,30 @@ llm_mention = LLMMentionFeature(
     feedback=llm_feedback,
     memory=user_memory,
 )
+context_reactions = ContextReactionFeature(llm_mention)
 help_feature = HelpFeature(client, tree)
 
-# Features that observe every message. Mentions are checked before keywords/teases.
-MESSAGE_HANDLERS = (inactivity, user_memory, llm_mention, keywords, teases)
+# Mentions stop dispatch first. Keywords keep priority over occasional reactions;
+# a sampled reaction then suppresses the random tease for that message.
+MESSAGE_HANDLERS = (
+    inactivity,
+    user_memory,
+    llm_mention,
+    keywords,
+    context_reactions,
+    teases,
+)
 
 # Features that own background tasks needing to be kicked off in on_ready.
-BACKGROUND_FEATURES = (sponsors, inactivity, reminders, jokes, scraping, flights)
+BACKGROUND_FEATURES = (
+    sponsors,
+    inactivity,
+    reminders,
+    jokes,
+    scraping,
+    flights,
+    llm_mention,
+)
 
 
 @client.event

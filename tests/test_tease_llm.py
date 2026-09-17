@@ -5,15 +5,13 @@ import pytest
 from llm_client import LlamaCppError
 from tease_llm import (
     build_inactivity_prompt,
-    build_memory_update_prompt,
     build_mention_prompt,
     build_price_change_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
     generate_inactivity_message,
-    generate_memory_update,
-    generate_mention_reply,
+    generate_mention_result,
     generate_price_change_message,
     generate_summon_reply,
     normalize_tease_response,
@@ -160,177 +158,23 @@ def test_vision_mention_prompt_grounds_image_and_does_not_auto_solve():
     assert "only when <current_message> explicitly asks" in prompt
 
 
-def test_generate_mention_reply_passes_image_to_llm(monkeypatch):
-    query = MagicMock(return_value="A blue square.")
+def test_generate_mention_result_passes_image_to_llm(monkeypatch):
+    query = MagicMock(
+        return_value='{"text":"A blue square.","reaction":null}'
+    )
     monkeypatch.setattr("tease_llm.query_llm", query)
 
-    result = generate_mention_reply(
+    result = generate_mention_result(
         "Alice",
         "Describe it",
         image_bytes=b"png-data",
         image_mime="image/png",
     )
 
-    assert result == "A blue square."
+    assert result.text == "A blue square."
     assert query.call_args.kwargs["image_bytes"] == b"png-data"
     assert query.call_args.kwargs["image_mime"] == "image/png"
     assert "using the attached image" in query.call_args.kwargs["prompt"]
-
-
-def test_memory_update_prompt_excludes_sensitive_and_untrusted_data():
-    prompt = build_memory_update_prompt(
-        "# Preferences\n- Likes Python",
-        ["My new project is a Discord bot"],
-        max_chars=4000,
-    )
-    assert 'Return only JSON: {"add": [string], "remove": [integer]}' in prompt
-    assert "credentials" in prompt
-    assert "third parties" in prompt
-    assert "untrusted data" in prompt
-    assert "Discord bot" in prompt
-    assert '"id": 1' in prompt
-    assert "Preferences: Likes Python" in prompt
-
-
-def test_generate_memory_update_adds_facts_without_replacing_existing(monkeypatch):
-    query = MagicMock(return_value='{"add": ["Owns a cat"], "remove": []}')
-    monkeypatch.setattr("tease_llm.query_llm", query)
-    result = generate_memory_update(
-        "# Preferences\n- Likes Python",
-        ["I own a cat"],
-        model="discord-bot",
-        max_chars=4000,
-    )
-    assert result.successful is True
-    assert result.profile == "- Owns a cat\n- Preferences: Likes Python"
-    response_schema = query.call_args.kwargs["response_schema"]
-    assert response_schema["required"] == ["add", "remove"]
-    assert response_schema["additionalProperties"] is False
-
-
-def test_generate_memory_update_accumulates_sequential_facts(monkeypatch):
-    replies = iter(
-        [
-            '{"add": ["Likes Python"], "remove": []}',
-            '{"add": ["Owns a cat"], "remove": []}',
-        ]
-    )
-    monkeypatch.setattr("tease_llm.query_llm", lambda *args, **kwargs: next(replies))
-
-    first = generate_memory_update(
-        "", ["I like Python"], model="discord-bot", max_chars=4000
-    )
-    second = generate_memory_update(
-        first.profile or "",
-        ["I own a cat"],
-        model="discord-bot",
-        max_chars=4000,
-    )
-
-    assert first.profile == "- Likes Python"
-    assert second.profile == "- Owns a cat\n- Likes Python"
-
-
-def test_generate_memory_update_replaces_only_explicit_conflict(monkeypatch):
-    monkeypatch.setattr(
-        "tease_llm.query_llm",
-        lambda *args, **kwargs: '{"add": ["Prefers Rust"], "remove": [1]}',
-    )
-
-    result = generate_memory_update(
-        "- Prefers Python\n- Owns a cat",
-        ["I prefer Rust now"],
-        model="discord-bot",
-        max_chars=4000,
-    )
-
-    assert result.successful is True
-    assert result.profile == "- Prefers Rust\n- Owns a cat"
-
-
-def test_generate_memory_update_deduplicates_exact_fact(monkeypatch):
-    monkeypatch.setattr(
-        "tease_llm.query_llm",
-        lambda *args, **kwargs: '{"add": ["  likes   python "], "remove": []}',
-    )
-
-    result = generate_memory_update(
-        "- Likes Python", ["I like Python"], model="discord-bot", max_chars=4000
-    )
-
-    assert result.successful is True
-    assert result.profile is None
-
-
-def test_generate_memory_update_evicts_oldest_whole_facts(monkeypatch):
-    monkeypatch.setattr(
-        "tease_llm.query_llm",
-        lambda *args, **kwargs: '{"add": ["New fact"], "remove": []}',
-    )
-
-    result = generate_memory_update(
-        "- Middle fact\n- Oldest fact",
-        ["new"],
-        model="discord-bot",
-        max_chars=24,
-    )
-
-    assert result.profile == "- New fact\n- Middle fact"
-    assert "Oldest" not in result.profile
-
-
-def test_generate_memory_update_logs_failure_reason(monkeypatch, caplog):
-    monkeypatch.setattr("tease_llm.query_llm", lambda *args, **kwargs: "not json")
-
-    result = generate_memory_update(
-        "", ["I like Python"], model="discord-bot", max_chars=4000
-    )
-
-    assert result.successful is False
-    assert "JSONDecodeError" in caplog.text
-    assert "Expecting value" in caplog.text
-
-
-def test_generate_memory_update_distinguishes_no_change_from_failure(monkeypatch):
-    monkeypatch.setattr(
-        "tease_llm.query_llm", lambda *args, **kwargs: '{"add": [], "remove": []}'
-    )
-    unchanged = generate_memory_update(
-        "- Likes Python", ["hello"], model="discord-bot", max_chars=4000
-    )
-    assert unchanged.successful is True
-    assert unchanged.profile is None
-
-    monkeypatch.setattr("tease_llm.query_llm", lambda *args, **kwargs: "not json")
-    failed = generate_memory_update(
-        "- Likes Python", ["hello"], model="discord-bot", max_chars=4000
-    )
-    assert failed.successful is False
-
-
-def test_generate_memory_update_rejects_unknown_removal_id(monkeypatch, caplog):
-    monkeypatch.setattr(
-        "tease_llm.query_llm",
-        lambda *args, **kwargs: '{"add": ["New fact"], "remove": [2]}',
-    )
-
-    result = generate_memory_update(
-        "- Only fact", ["new"], model="discord-bot", max_chars=4000
-    )
-
-    assert result.successful is False
-    assert result.profile is None
-    assert "unknown removal ID 2" in caplog.text
-
-
-def test_generate_mention_reply(monkeypatch):
-    monkeypatch.setattr(
-        "tease_llm.query_llm",
-        lambda prompt, **kwargs: "Python is a programming language.",
-    )
-    assert generate_mention_reply("Alice", "what is python?") == (
-        "Python is a programming language."
-    )
 
 
 def test_generate_summon_reply(monkeypatch):

@@ -77,7 +77,9 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
-| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent channel messages considered for mentions. Persistent memory plus recent history share a 6,000-character reference budget, with memory taking priority. Default: `0`. |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent channel messages considered for mentions. Saved memory and conversation history share a 6,000-character budget (4,000 for vision) with half initially reserved for each. Default: `0`. |
+| `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
+| `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
 | `TEASE_LLAMA_CPP_MODEL` | No (bot) | Model alias for tease rewrites. Defaults to `LLAMA_CPP_DEFAULT_MODEL`. |
 | `TEASE_LLAMA_CPP_TIMEOUT` | No (bot) | Seconds to wait for a tease rewrite. Default: `45`. |
@@ -326,10 +328,10 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/llm-set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
 | `/llm-memory <activate\|deactivate\|status>` | Manage persistent user memory in the current channel. Requires **Manage Server** permission; memory defaults to disabled. |
-| `/llm-memory-purge <confirmation>` | Delete every saved user profile in this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
-| `/memory-show` | Privately show your saved profile for the current server or DM. |
-| `/memory-forget` | Erase your profile and pending observations here without opting out. |
-| `/memory-opt-out` | Stop memory and erase your profile and pending observations in the current server or DM. |
+| `/llm-memory-purge <confirmation>` | Delete all saved memory for users in this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
+| `/memory-show` | Privately show saved facts, topic notes, and the recent conversation window for the current server or DM. |
+| `/memory-forget` | Erase facts, topic notes, transcript, and pending observations here without opting out. |
+| `/memory-opt-out` | Stop memory and erase all of your memory data in the current server or DM. |
 | `/memory-opt-in` | Re-enable memory for you; required before memory can operate in DMs. |
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
@@ -339,7 +341,7 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 Vision requests accept one directly attached PNG or JPEG up to 8 MiB and 25
 megapixels. URLs, replied-to images, GIF, WebP, and multi-image reasoning are not
 supported. If several images are attached, the first is processed and the bot
-acknowledges the one-image limit. Images use the same global FIFO queue and
+acknowledges the one-image limit. Images use the same global priority queue and
 one-pending-request-per-user guard as text mentions; when work is already active
 or queued, the bot immediately reports how many requests are ahead. Attachment
 bytes are downloaded only when their job starts, are never logged or persisted,
@@ -347,29 +349,30 @@ and are never included in memory consolidation. Vision jobs reserve more model
 context for image tokens by limiting memory plus recent history to 4,000
 characters instead of the normal 6,000.
 
-The bot does not attach feedback reactions to its own replies. The user who
-made the request may manually add 👍 or 👎 to rate the answer; reactions from
-the bot or any other user are ignored. The database retains only reply
+The bot may react to the original human message with a contextual emoji. It
+does not seed feedback reactions on its own reply. The requester may manually
+add 👍 or 👎 to that reply to rate the answer; reactions from the bot or any
+other user are ignored. The database retains only reply
 metadata, server, model alias, prompt version, final rating, and timestamps—not
 prompts or response text. `/llm-feedback-summary` marks a model/prompt
 combination ready to compare only after ten ratings; it never changes a model
 or prompt automatically.
 
-Persistent memory is separate from recent channel history. When a server
-manager activates it, the bot posts a public notice and begins keeping a small
-RAM-only buffer of text written in that channel. After a member next receives a
-successful non-empty mention reply, the buffer is consolidated into a compact
-profile of at most 4,000 characters. The model proposes facts to add and IDs of
-facts contradicted by newer statements; the application performs the merge so
-unrelated existing facts are not lost when memory changes. Newest facts appear
-first, exact duplicates are ignored, and the oldest complete facts are evicted
-only when the profile reaches its limit. Only the merged profile is stored in SQLite.
-Profiles are scoped per server, used only for the same requester in enabled
-channels, and never supplied to another user's prompt. DM memory has its own
-profile and requires `/memory-opt-in`. Source messages are not persisted and
-unsummarized observations disappear on restart. The 4,000-character profile
-and 6,000-character combined reference budgets assume a 4,096-token llama.cpp
-context, as shown in the deployment example above.
+Persistent memory stores durable facts and short topic notes as individual
+SQLite rows with stable IDs. New messages add rows; only an explicit newer
+statement can correct a cited row. Exact duplicates are ignored, unrelated
+rows are retained, and storage is not cut down to the prompt size. Existing
+compact profiles migrate automatically on startup.
+
+The bot also keeps a per-user recent conversation window of at most 40 messages
+and 16,000 characters for seven days. User messages feed fact extraction;
+assistant messages provide conversation continuity but cannot become personal
+facts. Pending extraction batches survive restarts and run after a successful
+mention or, for ordinary chat, after ten messages or five minutes. Direct
+replies have priority in the shared model queue. At prompt time, relevant facts
+are ranked by word overlap and recency, then share the 6,000-character reference
+budget with recent conversation. Memory remains server-scoped (with a separate
+opt-in DM scope) and is never supplied to another user.
 
 ---
 
@@ -469,7 +472,7 @@ python -m pytest
 
 **CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
 
-Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), registered flight login/add/show/delete command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker, additive user-memory consolidation, and mention vision validation/queueing/multimodal payloads.
+Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, memory migration/transcript bounds, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), registered flight login/add/show/delete command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker, row-level user-memory updates, contextual reactions, and mention vision validation/queueing/multimodal payloads.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
@@ -508,8 +511,8 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
-| `llm_mention.py` | `LLMMentionFeature` | Queued @bot mention prompts through llama.cpp |
+| `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
-| `user_memory.py` | `UserMemoryFeature` | Channel-controlled RAM observations and persistent per-user profiles |
+| `user_memory.py` | `UserMemoryFeature` | Channel-controlled facts, topic notes, transcripts, and pending observations |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |
