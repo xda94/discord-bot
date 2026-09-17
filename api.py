@@ -1,14 +1,18 @@
 import hmac
+import json
 import logging
 import os
+import platform
 import sys
 import threading
 import time
 from datetime import date, datetime
 from functools import wraps
+from pathlib import Path
 
+import psutil
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 
 from db import (
     add_joke,
@@ -33,6 +37,7 @@ from db import (
     get_guild_joke_config,
     get_joke_by_id,
     get_llm_feedback_summary,
+    get_price_history,
     get_scraped_item,
     get_top_keywords,
     get_top_keywords_by_user,
@@ -167,6 +172,105 @@ def _is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+_DISCORD_ID_FIELDS = {
+    "guild_id",
+    "user_id",
+    "channel_id",
+    "requester_user_id",
+    "message_id",
+    "scope_id",
+}
+
+
+def _discord_id(value, field_name):
+    """Accept Discord snowflakes as JSON integers or decimal strings.
+
+    Browsers cannot precisely represent every Discord ID as a JavaScript
+    number, so dashboard requests send strings. Existing API clients may keep
+    sending integers.
+    """
+    parsed = None
+    if _is_int(value) and value >= 0:
+        parsed = value
+    elif isinstance(value, str) and value.isascii() and value.isdigit():
+        parsed = int(value)
+    if parsed is not None and parsed <= 9_223_372_036_854_775_807:
+        return parsed
+    raise ValueError(f"{field_name} must be a non-negative integer or decimal string")
+
+
+def _stringify_discord_ids(value, key=None):
+    if isinstance(value, dict):
+        return {name: _stringify_discord_ids(item, name) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_stringify_discord_ids(item, key) for item in value]
+    if key in _DISCORD_ID_FIELDS and value is not None:
+        return str(value)
+    return value
+
+
+@app.after_request
+def _format_discord_ids(response):
+    """Opt-in exact Discord ID serialization for browser clients."""
+    if (
+        request.headers.get("X-Discord-ID-Format", "").lower() == "string"
+        and response.is_json
+    ):
+        payload = response.get_json(silent=True)
+        if payload is not None:
+            response.set_data(json.dumps(_stringify_discord_ids(payload), separators=(",", ":")))
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Content-Length"] = str(len(response.get_data()))
+    return response
+
+
+@app.route("/")
+def dashboard():
+    return render_template("dashboard.html")
+
+
+def _optional_call(func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except (AttributeError, FileNotFoundError, NotImplementedError, OSError, RuntimeError, ValueError):
+        return None
+
+
+def _collect_system_stats():
+    """Return JSON-friendly PM2 host metrics, tolerating missing sensors/APIs."""
+    cpu_percent = _optional_call(psutil.cpu_percent, interval=0.1)
+    memory = _optional_call(psutil.virtual_memory)
+    disk_path = Path.cwd().anchor or os.path.abspath(os.sep)
+    disk = _optional_call(psutil.disk_usage, disk_path)
+    boot_time = _optional_call(psutil.boot_time)
+    now = time.time()
+    timezone = datetime.now().astimezone().tzinfo
+    return {
+        "cpu_percent": cpu_percent,
+        "memory": None if memory is None else {
+            "total": memory.total,
+            "used": memory.used,
+            "percent": memory.percent,
+        },
+        "disk": None if disk is None else {
+            "path": disk_path,
+            "total": disk.total,
+            "used": disk.used,
+            "percent": disk.percent,
+        },
+        "uptime_seconds": None if boot_time is None else max(0, now - boot_time),
+        "timezone": str(timezone) if timezone is not None else None,
+        "platform": platform.system() or None,
+        "collected_at": now,
+    }
+
+
+@app.route("/system/stats", methods=["GET"])
+@require_token
+def api_system_stats():
+    return jsonify(_collect_system_stats())
+
+
 def _serialize_scraped_item(item):
     if item is None:
         return None
@@ -194,8 +298,7 @@ def _validate_flight_tracker_payload(data):
     required = ("user_id", "origin", "destination", "start_date", "end_date")
     if not data or any(name not in data for name in required):
         raise ValueError("Missing user_id, origin, destination, start_date, or end_date")
-    if not _is_int(data["user_id"]):
-        raise ValueError("user_id must be an integer")
+    user_id = _discord_id(data["user_id"], "user_id")
 
     origin = normalize_iata(data["origin"])
     destination = normalize_iata(data["destination"])
@@ -216,7 +319,7 @@ def _validate_flight_tracker_payload(data):
             f"currency must be one of: {', '.join(SUPPORTED_CURRENCIES)}"
         )
     return {
-        "user_id": data["user_id"],
+        "user_id": user_id,
         "origin": origin,
         "destination": destination,
         "start_date": start.isoformat(),
@@ -238,9 +341,10 @@ def api_keywords_add():
         )
         return jsonify({"error": "Missing keyword, response, or guild_id"}), 400
 
-    guild_id = data["guild_id"]
-    if not isinstance(guild_id, int):
-        return jsonify({"error": "guild_id must be an integer"}), 400
+    try:
+        guild_id = _discord_id(data["guild_id"], "guild_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     add_response(data["keyword"], data["response"], guild_id)
     logger.info(
@@ -257,9 +361,10 @@ def api_keywords_delete():
     if not data or "keyword" not in data or "guild_id" not in data:
         return jsonify({"error": "Missing keyword or guild_id"}), 400
 
-    guild_id = data["guild_id"]
-    if not isinstance(guild_id, int):
-        return jsonify({"error": "guild_id must be an integer"}), 400
+    try:
+        guild_id = _discord_id(data["guild_id"], "guild_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     keyword = data["keyword"]
     response = data.get("response")
@@ -323,13 +428,18 @@ def api_add_reminder():
         logger.warning("Invalid payload for /reminders/add")
         return jsonify({"error": "Missing required fields"}), 400
 
+    try:
+        user_id = _discord_id(data["user_id"], "user_id")
+        channel_id = _discord_id(data["channel_id"], "channel_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     add_reminder(
-        data["user_id"], 
-        data["channel_id"], 
-        data["remind_at"], 
+        user_id,
+        channel_id,
+        data["remind_at"],
         data["message"]
     )
-    logger.info(f"Reminder set via API for User ID {data['user_id']}")
+    logger.info(f"Reminder set via API for User ID {user_id}")
     return jsonify({"status": "reminder_set"})
 
 @app.route("/reminders/delete/<int:reminder_id>", methods=["DELETE"])
@@ -339,26 +449,26 @@ def api_delete_reminder(reminder_id):
     logger.info(f"Reminder {reminder_id} deleted via API")
     return jsonify({"status": "deleted", "id": reminder_id})
 
-@app.route("/reminders/all", methods=["GET"]) 
+@app.route("/reminders/all", methods=["GET"])
 @require_token
-def api_get_all_reminders(): 
-    try: 
-        reminders = get_all_reminders() 
+def api_get_all_reminders():
+    try:
+        reminders = get_all_reminders()
         # Mapping the database rows to a clean JSON format
-        result = [ 
+        result = [
             {
-                "id": r[0], 
-                "user_id": r[1], 
-                "channel_id": r[2], 
-                "message": r[3], 
+                "id": r[0],
+                "user_id": r[1],
+                "channel_id": r[2],
+                "message": r[3],
                 "remind_at": r[4]
-            } 
-            for r in reminders 
-        ] 
+            }
+            for r in reminders
+        ]
         logger.info(f"All reminders fetched. Count: {len(result)}")
-        return jsonify(result) 
-    except Exception: 
-        logger.exception("Error in /reminders/all") 
+        return jsonify(result)
+    except Exception:
+        logger.exception("Error in /reminders/all")
         return jsonify({"error": "Internal server error"}), 500
 
 # --- Joke Routes ---
@@ -490,11 +600,11 @@ def api_put_guild_joke_config(guild_id):
         )
         return jsonify({"error": "Missing channel_id or send_time"}), 400
 
-    channel_id = data["channel_id"]
+    try:
+        channel_id = _discord_id(data["channel_id"], "channel_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     send_time = data["send_time"]
-
-    if not isinstance(channel_id, int):
-        return jsonify({"error": "channel_id must be an integer"}), 400
 
     try:
         datetime.strptime(send_time, "%H:%M")
@@ -632,7 +742,10 @@ def api_add_scrape():
         logger.warning(f"BadRequest: Missing fields in /wishlist/add. IP: {request.remote_addr}")
         return jsonify({"error": "Missing user_id or url"}), 400
 
-    user_id = data["user_id"]
+    try:
+        user_id = _discord_id(data["user_id"], "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     url = data["url"]
 
     if not _is_valid_http_url(url):
@@ -692,9 +805,13 @@ def api_remove_scrape():
     if not data or "user_id" not in data or "url" not in data:
         return jsonify({"error": "Missing user_id or url"}), 400
 
-    success = delete_scraped_item(data["user_id"], data["url"])
+    try:
+        user_id = _discord_id(data["user_id"], "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    success = delete_scraped_item(user_id, data["url"])
     if success:
-        logger.info(f"Scrape item removed via API for User {data['user_id']}")
+        logger.info(f"Scrape item removed via API for User {user_id}")
         return jsonify({"status": "removed"})
     else:
         return jsonify({"error": "Item not found"}), 404
@@ -750,15 +867,38 @@ def api_get_wishlist_preferences():
     return jsonify(_serialize_scraped_item(item))
 
 
+@app.route("/wishlist/history", methods=["GET"])
+@require_token
+def api_get_wishlist_history():
+    user_id = request.args.get("user_id", type=int)
+    url = request.args.get("url", type=str)
+    if user_id is None or not url:
+        return jsonify({"error": "Missing user_id or url query parameter"}), 400
+    item = get_scraped_item(user_id, url)
+    if item is None:
+        return jsonify({"error": "Item not found"}), 404
+    history = get_price_history(user_id, url)
+    return jsonify(
+        {
+            "item": _serialize_scraped_item(item),
+            "history": [
+                {"price": price, "timestamp": timestamp}
+                for price, timestamp, _title in history
+            ],
+        }
+    )
+
+
 @app.route("/wishlist/preferences", methods=["PUT"])
 @require_token
 def api_set_wishlist_preferences():
     data = request.get_json()
-    if not isinstance(data, dict) or not _is_int(data.get("user_id")) or not isinstance(
-        data.get("url"), str
-    ):
-        return jsonify({"error": "user_id (integer) and url (string) are required"}), 400
-    user_id = data["user_id"]
+    if not isinstance(data, dict) or not isinstance(data.get("url"), str):
+        return jsonify({"error": "user_id and url are required"}), 400
+    try:
+        user_id = _discord_id(data.get("user_id"), "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     url = data["url"]
     if get_scraped_item(user_id, url) is None:
         return jsonify({"error": "Item not found"}), 404
@@ -805,11 +945,13 @@ def api_set_wishlist_preferences():
 def api_refresh_wishlist_item():
     """Refresh data only; this route never sends a Discord DM or LLM request."""
     data = request.get_json()
-    if not isinstance(data, dict) or not _is_int(data.get("user_id")) or not isinstance(
-        data.get("url"), str
-    ):
-        return jsonify({"error": "user_id (integer) and url (string) are required"}), 400
-    item = get_scraped_item(data["user_id"], data["url"])
+    if not isinstance(data, dict) or not isinstance(data.get("url"), str):
+        return jsonify({"error": "user_id and url are required"}), 400
+    try:
+        user_id = _discord_id(data.get("user_id"), "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    item = get_scraped_item(user_id, data["url"])
     if item is None:
         return jsonify({"error": "Item not found"}), 404
 
@@ -838,7 +980,7 @@ def api_refresh_wishlist_item():
     update_scraped_item_status(
         item[0], result.price, result.in_stock, result.title, result.currency
     )
-    refreshed = _serialize_scraped_item(get_scraped_item(data["user_id"], data["url"]))
+    refreshed = _serialize_scraped_item(get_scraped_item(user_id, data["url"]))
     refreshed["source"] = _domain(item[2])
     return jsonify(refreshed)
 
@@ -865,8 +1007,12 @@ def api_get_flight_credentials_status():
 @require_token
 def api_set_flight_credentials():
     data = request.get_json()
-    if not isinstance(data, dict) or not _is_int(data.get("user_id")):
-        return jsonify({"error": "user_id must be an integer"}), 400
+    if not isinstance(data, dict):
+        return jsonify({"error": "user_id is required"}), 400
+    try:
+        user_id = _discord_id(data.get("user_id"), "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     api_key = data.get("api_key")
     if not isinstance(api_key, str) or not 1 <= len(api_key.strip()) <= 200:
         return jsonify({"error": "api_key must be a non-empty string up to 200 characters"}), 400
@@ -874,10 +1020,10 @@ def api_set_flight_credentials():
         SerpApiFlightProvider(api_key=api_key.strip()).validate_credentials()
     except FlightProviderError as exc:
         return jsonify({"error": "Credential validation failed", "detail": str(exc)}), 400
-    if not set_flight_api_credentials(data["user_id"], api_key.strip()):
+    if not set_flight_api_credentials(user_id, api_key.strip()):
         return jsonify({"error": "Could not store credentials"}), 500
-    logger.info("Validated and stored flight credentials through API for user %s", data["user_id"])
-    return jsonify({"status": "stored", "user_id": data["user_id"]}), 201
+    logger.info("Validated and stored flight credentials through API for user %s", user_id)
+    return jsonify({"status": "stored", "user_id": user_id}), 201
 
 
 @app.route("/flights/credentials", methods=["DELETE"])
@@ -885,8 +1031,10 @@ def api_set_flight_credentials():
 def api_delete_flight_credentials():
     data = request.get_json()
     user_id = data.get("user_id") if isinstance(data, dict) else None
-    if not _is_int(user_id):
-        return jsonify({"error": "user_id must be an integer"}), 400
+    try:
+        user_id = _discord_id(user_id, "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not delete_flight_api_credentials(user_id):
         return jsonify({"error": "Credentials not found"}), 404
     return jsonify({"status": "deleted", "user_id": user_id})
@@ -944,8 +1092,10 @@ def api_get_flight_tracker(tracker_id):
 def api_delete_flight_tracker(tracker_id):
     data = request.get_json()
     user_id = data.get("user_id") if isinstance(data, dict) else None
-    if not _is_int(user_id):
-        return jsonify({"error": "user_id must be an integer"}), 400
+    try:
+        user_id = _discord_id(user_id, "user_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not delete_flight_tracker(user_id, tracker_id):
         return jsonify({"error": "Tracker not found"}), 404
     return jsonify({"status": "deleted", "id": tracker_id})
