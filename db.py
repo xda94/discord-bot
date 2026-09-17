@@ -243,9 +243,9 @@ def init_db():
                 "ON llm_response_feedback(guild_id, category, model, prompt_version)"
             )
             # Persistent conversational memory is opt-in at the channel level.
-            # Raw Discord messages are deliberately never stored in SQLite;
-            # only the compact profile produced from the process-local buffer
-            # is persisted here.
+            # New user messages are retained only as pending observations until
+            # the daily synthesis commits; durable storage contains the
+            # synthesized entries rather than a conversation transcript.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS llm_memory_channels (
                     guild_id INTEGER NOT NULL,
@@ -271,12 +271,14 @@ def init_db():
                     PRIMARY KEY (scope_id, user_id)
                 )
             """)
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_memory_entries (
+            memory_entries_sql = """
+                CREATE TABLE {table_name} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     scope_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
-                    kind TEXT NOT NULL CHECK (kind IN ('fact', 'topic')),
+                    kind TEXT NOT NULL CHECK (
+                        kind IN ('fact', 'impression', 'like', 'dislike', 'topic')
+                    ),
                     content TEXT NOT NULL,
                     normalized_content TEXT NOT NULL,
                     source_text TEXT NOT NULL,
@@ -284,7 +286,30 @@ def init_db():
                     updated_at REAL NOT NULL,
                     UNIQUE(scope_id, user_id, kind, normalized_content)
                 )
-            """)
+            """
+            c.execute(memory_entries_sql.format(table_name="IF NOT EXISTS llm_memory_entries"))
+            c.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'llm_memory_entries'"
+            )
+            memory_entries_definition = (c.fetchone() or ("",))[0] or ""
+            if "'impression'" not in memory_entries_definition:
+                # SQLite cannot widen a CHECK constraint in place. Rebuild the
+                # table once while preserving stable IDs and timestamps.
+                c.execute(
+                    "ALTER TABLE llm_memory_entries "
+                    "RENAME TO llm_memory_entries_legacy"
+                )
+                c.execute(memory_entries_sql.format(table_name="llm_memory_entries"))
+                c.execute(
+                    "INSERT INTO llm_memory_entries "
+                    "(id, scope_id, user_id, kind, content, normalized_content, "
+                    "source_text, created_at, updated_at) "
+                    "SELECT id, scope_id, user_id, kind, content, normalized_content, "
+                    "source_text, created_at, updated_at "
+                    "FROM llm_memory_entries_legacy"
+                )
+                c.execute("DROP TABLE llm_memory_entries_legacy")
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_llm_memory_entries_owner "
                 "ON llm_memory_entries(scope_id, user_id, updated_at DESC)"
@@ -300,6 +325,10 @@ def init_db():
                     created_at REAL NOT NULL
                 )
             """)
+            # The transcript store was retired in favor of daily synthesis.
+            # Clear legacy rows during migration so raw chat does not remain
+            # after upgrading.
+            c.execute("DELETE FROM llm_memory_transcript")
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_llm_memory_transcript_owner "
                 "ON llm_memory_transcript(scope_id, user_id, created_at DESC)"
@@ -966,76 +995,21 @@ def add_llm_memory_transcript(
     max_chars=16000,
     max_age_seconds=7 * 24 * 60 * 60,
 ):
-    """Append a transcript item and enforce age, count, and character bounds."""
-    content = str(content).strip()
-    if not content or role not in {"user", "assistant"}:
-        return False
-    now = time.time() if created_at is None else float(created_at)
-    try:
-        with _connect(commit=True) as c:
-            c.execute(
-                "INSERT INTO llm_memory_transcript "
-                "(scope_id, user_id, channel_id, role, content, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (scope_id, user_id, channel_id, role, content, now),
-            )
-            c.execute(
-                "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ? "
-                "AND created_at < ?",
-                (scope_id, user_id, now - max_age_seconds),
-            )
-            c.execute(
-                "SELECT id, LENGTH(content) FROM llm_memory_transcript "
-                "WHERE scope_id = ? AND user_id = ? "
-                "ORDER BY created_at DESC, id DESC",
-                (scope_id, user_id),
-            )
-            kept = []
-            chars = 0
-            for row_id, length in c.fetchall():
-                length = int(length or 0)
-                if len(kept) >= max_messages or chars + length > max_chars:
-                    continue
-                kept.append(row_id)
-                chars += length
-            if kept:
-                placeholders = ",".join("?" for _ in kept)
-                c.execute(
-                    "DELETE FROM llm_memory_transcript WHERE scope_id = ? "
-                    "AND user_id = ? AND id NOT IN (" + placeholders + ")",
-                    (scope_id, user_id, *kept),
-                )
-            else:
-                c.execute(
-                    "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ?",
-                    (scope_id, user_id),
-                )
-        return True
-    except Exception:
-        logger.exception(
-            "Failed to append transcript for scope %s user %s", scope_id, user_id
-        )
-        return False
+    """Deprecated: raw conversation transcripts are no longer persisted."""
+    return False
 
 
 def get_llm_memory_transcript(
     scope_id, user_id, *, max_age_seconds=7 * 24 * 60 * 60, now=None
 ):
-    now = time.time() if now is None else float(now)
+    """Return no rows and erase any transcript left by an older process."""
     try:
         with _connect(commit=True) as c:
             c.execute(
-                "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ? "
-                "AND created_at < ?",
-                (scope_id, user_id, now - max_age_seconds),
-            )
-            c.execute(
-                "SELECT id, channel_id, role, content, created_at "
-                "FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ? "
-                "ORDER BY created_at, id",
+                "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ?",
                 (scope_id, user_id),
             )
-            return c.fetchall()
+            return []
     except Exception:
         logger.exception(
             "Failed to read transcript for scope %s user %s", scope_id, user_id
@@ -1133,7 +1107,7 @@ def delete_llm_memory_channel_observations(scope_id, channel_id):
 
 
 def apply_llm_memory_delta(scope_id, user_id, additions, corrections, observation_ids):
-    """Validate ownership and atomically apply a fact/topic delta and ack sources."""
+    """Atomically apply synthesized entries and delete their raw observations."""
     try:
         now = time.time()
         with _connect(commit=True) as c:

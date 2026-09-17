@@ -41,7 +41,6 @@ from db import (
     get_llm_feedback_summary,
     get_llm_memory_entries,
     get_llm_memory_preference,
-    get_llm_memory_transcript,
     get_llm_user_memory,
     get_enabled_llm_memory_channels,
     get_price_history,
@@ -730,7 +729,6 @@ def _memory_scope_from_query():
 
 def _serialize_memory_user(scope_id, user_id):
     entries = get_llm_memory_entries(scope_id, user_id)
-    transcript = get_llm_memory_transcript(scope_id, user_id)
     return {
         "scope_id": scope_id,
         "user_id": user_id,
@@ -746,16 +744,9 @@ def _serialize_memory_user(scope_id, user_id):
             }
             for entry_id, kind, content, _source, created_at, updated_at in entries
         ],
-        "transcript": [
-            {
-                "id": row_id,
-                "channel_id": channel_id,
-                "role": role,
-                "content": content,
-                "created_at": created_at,
-            }
-            for row_id, channel_id, role, content, created_at in transcript
-        ],
+        # Retained as an empty field for API compatibility. Raw chat is held
+        # only as pending synthesis input and is never exposed as a transcript.
+        "transcript": [],
     }
 
 

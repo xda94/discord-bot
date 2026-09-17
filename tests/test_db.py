@@ -13,10 +13,47 @@ Covers the surfaces most likely to silently regress on future refactors:
   - Exchange-rate round-trip with case-insensitive lookup.
 """
 
+import sqlite3
+
 import db
 
 GUILD_A = 111
 GUILD_B = 222
+
+
+def test_memory_entry_schema_migrates_to_synthesis_categories(tmp_path, monkeypatch):
+    database = tmp_path / "legacy-memory.db"
+    monkeypatch.setattr(db, "DB_FILE", str(database))
+    with sqlite3.connect(database) as connection:
+        connection.execute("""
+            CREATE TABLE llm_memory_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('fact', 'topic')),
+                content TEXT NOT NULL,
+                normalized_content TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                UNIQUE(scope_id, user_id, kind, normalized_content)
+            )
+        """)
+        connection.execute(
+            "INSERT INTO llm_memory_entries VALUES (7, 100, 9, 'fact', "
+            "'Owns a cat', 'owns a cat', 'legacy', 1, 1)"
+        )
+
+    db.init_db()
+
+    assert db.get_llm_memory_entries(100, 9)[0][:3] == (7, "fact", "Owns a cat")
+    assert db.apply_llm_memory_delta(
+        100,
+        9,
+        ({"kind": "impression", "content": "Seems methodical", "source_text": "source"},),
+        (),
+        (),
+    )
 
 
 # ---------------------------------------------------------------------------

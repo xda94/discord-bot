@@ -314,10 +314,6 @@ def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
     return chunks
 
 
-def requests_ahead(*, processing: bool, queue_size: int) -> int:
-    return queue_size + (1 if processing else 0)
-
-
 @dataclass
 class AskJob:
     user: discord.abc.User
@@ -397,6 +393,9 @@ class LLMMentionFeature:
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._queue_worker())
 
+    def _model_busy(self) -> bool:
+        return self._processing or self._queue.qsize() > 0
+
     async def _queue_worker(self) -> None:
         while True:
             queued = await self._queue.get()
@@ -424,10 +423,17 @@ class LLMMentionFeature:
                 else:
                     self._reaction_pending_channels.discard(job.channel_id)
 
-    async def _put_job(self, priority: int, job) -> None:
+    async def _put_job(self, priority: int, job) -> bool:
+        """Admit one job only when the model worker has no outstanding work."""
+        # This coroutine deliberately has no await before put_nowait(). Discord
+        # handlers share one event loop, so the check-and-admit operation is
+        # atomic and cannot grow a backlog between concurrent handlers.
+        if self._model_busy():
+            return False
         self._queue_sequence += 1
-        await self._queue.put((priority, self._queue_sequence, job))
+        self._queue.put_nowait((priority, self._queue_sequence, job))
         self._ensure_worker()
+        return True
 
     async def start_tasks(self) -> None:
         self._ensure_worker()
@@ -442,14 +448,21 @@ class LLMMentionFeature:
             if self.memory is None:
                 continue
             for batch in self.memory.eligible_batches():
-                await self._enqueue_memory(batch, get_selected_model())
+                admitted = await self._enqueue_memory(batch, get_selected_model())
+                if admitted or self._model_busy():
+                    # Run at most one background synthesis per scan. Remaining
+                    # eligible work is reconsidered after the next interval.
+                    break
 
-    async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> None:
+    async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> bool:
         key = (batch.scope_id, batch.user_id)
         if key in self._memory_pending:
-            return
+            return False
         self._memory_pending.add(key)
-        await self._put_job(1, MemoryJob(batch=batch, model=model))
+        admitted = await self._put_job(1, MemoryJob(batch=batch, model=model))
+        if not admitted:
+            self._memory_pending.discard(key)
+        return admitted
 
     async def _reply_mention(self, job: AskJob, text: str) -> str:
         if not text.strip() or job.reply_to is None:
@@ -584,7 +597,7 @@ class LLMMentionFeature:
             )
             return
 
-        sent_text = await self._reply_mention(job, result.text)
+        await self._reply_mention(job, result.text)
         if result.reaction and job.reply_to is not None:
             reaction_channel_id = getattr(
                 getattr(job.reply_to, "channel", None), "id", None
@@ -600,35 +613,34 @@ class LLMMentionFeature:
                 except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
                     logger.info("Could not add mention reaction: %s", exc)
 
-        if (
-            sent_text
-            and self.memory is not None
-            and hasattr(self.memory, "record_bot_reply")
-            and job.memory_batch is not None
-        ):
-            channel_id = getattr(job.channel, "id", job.memory_batch.request_channel_id)
-            self.memory.record_bot_reply(job.memory_batch, channel_id, sent_text)
-
-        if (
-            not job.summon_only
-            and self.memory is not None
-            and job.memory_batch is not None
-            and self.memory.can_process_batch(job.memory_batch)
-        ):
-            await self._enqueue_memory(job.memory_batch, job.model)
+        # Persistent memory is synthesized only by the daily scheduler. A
+        # mention reply must not trigger early extraction or persist raw chat.
 
     async def _process_memory_job(self, job: MemoryJob) -> None:
-        if self.memory is None or not self.memory.can_process_batch(job.batch):
+        if self.memory is None:
             return
-        entries = self.memory.entries_for_batch(job.batch)
+        chunks = (
+            self.memory.synthesis_chunks(job.batch)
+            if hasattr(self.memory, "synthesis_chunks")
+            else (job.batch,)
+        )
+        if not chunks:
+            return
+        # A large daily snapshot may contain several chunks. Process only one
+        # per scheduler pass so background work cannot pin the CPU continuously.
+        batch = chunks[0]
+        if not self.memory.can_process_batch(batch):
+            return
+        entries = self.memory.entries_for_batch(batch)
         result = await asyncio.to_thread(
             generate_memory_delta,
             entries,
-            list(job.batch.observations),
+            list(batch.observations),
             model=job.model,
         )
-        if result.successful and self.memory.can_process_batch(job.batch):
-            self.memory.commit_delta(job.batch, result.additions, result.corrections)
+        if not result.successful or not self.memory.can_process_batch(batch):
+            return
+        self.memory.commit_delta(batch, result.additions, result.corrections)
 
     async def _process_reaction_job(self, job: ReactionJob) -> None:
         content = getattr(job.message, "clean_content", "").strip()
@@ -672,7 +684,7 @@ class LLMMentionFeature:
             return False
         self._reaction_last_attempt[channel_id] = now
         self._reaction_pending_channels.add(channel_id)
-        await self._put_job(
+        admitted = await self._put_job(
             2,
             ReactionJob(
                 message=message,
@@ -680,6 +692,10 @@ class LLMMentionFeature:
                 channel_id=channel_id,
             ),
         )
+        if not admitted:
+            self._reaction_pending_channels.discard(channel_id)
+            self._reaction_last_attempt.pop(channel_id, None)
+            return False
         return True
 
     def _begin_job_checks(self, user_id: int) -> str | None:
@@ -688,11 +704,19 @@ class LLMMentionFeature:
         remaining = self._cooldown_remaining(user_id)
         if remaining > 0:
             return f"Please wait **{int(remaining) + 1}s** before trying again."
+        if self._model_busy():
+            return (
+                "The model is busy right now, so I didn't queue this request. "
+                "Please try again shortly."
+            )
         return None
 
-    async def _enqueue_job(self, job: AskJob) -> None:
+    async def _enqueue_job(self, job: AskJob) -> bool:
         self._user_pending.add(job.user.id)
-        await self._put_job(0, job)
+        admitted = await self._put_job(0, job)
+        if not admitted:
+            self._user_pending.discard(job.user.id)
+        return admitted
 
     async def handle_message(self, message: discord.Message) -> bool:
         text = extract_mention_text(message, self.bot_id)
@@ -824,17 +848,16 @@ class LLMMentionFeature:
                 )
             ),
         )
-        ahead = requests_ahead(
-            processing=self._processing,
-            queue_size=self._queue.qsize(),
-        )
-        await self._enqueue_job(job)
-        notices = []
-        if ahead > 0:
-            noun = "request" if ahead == 1 else "requests"
-            notices.append(
-                f"⏳ I'm working on **{ahead} {noun}** already; yours is queued."
+        admitted = await self._enqueue_job(job)
+        if not admitted:
+            await message.reply(
+                "The model became busy, so I didn't queue this request. "
+                "Please try again shortly.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
             )
+            return True
+        notices = []
         if image_count > 1:
             notices.append(
                 "I can inspect one image per request, so I'll use the first image."
