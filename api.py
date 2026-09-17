@@ -23,7 +23,9 @@ from db import (
     clear_guild_joke_config,
     delete_flight_api_credentials,
     delete_flight_tracker,
+    delete_llm_memory_channel_observations,
     delete_joke,
+    delete_all_llm_user_memory,
     delete_reminder,
     delete_scraped_item,
     get_all_guild_joke_configs,
@@ -37,6 +39,11 @@ from db import (
     get_guild_joke_config,
     get_joke_by_id,
     get_llm_feedback_summary,
+    get_llm_memory_entries,
+    get_llm_memory_preference,
+    get_llm_memory_transcript,
+    get_llm_user_memory,
+    get_enabled_llm_memory_channels,
     get_price_history,
     get_scraped_item,
     get_top_keywords,
@@ -44,11 +51,15 @@ from db import (
     get_user_flight_trackers,
     init_db,
     is_guild_inactivity_enabled,
+    is_llm_memory_channel_enabled,
+    purge_guild_llm_user_memories,
     remove_response,
     reset_all_guild_joke_sent,
     set_flight_api_credentials,
     set_guild_inactivity_enabled,
     set_guild_joke_config,
+    set_llm_memory_channel_enabled,
+    set_llm_memory_preference,
     set_scraped_item_restock_only,
     set_scraped_item_target,
     update_joke,
@@ -706,6 +717,167 @@ def api_set_guild_inactivity(guild_id):
         return jsonify({"error": "enabled must be a boolean"}), 400
     set_guild_inactivity_enabled(guild_id, enabled)
     return jsonify({"status": "updated", "guild_id": guild_id, "enabled": enabled})
+
+
+# --- Persistent LLM memory administration ----------------------------------
+
+def _memory_scope_from_query():
+    value = request.args.get("scope_id")
+    if value is None:
+        raise ValueError("scope_id must be a non-negative Discord server ID or 0 for DMs")
+    return _discord_id(value, "scope_id")
+
+
+def _serialize_memory_user(scope_id, user_id):
+    entries = get_llm_memory_entries(scope_id, user_id)
+    transcript = get_llm_memory_transcript(scope_id, user_id)
+    return {
+        "scope_id": scope_id,
+        "user_id": user_id,
+        "preference": get_llm_memory_preference(scope_id, user_id),
+        "legacy_profile": get_llm_user_memory(scope_id, user_id),
+        "entries": [
+            {
+                "id": entry_id,
+                "kind": kind,
+                "content": content,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+            for entry_id, kind, content, _source, created_at, updated_at in entries
+        ],
+        "transcript": [
+            {
+                "id": row_id,
+                "channel_id": channel_id,
+                "role": role,
+                "content": content,
+                "created_at": created_at,
+            }
+            for row_id, channel_id, role, content, created_at in transcript
+        ],
+    }
+
+
+@app.route("/memory/channels", methods=["GET"])
+@require_token
+def api_get_memory_channels():
+    guild_id = request.args.get("guild_id", type=int)
+    if guild_id is None:
+        return jsonify({"error": "Missing guild_id query parameter"}), 400
+    channels = [
+        {"channel_id": channel_id, "enabled": True}
+        for saved_guild_id, channel_id in get_enabled_llm_memory_channels()
+        if saved_guild_id == guild_id
+    ]
+    return jsonify({"guild_id": guild_id, "channels": channels})
+
+
+@app.route("/memory/channels/<int:guild_id>/<int:channel_id>", methods=["GET"])
+@require_token
+def api_get_memory_channel(guild_id, channel_id):
+    return jsonify(
+        {
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "enabled": is_llm_memory_channel_enabled(guild_id, channel_id),
+        }
+    )
+
+
+@app.route("/memory/channels/<int:guild_id>/<int:channel_id>", methods=["PUT"])
+@require_token
+def api_set_memory_channel(guild_id, channel_id):
+    data = request.get_json()
+    enabled = data.get("enabled") if isinstance(data, dict) else None
+    if not isinstance(enabled, bool):
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    if not set_llm_memory_channel_enabled(guild_id, channel_id, enabled):
+        return jsonify({"error": "Could not update memory channel"}), 500
+    if not enabled:
+        # Prevent persisted observations from a disabled channel being learned
+        # if it is enabled again later.
+        delete_llm_memory_channel_observations(guild_id, channel_id)
+    return jsonify(
+        {
+            "status": "updated",
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "enabled": enabled,
+        }
+    )
+
+
+@app.route("/memory/users/<int:user_id>", methods=["GET"])
+@require_token
+def api_get_memory_user(user_id):
+    try:
+        scope_id = _memory_scope_from_query()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(_serialize_memory_user(scope_id, user_id))
+
+
+@app.route("/memory/users/<int:user_id>", methods=["DELETE"])
+@require_token
+def api_forget_memory_user(user_id):
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "scope_id is required"}), 400
+    try:
+        scope_id = _discord_id(data.get("scope_id"), "scope_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    removed = delete_all_llm_user_memory(scope_id, user_id)
+    if removed is None:
+        return jsonify({"error": "Could not delete user memory"}), 500
+    return jsonify(
+        {"status": "forgotten", "scope_id": scope_id, "user_id": user_id, "removed": removed}
+    )
+
+
+@app.route("/memory/users/<int:user_id>/preference", methods=["PUT"])
+@require_token
+def api_set_memory_user_preference(user_id):
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "scope_id and enabled are required"}), 400
+    try:
+        scope_id = _discord_id(data.get("scope_id"), "scope_id")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    if not set_llm_memory_preference(scope_id, user_id, enabled):
+        return jsonify({"error": "Could not update memory preference"}), 500
+    removed = 0
+    if not enabled:
+        removed = delete_all_llm_user_memory(scope_id, user_id)
+        if removed is None:
+            return jsonify({"error": "Preference updated but memory deletion failed"}), 500
+    return jsonify(
+        {
+            "status": "updated",
+            "scope_id": scope_id,
+            "user_id": user_id,
+            "enabled": enabled,
+            "removed": removed,
+        }
+    )
+
+
+@app.route("/memory/guilds/<int:guild_id>", methods=["DELETE"])
+@require_token
+def api_purge_memory_guild(guild_id):
+    data = request.get_json()
+    confirmation = data.get("confirmation") if isinstance(data, dict) else None
+    if confirmation != "PURGE":
+        return jsonify({"error": "Type PURGE exactly to confirm"}), 400
+    removed = purge_guild_llm_user_memories(guild_id)
+    if removed is None:
+        return jsonify({"error": "Could not purge guild memory"}), 500
+    return jsonify({"status": "purged", "guild_id": guild_id, "removed_users": removed})
 
 
 # --- Scrape Routes ---

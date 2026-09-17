@@ -149,6 +149,21 @@ def test_invalidation_prevents_in_flight_profile_recreation(tmp_db):
     asyncio.run(client.close())
 
 
+def test_external_memory_deletion_invalidates_process_local_batch(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    message = _message(content="remember this from the dashboard")
+    asyncio.run(feature.handle_message(message))
+    batch = feature.context_for(message).batch
+    assert batch is not None
+
+    assert db.delete_all_llm_user_memory(100, 7) > 0
+
+    assert feature.can_process_batch(batch) is False
+    assert feature.context_for(message).batch is None
+    asyncio.run(client.close())
+
+
 def test_dm_memory_requires_explicit_opt_in(tmp_db):
     client, _, feature = _build_feature()
     message = _message(guild_id=None, channel_id=99, content="DM fact")

@@ -35,6 +35,7 @@
       <button class="nav-item" data-page="jokes"><span>☺</span>Jokes</button>
       <button class="nav-item" data-page="wishlist"><span>♡</span>Wishlist</button>
       <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
+      <button class="nav-item" data-page="memory"><span>◉</span>LLM memory</button>
       <button class="nav-item" data-page="settings"><span>⚙</span>Bot settings</button>
     </nav>
     <div class="sidebar-note"><span class="status-dot"></span><div><strong>LAN administration</strong><small>IDs select data; they do not sign in users.</small></div></div>
@@ -108,6 +109,19 @@
           <article class="panel"><h3>Add exact-date tracker</h3><form id="flight-form" class="form-grid"><label>Origin<input name="origin" required minlength="3" maxlength="3" placeholder="OTP"></label><label>Destination<input name="destination" required minlength="3" maxlength="3" placeholder="BKK"></label><label>Outbound<input name="start_date" type="date" required></label><label>Return<input name="end_date" type="date" required></label><label>Adults<input name="adults" type="number" min="1" max="9" value="1" required></label><label>Currency<select name="currency"><option>EUR</option><option>RON</option><option>USD</option><option>GBP</option><option>DKK</option></select></label><button class="button primary span-all">Add tracker</button></form></article>
         </div>
         <div class="wishlist-layout"><article class="panel table-panel"><div class="panel-title"><h3>Trackers</h3><span class="scope-pill">user</span></div><div id="flights-list" class="empty">Enter a user ID to load trackers.</div></article><article class="panel detail-panel" id="flight-detail"><div class="empty">Select a tracker to inspect its saved prices.</div></article></div>
+      </section>
+
+      <section class="page" id="page-memory" data-title="LLM memory">
+        <div class="page-heading"><div><p class="eyebrow">SERVER AND USER CONTROL</p><h2>Persistent LLM memory</h2><p>Manage enabled channels and inspect or erase saved memory for the selected user.</p></div><button class="button secondary" data-action="load-memory">Refresh</button></div>
+        <div class="two-column">
+          <article class="panel"><div class="panel-title"><div><h3>Channel memory</h3><p>Equivalent to <code>/llm-memory</code>.</p></div><span class="scope-pill">server</span></div><form id="memory-channel-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+" placeholder="Discord channel ID"></label><div id="memory-channel-state" class="empty">Enter a channel ID to inspect its status.</div><div class="button-row"><button type="button" class="button secondary" data-action="check-memory-channel">Check status</button><button type="button" class="button primary" data-action="set-memory-channel" data-enabled="true">Enable</button><button type="button" class="button danger ghost" data-action="set-memory-channel" data-enabled="false">Disable</button></div></form><div class="subsection"><h4>Enabled channels</h4><div id="memory-channels-list" class="empty">Enter a server ID.</div></div></article>
+          <article class="panel"><div class="panel-title"><div><h3>User controls</h3><p>Equivalent to the personal memory commands.</p></div><span class="scope-pill">user</span></div><label>Memory scope<select id="memory-scope"><option value="server">Selected server</option><option value="dm">Direct messages</option></select></label><div id="memory-user-summary" class="empty">Enter a user ID to inspect memory.</div><div class="button-row"><button class="button primary" data-action="set-memory-preference" data-enabled="true">Opt in</button><button class="button secondary" data-action="set-memory-preference" data-enabled="false">Opt out & erase</button><button class="button danger ghost" data-action="forget-memory-user">Forget saved memory</button></div></article>
+        </div>
+        <div class="two-column memory-data-grid">
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Saved facts and topics</h3><p>The durable entries used when this user mentions the bot.</p></div><span class="scope-pill">user</span></div><div id="memory-entries-list" class="empty">No user selected.</div></article>
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Recent conversation window</h3><p>Bounded to seven days by the bot.</p></div><span class="scope-pill">user</span></div><div id="memory-transcript-list" class="empty">No user selected.</div></article>
+        </div>
+        <article class="panel danger-zone"><div><h3>Purge server memory</h3><p>Erase every user’s saved entries, transcript, and pending observations in the selected server. Channel settings and opt-out preferences are preserved.</p></div><button class="button danger ghost" data-action="purge-memory-guild">Purge server memory</button></article>
       </section>
 
       <section class="page" id="page-settings" data-title="Bot settings">
