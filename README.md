@@ -78,6 +78,7 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent channel messages considered for mentions. Saved memory and conversation history share a 6,000-character budget (4,000 for vision) with half initially reserved for each. Default: `0`. |
+| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between background scans for memory batches ready to consolidate. Default: `300` (5 minutes); minimum: `1`. Mention-triggered consolidation still runs after the reply. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -254,7 +255,7 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 |---|---|
 | `/keyword-add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
 | `/top-keywords [user]` | Most triggered keywords in the server. |
-| `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style. |
+| `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style and in the triggering message's language. |
 | `/help` | Full command list (chunked for Discord’s 2000-character limit). |
 
 ### Reminders
@@ -397,8 +398,10 @@ The bot also keeps a per-user recent conversation window of at most 40 messages
 and 16,000 characters for seven days. User messages feed fact extraction;
 assistant messages provide conversation continuity but cannot become personal
 facts. Pending extraction batches survive restarts and run after a successful
-mention or, for ordinary chat, after ten messages or five minutes. Direct
-replies have priority in the shared model queue. At prompt time, relevant facts
+mention or, for ordinary chat, after ten messages or five minutes. The
+background scan runs every five minutes by default and is configurable with
+`LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`. Direct replies have priority in
+the shared model queue. At prompt time, relevant facts
 are ranked by word overlap and recency, then share the 6,000-character reference
 budget with recent conversation. Memory remains server-scoped (with a separate
 opt-in DM scope) and is never supplied to another user.

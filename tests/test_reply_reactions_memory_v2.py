@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -172,7 +173,8 @@ def test_ordinary_reaction_sampling_cooldown_and_busy_skip(monkeypatch):
     assert asyncio.run(feature.handle_ordinary_message(message)) is False
 
 
-def test_reaction_permission_failure_is_nonfatal(monkeypatch):
+def test_reaction_permission_failure_is_nonfatal(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="discord_bot")
     feature = object.__new__(LLMMentionFeature)
     response = SimpleNamespace(status=403, reason="Forbidden")
     message = _message("Bravo!")
@@ -188,6 +190,7 @@ def test_reaction_permission_failure_is_nonfatal(monkeypatch):
         )
     )
     message.add_reaction.assert_awaited_once_with("🎉")
+    assert caplog.records[-1].exc_info is None
 
 
 def test_no_reaction_choice_does_not_touch_message(monkeypatch):
@@ -231,6 +234,38 @@ def test_mention_result_reacts_to_original_message(monkeypatch):
 
     original.add_reaction.assert_awaited_once_with("🎉")
     feature._reply_mention.assert_awaited_once_with(job, "Felicitări!")
+
+
+def test_mention_reaction_permission_failure_is_nonfatal(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="discord_bot")
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = None
+    feature._reaction_pending_channels = set()
+    feature._reaction_last_attempt = {}
+    feature._reply_mention = AsyncMock(return_value="Felicitări!")
+    feature._reply_job_error = AsyncMock()
+    response = SimpleNamespace(status=403, reason="Forbidden")
+    original = SimpleNamespace(
+        channel=SimpleNamespace(id=10),
+        add_reaction=AsyncMock(
+            side_effect=discord.Forbidden(response, "missing permission")
+        ),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=7, display_name="Robeeque"),
+        question="Am terminat proiectul!",
+        model="discord-bot",
+        reply_to=original,
+    )
+    monkeypatch.setattr(
+        "features.llm_mention.generate_mention_result",
+        lambda *args, **kwargs: MentionResult("Felicitări!", "🎉"),
+    )
+
+    asyncio.run(feature._process_job(job))
+
+    feature._reply_mention.assert_awaited_once_with(job, "Felicitări!")
+    assert caplog.records[-1].exc_info is None
 
 
 def test_memory_rows_accumulate_beyond_old_limit_and_correct_one_entry(tmp_db):
@@ -281,6 +316,31 @@ def test_memory_delta_validates_source_and_target(monkeypatch):
         ),
     )
     assert generate_memory_delta(existing, ["I prefer Rust"], model="discord-bot").successful is False
+
+
+def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch):
+    captured = {}
+
+    def query(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["schema"] = kwargs["response_schema"]
+        return '{"add":[],"correct":[]}'
+
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    result = generate_memory_delta(
+        [], ["First observation", "Second observation"], model="discord-bot"
+    )
+
+    assert result.successful is True
+    assert '"source_index": 0, "content": "First observation"' in captured["prompt"]
+    assert '"source_index": 1, "content": "Second observation"' in captured["prompt"]
+    for key in ("add", "correct"):
+        source_index = captured["schema"]["properties"][key]["items"][
+            "properties"
+        ]["source_index"]
+        assert source_index["minimum"] == 0
+        assert source_index["maximum"] == 1
 
 
 def test_transcript_is_bounded_and_expires(tmp_db):

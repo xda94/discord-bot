@@ -49,6 +49,13 @@ def get_reaction_cooldown_seconds() -> float:
     return max(0.0, float(os.getenv("LLM_REACTION_COOLDOWN_SECONDS", "60")))
 
 
+def get_memory_consolidation_interval_seconds() -> float:
+    return max(
+        1.0,
+        float(os.getenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "300")),
+    )
+
+
 def get_model_choices() -> list[app_commands.Choice[str]]:
     return [
         app_commands.Choice(name=model, value=model)
@@ -431,7 +438,7 @@ class LLMMentionFeature:
 
     async def _memory_scheduler_loop(self) -> None:
         while True:
-            await asyncio.sleep(60)
+            await asyncio.sleep(get_memory_consolidation_interval_seconds())
             if self.memory is None:
                 continue
             for batch in self.memory.eligible_batches():
@@ -590,8 +597,8 @@ class LLMMentionFeature:
                 self._reaction_last_attempt[reaction_channel_id] = now
                 try:
                     await job.reply_to.add_reaction(result.reaction)
-                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                    logger.info("Could not add mention reaction", exc_info=True)
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                    logger.info("Could not add mention reaction: %s", exc)
 
         if (
             sent_text
@@ -637,8 +644,8 @@ class LLMMentionFeature:
             return
         try:
             await job.message.add_reaction(reaction)
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-            logger.info("Could not add ordinary-message reaction", exc_info=True)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+            logger.info("Could not add ordinary-message reaction: %s", exc)
 
     def _reaction_channel_available(self, channel_id: int, now: float) -> bool:
         return (

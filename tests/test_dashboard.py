@@ -42,9 +42,12 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"if (!ticket.current()) return" in script.data
     assert b"requestVersions: new Map()" in script.data
     assert b"setInterval(loadStats, 15000)" in script.data
-    assert b'class="data-table keyword-table"' in script.data
+    assert b'class="keyword-groups"' in script.data
+    assert b'class="keyword-group"' in script.data
     assert b"Delete response" in script.data
-    assert b".keyword-table .response-cell" in stylesheet.data
+    assert b"Delete keyword" in script.data
+    assert b">Delete all<" not in script.data
+    assert b".keyword-response-text" in stylesheet.data
     assert b"/memory/channels" in script.data
     assert b"/memory/users/" in script.data
 

@@ -193,8 +193,8 @@
       if (state.userId) params.user_id = state.userId;
       const [responses, ranking] = await Promise.all([api(`/keywords/get?${query({ guild_id: guild })}`), api(`/keywords/top?${query(params)}`)]);
       if (!ticket.current()) return;
-      const rows = Object.entries(responses).flatMap(([keyword, items]) => items.map((response) => ({ keyword, response })));
-      target.innerHTML = rows.length ? `<table class="data-table keyword-table"><thead><tr><th>Keyword</th><th>Response</th><th>Actions</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="keyword-cell">${escapeHtml(row.keyword)}</td><td class="response-cell">${escapeHtml(row.response)}</td><td class="actions"><button class="button danger ghost small" data-action="delete-keyword-response" data-keyword="${escapeHtml(row.keyword)}" data-response="${escapeHtml(row.response)}">Delete response</button><button class="button danger ghost small" data-action="delete-keyword" data-keyword="${escapeHtml(row.keyword)}">Delete all</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No keyword responses configured for this server.</div>';
+      const groups = Object.entries(responses).filter(([, items]) => items.length);
+      target.innerHTML = groups.length ? `<div class="keyword-groups">${groups.map(([keyword, items]) => `<section class="keyword-group"><header class="keyword-group-header"><div><span class="field-label">Keyword</span><h3>${escapeHtml(keyword)}</h3><span class="cell-muted">${items.length} ${items.length === 1 ? "response" : "responses"}</span></div><button class="button danger ghost small" data-action="delete-keyword" data-keyword="${escapeHtml(keyword)}">Delete keyword</button></header><div class="keyword-response-list">${items.map((response, index) => `<div class="keyword-response-row"><div class="keyword-response-content"><span class="field-label">Response ${index + 1}</span><div class="keyword-response-text">${escapeHtml(response)}</div></div><button class="button danger ghost small" data-action="delete-keyword-response" data-keyword="${escapeHtml(keyword)}" data-response="${escapeHtml(response)}">Delete response</button></div>`).join("")}</div></section>`).join("")}</div>` : '<div class="empty">No keyword responses configured for this server.</div>';
       renderRankings($("#keyword-ranking"), ranking.keywords);
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
@@ -404,7 +404,7 @@
         if (!confirm(action.endsWith("response") ? "Delete this response?" : "Delete every response for this keyword?")) return;
         const payload = { guild_id: requireGuild(), keyword: button.dataset.keyword };
         if (action.endsWith("response")) payload.response = button.dataset.response;
-        await api("/keywords/delete", { method: "DELETE", body: JSON.stringify(payload) }); toast("Keyword response removed."); return loadKeywords();
+        await api("/keywords/delete", { method: "DELETE", body: JSON.stringify(payload) }); toast(action.endsWith("response") ? "Keyword response removed." : "Keyword deleted."); return loadKeywords();
       }
       if (action === "delete-reminder") { if (!confirm("Delete this reminder?")) return; await api(`/reminders/delete/${button.dataset.id}`, { method: "DELETE" }); toast("Reminder deleted."); return loadReminders(); }
       if (action === "delete-joke") { if (!confirm("Delete this joke from the global pool?")) return; await api(`/jokes/${button.dataset.id}`, { method: "DELETE" }); toast("Joke deleted."); return loadJokes(); }
