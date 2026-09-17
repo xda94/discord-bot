@@ -241,10 +241,14 @@ def _parse_mention_result(raw: str, current_message: str) -> MentionResult:
         raise ValueError("mention response must contain only text and reaction")
     text = data["text"]
     reaction = data["reaction"]
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str):
+        raise ValueError("mention response text must be a string")
+    if not text.strip():
         raise ValueError("mention response text is empty")
     text = normalize_llm_reply(text)
-    if not text or _is_obvious_echo(text, current_message):
+    if not text:
+        raise ValueError("mention response text is empty after normalization")
+    if _is_obvious_echo(text, current_message):
         raise ValueError("mention response echoed the current message")
     if reaction is not None and reaction not in REACTION_EMOJIS:
         raise ValueError("mention response contains an unsupported reaction")
@@ -379,11 +383,15 @@ def generate_mention_result(
         try:
             return _parse_mention_result(raw, content)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            # Parser errors contain fixed validation messages or JSON positions,
+            # never the user's prompt or the generated response itself.
             logger.warning(
-                "Mention LLM attempt %s failed for user=%s (%s)",
+                "Mention LLM attempt %s failed for user=%s model=%s (%s): %s",
                 attempt + 1,
                 username,
+                model,
                 type(exc).__name__,
+                exc,
             )
     return None
 
