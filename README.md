@@ -221,8 +221,9 @@ IP from a phone or computer on the same network and sign in with the same
 sent as an `Authorization: Bearer` header, and removed on logout or an
 unauthorized response. The dashboard manages
 keywords, reminders, jokes, wishlist items, flight trackers, and bot settings.
-It also shows saved keyword/LLM/price analytics and live mini PC CPU, memory,
-disk, and uptime metrics. Server and user IDs select records; they are not an
+It also manages persistent LLM memory channels and user controls, and shows
+saved keyword/LLM/price analytics plus live mini PC CPU, memory, disk, and
+uptime metrics. Server and user IDs select records; they are not an
 authentication mechanism.
 
 The HTML and static assets remain loadable so the login screen can open. All
@@ -474,6 +475,22 @@ and does not authenticate a Discord user.
 | `GET` | `/llm/feedback/summary?guild_id=<id>` | Aggregated ratings by category, model, and prompt version; no prompt or response text |
 | `GET` | `/inactivity/guilds/<guild_id>` | Whether automatic inactivity messages are enabled |
 | `PUT` | `/inactivity/guilds/<guild_id>` | `{ "enabled": true }` |
+
+### Persistent LLM memory
+
+| Method | Path | Body / notes |
+|---|---|---|
+| `GET` | `/memory/channels?guild_id=<id>` | Enabled memory channels in one server |
+| `GET` | `/memory/channels/<guild_id>/<channel_id>` | Memory status for one channel |
+| `PUT` | `/memory/channels/<guild_id>/<channel_id>` | `{ "enabled": true }`; disabling also clears that channel's pending observations |
+| `GET` | `/memory/users/<user_id>?scope_id=<id>` | Preference, durable entries, legacy profile, and recent transcript; use scope `0` for DMs |
+| `PUT` | `/memory/users/<user_id>/preference` | `{ "scope_id", "enabled" }`; opting out also erases saved memory |
+| `DELETE` | `/memory/users/<user_id>` | `{ "scope_id" }`; forget memory without changing the preference |
+| `DELETE` | `/memory/guilds/<guild_id>` | `{ "confirmation": "PURGE" }`; preserves channel settings and preferences |
+
+The bot refreshes memory channel and preference caches periodically and checks
+pending observation ownership before applying a queued memory update. API-side
+privacy changes therefore take effect without restarting the Discord process.
 
 ### Wishlist
 

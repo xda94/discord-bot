@@ -19,6 +19,7 @@ OBSERVATION_MAX_MESSAGES = 20
 PRIVATE_MESSAGE_CHUNK = 1900
 MEMORY_BATCH_MESSAGES = 10
 MEMORY_BATCH_MAX_AGE_SECONDS = 5 * 60
+MEMORY_CONFIG_CACHE_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,9 @@ class UserMemoryFeature:
         self._enabled_channels: set[tuple[int, int]] = set(
             db.get_enabled_llm_memory_channels()
         )
+        self._enabled_channels_checked_at = time.monotonic()
         self._preference_cache: dict[tuple[int, int], bool | None] = {}
+        self._preference_checked_at: dict[tuple[int, int], float] = {}
         self._buffers: dict[tuple[int, int], deque[MemoryObservation]] = {}
         self._generations: dict[tuple[int, int], int] = {}
         self._load_pending_observations()
@@ -91,17 +94,51 @@ class UserMemoryFeature:
                 MemoryObservation(row_id, channel_id, content, created_at)
             )
 
+    def _sync_buffer(self, key: tuple[int, int]) -> None:
+        """Reconcile one process-local queue with API-side deletions."""
+        scope_id, user_id = key
+        saved = deque(
+            MemoryObservation(row_id, channel_id, content, created_at)
+            for row_id, _scope_id, _user_id, _guild_id, channel_id, content, created_at
+            in db.get_llm_memory_observations(scope_id, user_id)
+        )
+        current_ids = tuple(item.sequence for item in self._buffers.get(key, ()))
+        saved_ids = tuple(item.sequence for item in saved)
+        if current_ids == saved_ids:
+            return
+        self._generations[key] = self._generations.get(key, 0) + 1
+        if saved:
+            self._buffers[key] = saved
+        else:
+            self._buffers.pop(key, None)
+
     @staticmethod
     def _key(guild_id: int | None, user_id: int) -> tuple[int, int]:
         return (_scope_id(guild_id), user_id)
 
     def _preference(self, scope_id: int, user_id: int) -> bool | None:
         key = (scope_id, user_id)
-        if key not in self._preference_cache:
-            self._preference_cache[key] = db.get_llm_memory_preference(
-                scope_id, user_id
-            )
+        now = time.monotonic()
+        checked_at = self._preference_checked_at.get(key, 0)
+        if key not in self._preference_cache or now - checked_at >= MEMORY_CONFIG_CACHE_SECONDS:
+            previous = self._preference_cache.get(key)
+            current = db.get_llm_memory_preference(scope_id, user_id)
+            self._preference_cache[key] = current
+            self._preference_checked_at[key] = now
+            if current is False and previous is not False:
+                self._invalidate_key(key, clear=True)
         return self._preference_cache[key]
+
+    def _refresh_enabled_channels(self) -> None:
+        now = time.monotonic()
+        if now - self._enabled_channels_checked_at < MEMORY_CONFIG_CACHE_SECONDS:
+            return
+        current = set(db.get_enabled_llm_memory_channels())
+        removed = self._enabled_channels - current
+        self._enabled_channels = current
+        self._enabled_channels_checked_at = now
+        for guild_id, channel_id in removed:
+            self._invalidate_channel(guild_id, channel_id)
 
     def _is_enabled(
         self,
@@ -110,6 +147,7 @@ class UserMemoryFeature:
         channel_id: int,
         user_id: int,
     ) -> bool:
+        self._refresh_enabled_channels()
         scope_id = _scope_id(guild_id)
         preference = self._preference(scope_id, user_id)
         if guild_id is None:
@@ -257,6 +295,7 @@ class UserMemoryFeature:
 
         scope_id = _scope_id(guild_id)
         key = (scope_id, user_id)
+        self._sync_buffer(key)
         profile = self._selected_entry_text(
             scope_id, user_id, getattr(message, "clean_content", "")
         )
@@ -340,6 +379,8 @@ class UserMemoryFeature:
     def eligible_batches(self, *, now: float | None = None) -> list[MemoryBatch]:
         now = time.time() if now is None else now
         result = []
+        for key in list(self._buffers):
+            self._sync_buffer(key)
         for (scope_id, user_id), observations in list(self._buffers.items()):
             if not observations:
                 continue
@@ -384,6 +425,15 @@ class UserMemoryFeature:
         key = (batch.scope_id, batch.user_id)
         if self._generations.get(key, 0) != batch.generation:
             return False
+        if batch.observation_ids:
+            saved_ids = {
+                row[0]
+                for row in db.get_llm_memory_observations(batch.scope_id, batch.user_id)
+            }
+            if not set(batch.observation_ids).issubset(saved_ids):
+                self._invalidate_key(key, clear=False)
+                self._sync_buffer(key)
+                return False
         return self._is_enabled(
             guild_id=batch.guild_id,
             channel_id=batch.request_channel_id,
@@ -428,6 +478,7 @@ class UserMemoryFeature:
 
             pair = (interaction.guild_id, interaction.channel_id)
             if action == "status":
+                self._refresh_enabled_channels()
                 state = "enabled" if pair in self._enabled_channels else "disabled"
                 await interaction.response.send_message(
                     f"Persistent LLM memory is **{state}** in this channel.",
@@ -461,6 +512,7 @@ class UserMemoryFeature:
                     "🧠 Persistent bot memory is now **disabled** in this channel. "
                     "Existing saved memory is retained until forgotten or purged."
                 )
+            self._enabled_channels_checked_at = time.monotonic()
             await interaction.response.send_message(text)
 
         @self.tree.command(
@@ -578,6 +630,7 @@ class UserMemoryFeature:
                 )
                 return
             self._preference_cache[(scope_id, interaction.user.id)] = False
+            self._preference_checked_at[(scope_id, interaction.user.id)] = time.monotonic()
             self._invalidate_key((scope_id, interaction.user.id), clear=True)
             removed = db.delete_all_llm_user_memory(scope_id, interaction.user.id)
             if removed is None:
@@ -605,6 +658,7 @@ class UserMemoryFeature:
                 )
                 return
             self._preference_cache[(scope_id, interaction.user.id)] = True
+            self._preference_checked_at[(scope_id, interaction.user.id)] = time.monotonic()
             location = (
                 "this DM"
                 if interaction.guild_id is None

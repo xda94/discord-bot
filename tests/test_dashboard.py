@@ -30,6 +30,7 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"Sign in to Bot Control" in page.data
     assert b'id="login-form"' in page.data
     assert b"page-wishlist" in page.data
+    assert b"page-memory" in page.data
     assert stylesheet.status_code == 200
     assert b"@media (max-width: 780px)" in stylesheet.data
     assert script.status_code == 200
@@ -41,6 +42,11 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"if (!ticket.current()) return" in script.data
     assert b"requestVersions: new Map()" in script.data
     assert b"setInterval(loadStats, 15000)" in script.data
+    assert b'class="data-table keyword-table"' in script.data
+    assert b"Delete response" in script.data
+    assert b".keyword-table .response-cell" in stylesheet.data
+    assert b"/memory/channels" in script.data
+    assert b"/memory/users/" in script.data
 
 
 def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
@@ -49,6 +55,7 @@ def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
 
     assert client.get("/system/stats").status_code == 401
     assert client.get("/wishlist/history?user_id=1&url=https://example.com").status_code == 401
+    assert client.get("/memory/channels?guild_id=1").status_code == 401
     assert client.get("/system/stats", headers={"Authorization": "Bearer private-token"}).status_code == 200
 
 
@@ -76,6 +83,94 @@ def test_discord_ids_accept_strings_and_round_trip_exactly(dashboard_client):
     assert exact["channel_id"] == channel_id
     assert legacy["user_id"] == int(user_id)
     assert legacy["channel_id"] == int(channel_id)
+
+
+def test_memory_channel_and_user_controls(dashboard_client):
+    _api, client = dashboard_client
+    guild_id = 1234567890123456789
+    channel_id = 2234567890123456789
+    user_id = 3234567890123456789
+    exact_headers = {"X-Discord-ID-Format": "string"}
+
+    enabled = client.put(
+        f"/memory/channels/{guild_id}/{channel_id}", json={"enabled": True}
+    )
+    assert enabled.status_code == 200
+    channels = client.get(
+        f"/memory/channels?guild_id={guild_id}", headers=exact_headers
+    ).get_json()
+    assert channels == {
+        "guild_id": str(guild_id),
+        "channels": [{"channel_id": str(channel_id), "enabled": True}],
+    }
+
+    opted_in = client.put(
+        f"/memory/users/{user_id}/preference",
+        json={"scope_id": str(guild_id), "enabled": True},
+    )
+    assert opted_in.status_code == 200
+    assert db.apply_llm_memory_delta(
+        guild_id,
+        user_id,
+        ({"kind": "fact", "content": "Likes tea", "source_text": "I like tea"},),
+        (),
+        (),
+    )
+    assert db.add_llm_memory_transcript(
+        guild_id, user_id, channel_id, "user", "I like tea"
+    )
+
+    memory = client.get(
+        f"/memory/users/{user_id}?scope_id={guild_id}", headers=exact_headers
+    ).get_json()
+    assert memory["scope_id"] == str(guild_id)
+    assert memory["user_id"] == str(user_id)
+    assert memory["preference"] is True
+    assert memory["entries"][0]["content"] == "Likes tea"
+    assert memory["transcript"][0]["channel_id"] == str(channel_id)
+
+    forgotten = client.delete(
+        f"/memory/users/{user_id}", json={"scope_id": str(guild_id)}
+    )
+    assert forgotten.status_code == 200
+    after = client.get(f"/memory/users/{user_id}?scope_id={guild_id}").get_json()
+    assert after["preference"] is True
+    assert after["entries"] == []
+    assert after["transcript"] == []
+
+
+def test_memory_opt_out_and_guild_purge_require_expected_confirmation(dashboard_client):
+    _api, client = dashboard_client
+    guild_id = 55
+    first_user = 7
+    second_user = 8
+    for user_id in (first_user, second_user):
+        assert db.apply_llm_memory_delta(
+            guild_id,
+            user_id,
+            ({"kind": "topic", "content": f"Topic {user_id}", "source_text": "source"},),
+            (),
+            (),
+        )
+
+    opted_out = client.put(
+        f"/memory/users/{first_user}/preference",
+        json={"scope_id": guild_id, "enabled": False},
+    )
+    assert opted_out.status_code == 200
+    assert opted_out.get_json()["removed"] == 1
+    assert db.get_llm_memory_preference(guild_id, first_user) is False
+    assert db.get_llm_memory_entries(guild_id, first_user) == []
+
+    assert client.delete(
+        f"/memory/guilds/{guild_id}", json={"confirmation": "purge"}
+    ).status_code == 400
+    purged = client.delete(
+        f"/memory/guilds/{guild_id}", json={"confirmation": "PURGE"}
+    )
+    assert purged.status_code == 200
+    assert purged.get_json()["removed_users"] == 1
+    assert db.get_llm_memory_entries(guild_id, second_user) == []
 
 
 def test_wishlist_history_is_ordered_scoped_and_handles_empty(dashboard_client):

@@ -194,7 +194,7 @@
       const [responses, ranking] = await Promise.all([api(`/keywords/get?${query({ guild_id: guild })}`), api(`/keywords/top?${query(params)}`)]);
       if (!ticket.current()) return;
       const rows = Object.entries(responses).flatMap(([keyword, items]) => items.map((response) => ({ keyword, response })));
-      target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>Keyword</th><th>Response</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.keyword)}</td><td>${escapeHtml(row.response)}</td><td class="actions"><button class="button danger ghost small" data-action="delete-keyword-response" data-keyword="${escapeHtml(row.keyword)}" data-response="${escapeHtml(row.response)}">Delete</button><button class="button danger ghost small" data-action="delete-keyword" data-keyword="${escapeHtml(row.keyword)}">All</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No keyword responses configured for this server.</div>';
+      target.innerHTML = rows.length ? `<table class="data-table keyword-table"><thead><tr><th>Keyword</th><th>Response</th><th>Actions</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="keyword-cell">${escapeHtml(row.keyword)}</td><td class="response-cell">${escapeHtml(row.response)}</td><td class="actions"><button class="button danger ghost small" data-action="delete-keyword-response" data-keyword="${escapeHtml(row.keyword)}" data-response="${escapeHtml(row.response)}">Delete response</button><button class="button danger ghost small" data-action="delete-keyword" data-keyword="${escapeHtml(row.keyword)}">Delete all</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No keyword responses configured for this server.</div>';
       renderRankings($("#keyword-ranking"), ranking.keywords);
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
@@ -291,6 +291,50 @@
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
 
+  function selectedMemoryScope() {
+    return $("#memory-scope").value === "dm" ? "0" : requireGuild();
+  }
+
+  async function loadMemory() {
+    const ticket = version("memory");
+    const channelsTarget = $("#memory-channels-list");
+    const summaryTarget = $("#memory-user-summary");
+    const entriesTarget = $("#memory-entries-list");
+    const transcriptTarget = $("#memory-transcript-list");
+
+    if (state.guildId) {
+      try {
+        const data = await api(`/memory/channels?${query({ guild_id: state.guildId })}`);
+        if (!ticket.current()) return;
+        channelsTarget.innerHTML = data.channels.length
+          ? `<div class="button-row">${data.channels.map((item) => `<span class="tag good">${escapeHtml(item.channel_id)}</span>`).join("")}</div>`
+          : '<div class="empty">No channels have memory enabled in this server.</div>';
+      } catch (error) { if (ticket.current()) channelsTarget.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+    } else channelsTarget.innerHTML = '<div class="empty">Enter a server ID to manage channels.</div>';
+
+    if (!state.userId) {
+      summaryTarget.innerHTML = '<div class="empty">Enter a user ID to inspect memory.</div>';
+      entriesTarget.innerHTML = '<div class="empty">No user selected.</div>';
+      transcriptTarget.innerHTML = '<div class="empty">No user selected.</div>';
+      return;
+    }
+    let scope;
+    try { scope = selectedMemoryScope(); } catch (error) {
+      summaryTarget.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+      entriesTarget.innerHTML = '<div class="empty">No scope selected.</div>';
+      transcriptTarget.innerHTML = '<div class="empty">No scope selected.</div>';
+      return;
+    }
+    try {
+      const data = await api(`/memory/users/${requireUser()}?${query({ scope_id: scope })}`);
+      if (!ticket.current()) return;
+      const preference = data.preference === true ? '<span class="tag good">opted in</span>' : data.preference === false ? '<span class="tag bad">opted out</span>' : '<span class="tag">default</span>';
+      summaryTarget.innerHTML = `<div class="detail-stats"><div><small>Preference</small><strong>${preference}</strong></div><div><small>Saved entries</small><strong>${data.entries.length}</strong></div><div><small>Messages</small><strong>${data.transcript.length}</strong></div></div>${data.legacy_profile ? `<div class="memory-message"><small>Legacy profile</small><p>${escapeHtml(data.legacy_profile)}</p></div>` : ""}`;
+      entriesTarget.innerHTML = data.entries.length ? `<table class="data-table"><thead><tr><th>Type</th><th>Memory</th><th>Updated</th></tr></thead><tbody>${data.entries.map((entry) => `<tr><td><span class="tag">${escapeHtml(entry.kind)}</span></td><td class="memory-content">${escapeHtml(entry.content)}</td><td>${escapeHtml(formatDate(entry.updated_at))}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">No durable facts or topics are saved for this user.</div>';
+      transcriptTarget.innerHTML = data.transcript.length ? `<div class="memory-transcript">${data.transcript.map((message) => `<div class="memory-message ${message.role === "assistant" ? "assistant" : ""}"><small>${message.role === "assistant" ? "Bot" : "User"} · channel ${escapeHtml(message.channel_id)} · ${escapeHtml(formatDate(message.created_at))}</small><p>${escapeHtml(message.content)}</p></div>`).join("")}</div>` : '<div class="empty">The recent conversation window is empty.</div>';
+    } catch (error) { if (ticket.current()) { summaryTarget.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; entriesTarget.innerHTML = '<div class="empty">Could not load entries.</div>'; transcriptTarget.innerHTML = '<div class="empty">Could not load conversation.</div>'; } }
+  }
+
   async function loadSettings() {
     const ticket = version("settings");
     try {
@@ -307,7 +351,7 @@
     } catch (error) { if (ticket.current()) toast(error.message, "error"); }
   }
 
-  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, settings: loadSettings };
+  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, settings: loadSettings };
   function navigate(page) {
     if (!loaders[page]) return;
     state.page = page;
@@ -354,6 +398,7 @@
       if (action === "load-reminders") return loadReminders();
       if (action === "load-wishlist") return loadWishlist();
       if (action === "load-flights") return loadFlights();
+      if (action === "load-memory") return loadMemory();
       if (action === "load-settings") return loadSettings();
       if (action === "delete-keyword-response" || action === "delete-keyword") {
         if (!confirm(action.endsWith("response") ? "Delete this response?" : "Delete every response for this keyword?")) return;
@@ -370,6 +415,11 @@
       if (action === "delete-wishlist-item") { const item = state.wishlist.find((entry) => entry.id === Number(button.dataset.id)); if (!confirm("Stop tracking this product and delete its history?")) return; await api("/wishlist/remove", { method: "DELETE", body: JSON.stringify({ user_id: requireUser(), url: item.url }) }); state.selectedWishlist = null; toast("Product removed."); return loadWishlist(); }
       if (action === "delete-credentials") { if (!confirm("Delete this user's saved SerpApi credentials?")) return; await api("/flights/credentials", { method: "DELETE", body: JSON.stringify({ user_id: requireUser() }) }); toast("Credentials removed."); return loadFlights(); }
       if (action === "delete-flight") { if (!confirm("Delete this flight tracker and its price history?")) return; await api(`/flights/trackers/${button.dataset.id}`, { method: "DELETE", body: JSON.stringify({ user_id: requireUser() }) }); state.selectedFlight = null; toast("Flight tracker deleted."); return loadFlights(); }
+      if (action === "check-memory-channel") { const channel = idValue(new FormData($("#memory-channel-form")).get("channel_id"), "Channel ID"); const data = await api(`/memory/channels/${requireGuild()}/${channel}`); $("#memory-channel-state").innerHTML = `<span class="tag ${data.enabled ? "good" : "bad"}">${data.enabled ? "Enabled" : "Disabled"}</span>`; return; }
+      if (action === "set-memory-channel") { const channel = idValue(new FormData($("#memory-channel-form")).get("channel_id"), "Channel ID"); const enabled = button.dataset.enabled === "true"; await api(`/memory/channels/${requireGuild()}/${channel}`, { method: "PUT", body: JSON.stringify({ enabled }) }); $("#memory-channel-state").innerHTML = `<span class="tag ${enabled ? "good" : "bad"}">${enabled ? "Enabled" : "Disabled"}</span>`; toast(`Channel memory ${enabled ? "enabled" : "disabled"}.`); return loadMemory(); }
+      if (action === "set-memory-preference") { const enabled = button.dataset.enabled === "true"; if (!enabled && !confirm("Opt this user out and permanently erase their saved memory in this scope?")) return; await api(`/memory/users/${requireUser()}/preference`, { method: "PUT", body: JSON.stringify({ scope_id: selectedMemoryScope(), enabled }) }); toast(enabled ? "User opted in." : "User opted out and memory erased."); return loadMemory(); }
+      if (action === "forget-memory-user") { if (!confirm("Erase this user's saved memory and pending observations in the selected scope? Their opt-in preference will stay unchanged.")) return; await api(`/memory/users/${requireUser()}`, { method: "DELETE", body: JSON.stringify({ scope_id: selectedMemoryScope() }) }); toast("User memory erased."); return loadMemory(); }
+      if (action === "purge-memory-guild") { const confirmation = prompt("Type PURGE to erase every user's saved memory in the selected server."); if (confirmation === null) return; await api(`/memory/guilds/${requireGuild()}`, { method: "DELETE", body: JSON.stringify({ confirmation }) }); toast("Server memory purged."); return loadMemory(); }
       if (action === "set-inactivity") { await api(`/inactivity/guilds/${requireGuild()}`, { method: "PUT", body: JSON.stringify({ enabled: button.dataset.enabled === "true" }) }); toast("Inactivity setting updated."); return loadSettings(); }
       if (action === "read-setting") { const form = $("#setting-form"); const key = new FormData(form).get("key"); if (!key) throw new Error("Enter a setting key."); const data = await api(`/settings/${encodeURIComponent(key)}`); $("[name='value']", form).value = data.value; return toast("Setting loaded."); }
       if (action === "chart-range") { state.ranges[button.dataset.chart] = Number(button.dataset.days); return button.dataset.chart === "wishlist" ? loadWishlistDetail(state.selectedWishlist) : loadFlightDetail(state.selectedFlight); }
@@ -384,6 +434,7 @@
     let scopeTimer;
     const updateScope = () => { clearTimeout(scopeTimer); scopeTimer = setTimeout(() => { state.guildId = $("#global-guild-id").value.trim(); state.userId = $("#global-user-id").value.trim(); localStorage.setItem("bot-dashboard-guild", state.guildId); localStorage.setItem("bot-dashboard-user", state.userId); state.selectedWishlist = null; state.selectedFlight = null; loaders[state.page](); }, 350); };
     $("#global-guild-id").addEventListener("input", updateScope); $("#global-user-id").addEventListener("input", updateScope);
+    $("#memory-scope").addEventListener("change", loadMemory);
     $("#login-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => login(data.get("token"))); });
     document.addEventListener("click", (event) => { const action = event.target.closest("[data-action]"); if (action) { event.preventDefault(); handleAction(action); return; } const row = event.target.closest("[data-select]"); if (row?.dataset.select === "wishlist") loadWishlistDetail(row.dataset.id); if (row?.dataset.select === "flight") loadFlightDetail(row.dataset.id); });
     bindForms();
