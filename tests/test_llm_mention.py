@@ -21,6 +21,7 @@ from features.llm_mention import (
     budget_reference_context,
     detect_image_mime,
     get_ask_cooldown_seconds,
+    get_memory_consolidation_interval_seconds,
     get_selected_model,
     requests_ahead,
     select_image_attachment,
@@ -137,6 +138,37 @@ def test_long_mention_reply_only_pings_requester_in_first_chunk():
 def test_get_ask_cooldown_seconds(monkeypatch):
     monkeypatch.setenv("ASK_COOLDOWN_SECONDS", "90")
     assert get_ask_cooldown_seconds() == 90.0
+
+
+def test_get_memory_consolidation_interval_seconds(monkeypatch):
+    monkeypatch.delenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", raising=False)
+    assert get_memory_consolidation_interval_seconds() == 300.0
+
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "900")
+    assert get_memory_consolidation_interval_seconds() == 900.0
+
+
+def test_memory_scheduler_uses_configured_interval(monkeypatch):
+    class SchedulerStopped(Exception):
+        pass
+
+    sleep_delays = []
+
+    async def fake_sleep(delay):
+        sleep_delays.append(delay)
+        if len(sleep_delays) > 1:
+            raise SchedulerStopped
+
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(eligible_batches=MagicMock(return_value=[]))
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "900")
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(SchedulerStopped):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    assert sleep_delays == [900.0, 900.0]
+    feature.memory.eligible_batches.assert_called_once_with()
 
 
 def test_stale_stored_model_is_replaced_with_llama_cpp_default(tmp_db):

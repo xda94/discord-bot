@@ -24,7 +24,11 @@ def test_build_tease_prompt_includes_mood_and_context():
     assert "Alice" in prompt
     assert "hello there" in prompt
     assert "sarcastic" in prompt
-    assert prompt.index("Return only the reply") < prompt.index("User: Alice")
+    assert 'from="Alice"' in prompt
+    assert "infer the language only from <message>" in prompt
+    assert "Do not default to English" in prompt
+    assert prompt.index("Return only the reply") < prompt.index('<message from="Alice">')
+    assert prompt.index("Final check:") > prompt.index("</message>")
 
 
 def test_build_summon_prompt_includes_username():
@@ -89,8 +93,8 @@ def test_build_mention_prompt_requires_one_direct_contextual_reply():
     assert "exactly one natural, ready-to-send discord message" in lowered
     assert "never offer drafts, options, translations, coaching" in lowered
     assert "never repeat or merely paraphrase the current message" in lowered
-    assert "match the language of <current_message>" in lowered
-    assert "regardless of the history language" in lowered
+    assert "mandatory output language" in lowered
+    assert "use <current_message>'s language" in lowered
 
 
 def test_current_message_controls_reply_language_not_history():
@@ -99,8 +103,11 @@ def test_current_message_controls_reply_language_not_history():
         "pareri?",
         ["Alex: This model appears to be considerably faster."],
     )
-    assert "Match the language of <current_message>" in prompt
-    assert "regardless of the history language" in prompt
+    assert "use <current_message>'s language" in prompt
+    assert "never the English instructions above" in prompt
+    assert prompt.index("Mandatory output language:") > prompt.index(
+        "</current_message>"
+    )
 
 
 def test_mention_prompt_places_stable_rules_before_dynamic_context():
