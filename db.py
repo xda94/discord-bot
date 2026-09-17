@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import sqlite3
 import random
 import time
@@ -269,6 +271,98 @@ def init_db():
                     PRIMARY KEY (scope_id, user_id)
                 )
             """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_memory_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('fact', 'topic')),
+                    content TEXT NOT NULL,
+                    normalized_content TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(scope_id, user_id, kind, normalized_content)
+                )
+            """)
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_memory_entries_owner "
+                "ON llm_memory_entries(scope_id, user_id, updated_at DESC)"
+            )
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_memory_transcript (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            """)
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_memory_transcript_owner "
+                "ON llm_memory_transcript(scope_id, user_id, created_at DESC)"
+            )
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_memory_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    guild_id INTEGER,
+                    channel_id INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+            """)
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_memory_observations_owner "
+                "ON llm_memory_observations(scope_id, user_id, created_at)"
+            )
+            # Migrate the previous one-blob profile format. The old row is
+            # removed only after each complete fact has been copied, making
+            # repeated startup safe through the unique normalized value.
+            c.execute(
+                "SELECT scope_id, user_id, profile, updated_at FROM llm_user_memories"
+            )
+            for scope_id, user_id, profile, updated_at in c.fetchall():
+                heading = ""
+                for raw_line in profile.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("#"):
+                        heading = line.lstrip("#").strip().rstrip(":")
+                        continue
+                    item_match = re.match(r"^(?:[-*+]|\d+[.)])\s+", line)
+                    is_item = item_match is not None
+                    fact = line[item_match.end():].strip() if item_match else line
+                    if heading and is_item and not fact.casefold().startswith(
+                        f"{heading}:".casefold()
+                    ):
+                        fact = f"{heading}: {fact}"
+                    fact = " ".join(fact.split())
+                    if not fact:
+                        continue
+                    c.execute(
+                        "INSERT OR IGNORE INTO llm_memory_entries "
+                        "(scope_id, user_id, kind, content, normalized_content, "
+                        "source_text, created_at, updated_at) "
+                        "VALUES (?, ?, 'fact', ?, ?, ?, ?, ?)",
+                        (
+                            scope_id,
+                            user_id,
+                            fact,
+                            fact.casefold(),
+                            "legacy-profile",
+                            updated_at,
+                            updated_at,
+                        ),
+                    )
+                c.execute(
+                    "DELETE FROM llm_user_memories WHERE scope_id = ? AND user_id = ?",
+                    (scope_id, user_id),
+                )
             # Preferences live separately from profiles so a server-wide
             # profile purge cannot silently opt users back in.
             c.execute("""
@@ -814,17 +908,325 @@ def delete_llm_user_memory(scope_id, user_id):
 
 
 def purge_guild_llm_user_memories(guild_id):
-    """Delete profiles for a guild while preserving user preferences."""
+    """Delete all saved memory for a guild while preserving preferences."""
     try:
         with _connect(commit=True) as c:
+            c.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT user_id FROM llm_user_memories WHERE scope_id = ? UNION "
+                "SELECT user_id FROM llm_memory_entries WHERE scope_id = ? UNION "
+                "SELECT user_id FROM llm_memory_transcript WHERE scope_id = ? UNION "
+                "SELECT user_id FROM llm_memory_observations WHERE scope_id = ?)",
+                (guild_id, guild_id, guild_id, guild_id),
+            )
+            removed = c.fetchone()[0]
             c.execute(
                 "DELETE FROM llm_user_memories WHERE scope_id = ?",
                 (guild_id,),
             )
-            removed = c.rowcount
+            for table in (
+                "llm_memory_entries",
+                "llm_memory_transcript",
+                "llm_memory_observations",
+            ):
+                c.execute(f"DELETE FROM {table} WHERE scope_id = ?", (guild_id,))
         return removed
     except Exception:
         logger.exception("Failed to purge LLM user memories for guild %s", guild_id)
+        return None
+
+
+def get_llm_memory_entries(scope_id, user_id):
+    """Return stable memory rows, newest first."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT id, kind, content, source_text, created_at, updated_at "
+                "FROM llm_memory_entries WHERE scope_id = ? AND user_id = ? "
+                "ORDER BY updated_at DESC, id DESC",
+                (scope_id, user_id),
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception(
+            "Failed to read memory entries for scope %s user %s", scope_id, user_id
+        )
+        return []
+
+
+def add_llm_memory_transcript(
+    scope_id,
+    user_id,
+    channel_id,
+    role,
+    content,
+    *,
+    created_at=None,
+    max_messages=40,
+    max_chars=16000,
+    max_age_seconds=7 * 24 * 60 * 60,
+):
+    """Append a transcript item and enforce age, count, and character bounds."""
+    content = str(content).strip()
+    if not content or role not in {"user", "assistant"}:
+        return False
+    now = time.time() if created_at is None else float(created_at)
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO llm_memory_transcript "
+                "(scope_id, user_id, channel_id, role, content, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (scope_id, user_id, channel_id, role, content, now),
+            )
+            c.execute(
+                "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ? "
+                "AND created_at < ?",
+                (scope_id, user_id, now - max_age_seconds),
+            )
+            c.execute(
+                "SELECT id, LENGTH(content) FROM llm_memory_transcript "
+                "WHERE scope_id = ? AND user_id = ? "
+                "ORDER BY created_at DESC, id DESC",
+                (scope_id, user_id),
+            )
+            kept = []
+            chars = 0
+            for row_id, length in c.fetchall():
+                length = int(length or 0)
+                if len(kept) >= max_messages or chars + length > max_chars:
+                    continue
+                kept.append(row_id)
+                chars += length
+            if kept:
+                placeholders = ",".join("?" for _ in kept)
+                c.execute(
+                    "DELETE FROM llm_memory_transcript WHERE scope_id = ? "
+                    "AND user_id = ? AND id NOT IN (" + placeholders + ")",
+                    (scope_id, user_id, *kept),
+                )
+            else:
+                c.execute(
+                    "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ?",
+                    (scope_id, user_id),
+                )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to append transcript for scope %s user %s", scope_id, user_id
+        )
+        return False
+
+
+def get_llm_memory_transcript(
+    scope_id, user_id, *, max_age_seconds=7 * 24 * 60 * 60, now=None
+):
+    now = time.time() if now is None else float(now)
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ? "
+                "AND created_at < ?",
+                (scope_id, user_id, now - max_age_seconds),
+            )
+            c.execute(
+                "SELECT id, channel_id, role, content, created_at "
+                "FROM llm_memory_transcript WHERE scope_id = ? AND user_id = ? "
+                "ORDER BY created_at, id",
+                (scope_id, user_id),
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception(
+            "Failed to read transcript for scope %s user %s", scope_id, user_id
+        )
+        return []
+
+
+def add_llm_memory_observation(
+    scope_id, user_id, guild_id, channel_id, content, *, created_at=None
+):
+    content = str(content).strip()
+    if not content:
+        return None
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT INTO llm_memory_observations "
+                "(scope_id, user_id, guild_id, channel_id, content, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    scope_id,
+                    user_id,
+                    guild_id,
+                    channel_id,
+                    content,
+                    time.time() if created_at is None else float(created_at),
+                ),
+            )
+            return c.lastrowid
+    except Exception:
+        logger.exception(
+            "Failed to append memory observation for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return None
+
+
+def get_llm_memory_observations(scope_id=None, user_id=None):
+    try:
+        with _connect() as c:
+            query = (
+                "SELECT id, scope_id, user_id, guild_id, channel_id, content, created_at "
+                "FROM llm_memory_observations"
+            )
+            args = []
+            clauses = []
+            if scope_id is not None:
+                clauses.append("scope_id = ?")
+                args.append(scope_id)
+            if user_id is not None:
+                clauses.append("user_id = ?")
+                args.append(user_id)
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            query += " ORDER BY created_at, id"
+            c.execute(query, args)
+            return c.fetchall()
+    except Exception:
+        logger.exception("Failed to read pending memory observations")
+        return []
+
+
+def delete_llm_memory_observations(ids):
+    ids = tuple(dict.fromkeys(int(value) for value in ids))
+    if not ids:
+        return True
+    try:
+        with _connect(commit=True) as c:
+            placeholders = ",".join("?" for _ in ids)
+            c.execute(
+                "DELETE FROM llm_memory_observations WHERE id IN ("
+                + placeholders
+                + ")",
+                ids,
+            )
+        return True
+    except Exception:
+        logger.exception("Failed to delete pending memory observations")
+        return False
+
+
+def delete_llm_memory_channel_observations(scope_id, channel_id):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM llm_memory_observations "
+                "WHERE scope_id = ? AND channel_id = ?",
+                (scope_id, channel_id),
+            )
+        return True
+    except Exception:
+        logger.exception("Failed to clear channel memory observations")
+        return False
+
+
+def apply_llm_memory_delta(scope_id, user_id, additions, corrections, observation_ids):
+    """Validate ownership and atomically apply a fact/topic delta and ack sources."""
+    try:
+        now = time.time()
+        with _connect(commit=True) as c:
+            for correction in corrections:
+                entry_id = int(correction["id"])
+                c.execute(
+                    "SELECT id FROM llm_memory_entries "
+                    "WHERE id = ? AND scope_id = ? AND user_id = ?",
+                    (entry_id, scope_id, user_id),
+                )
+                if c.fetchone() is None:
+                    raise ValueError(f"memory entry {entry_id} does not belong to user")
+                kind = correction["kind"]
+                content = " ".join(correction["content"].split())
+                source_text = "sha256:" + hashlib.sha256(
+                    correction["source_text"].encode("utf-8")
+                ).hexdigest()
+                normalized = content.casefold()
+                c.execute(
+                    "SELECT id FROM llm_memory_entries WHERE scope_id = ? "
+                    "AND user_id = ? AND kind = ? AND normalized_content = ? "
+                    "AND id != ?",
+                    (scope_id, user_id, kind, normalized, entry_id),
+                )
+                duplicate = c.fetchone()
+                if duplicate:
+                    c.execute(
+                        "DELETE FROM llm_memory_entries WHERE id = ?", (duplicate[0],)
+                    )
+                c.execute(
+                    "UPDATE llm_memory_entries SET kind = ?, content = ?, "
+                    "normalized_content = ?, source_text = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (kind, content, normalized, source_text, now, entry_id),
+                )
+            for addition in additions:
+                kind = addition["kind"]
+                content = " ".join(addition["content"].split())
+                source_reference = "sha256:" + hashlib.sha256(
+                    addition["source_text"].encode("utf-8")
+                ).hexdigest()
+                c.execute(
+                    "INSERT OR IGNORE INTO llm_memory_entries "
+                    "(scope_id, user_id, kind, content, normalized_content, "
+                    "source_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        scope_id,
+                        user_id,
+                        kind,
+                        content,
+                        content.casefold(),
+                        source_reference,
+                        now,
+                        now,
+                    ),
+                )
+            ids = tuple(dict.fromkeys(int(value) for value in observation_ids))
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                c.execute(
+                    "DELETE FROM llm_memory_observations WHERE scope_id = ? "
+                    "AND user_id = ? AND id IN (" + placeholders + ")",
+                    (scope_id, user_id, *ids),
+                )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to apply memory delta for scope %s user %s", scope_id, user_id
+        )
+        return False
+
+
+def delete_all_llm_user_memory(scope_id, user_id):
+    """Delete legacy and current memory data for one user/scope."""
+    try:
+        with _connect(commit=True) as c:
+            removed = 0
+            for table in (
+                "llm_user_memories",
+                "llm_memory_entries",
+                "llm_memory_transcript",
+                "llm_memory_observations",
+            ):
+                c.execute(
+                    f"DELETE FROM {table} WHERE scope_id = ? AND user_id = ?",
+                    (scope_id, user_id),
+                )
+                removed += c.rowcount
+        return removed
+    except Exception:
+        logger.exception(
+            "Failed to delete all memory for scope %s user %s", scope_id, user_id
+        )
         return None
 
 

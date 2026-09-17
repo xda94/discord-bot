@@ -4,6 +4,8 @@ import asyncio
 import html
 import logging
 import os
+import random
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -12,17 +14,19 @@ from discord import app_commands
 
 import db
 from features.llm_feedback import LLMFeedbackFeature
-from features.user_memory import MEMORY_MAX_CHARS, MemoryBatch, UserMemoryFeature
+from features.user_memory import MemoryBatch, UserMemoryFeature
 from llm_client import (
     LlamaCppError,
     get_allowed_models,
     get_mention_model,
     llama_supports_vision,
 )
-from mention_utils import extract_mention_text
+from mention_utils import extract_mention_text, resolve_bot_display_name
 from tease_llm import (
-    generate_memory_update,
-    generate_mention_reply,
+    MentionResult,
+    generate_memory_delta,
+    generate_mention_result,
+    generate_ordinary_reaction,
     generate_summon_reply,
 )
 
@@ -35,6 +39,14 @@ def get_ask_cooldown_seconds() -> float:
 
 def get_llm_context_messages() -> int:
     return int(os.getenv("LLM_CONTEXT_MESSAGES", "0"))
+
+
+def get_reaction_chance() -> float:
+    return min(1.0, max(0.0, float(os.getenv("LLM_REACTION_CHANCE", "0.10"))))
+
+
+def get_reaction_cooldown_seconds() -> float:
+    return max(0.0, float(os.getenv("LLM_REACTION_COOLDOWN_SECONDS", "60")))
 
 
 def get_model_choices() -> list[app_commands.Choice[str]]:
@@ -64,10 +76,10 @@ def get_selected_model() -> str:
 
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
-MENTION_PROMPT_VERSION = "mention-v1"
-MEMORY_MENTION_PROMPT_VERSION = "mention-v2-memory"
-VISION_MENTION_PROMPT_VERSION = "mention-v3-vision"
-VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v4-vision-memory"
+MENTION_PROMPT_VERSION = "mention-v5-structured"
+MEMORY_MENTION_PROMPT_VERSION = "mention-v6-structured-memory"
+VISION_MENTION_PROMPT_VERSION = "mention-v7-structured-vision"
+VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v8-structured-vision-memory"
 SUMMON_PROMPT_VERSION = "summon-v1"
 REFERENCE_CONTEXT_CHAR_BUDGET = 6000
 VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
@@ -175,7 +187,7 @@ def budget_reference_context(
     *,
     max_chars: int = REFERENCE_CONTEXT_CHAR_BUDGET,
 ) -> tuple[str, list[str]]:
-    """Prioritize the compact profile, then keep the newest channel context."""
+    """Reserve half for memory and half for history, sharing unused capacity."""
     def escaped_prefix(value: str, budget: int) -> tuple[str, int]:
         used = 0
         end = 0
@@ -186,25 +198,75 @@ def budget_reference_context(
             used += cost
         return value[:end], used
 
-    memory, memory_cost = escaped_prefix(user_memory, max_chars)
-    remaining = max(0, max_chars - memory_cost)
-    selected_reversed: list[str] = []
-    for message in reversed(context_messages):
-        if remaining <= 0:
+    def select_history(budget: int) -> tuple[list[str], int]:
+        remaining = budget
+        selected_reversed = []
+        used = 0
+        for message in reversed(context_messages):
+            if remaining <= 0:
+                break
+            cost = len(html.escape(message, quote=False))
+            if cost <= remaining:
+                selected_reversed.append(message)
+                remaining -= cost
+                used += cost
+                continue
+            if not selected_reversed:
+                partial, partial_cost = escaped_prefix(message, remaining)
+                if partial:
+                    selected_reversed.append(partial)
+                    used += partial_cost
             break
-        escaped_cost = len(html.escape(message, quote=False))
-        if escaped_cost <= remaining:
-            selected_reversed.append(message)
-            remaining -= escaped_cost
-            continue
-        # Preserve at least the newest partial message when the remaining
-        # budget cannot fit it in full. The author label is at the beginning.
-        if not selected_reversed:
-            partial, _ = escaped_prefix(message, remaining)
-            if partial:
-                selected_reversed.append(partial)
-        break
-    return memory, list(reversed(selected_reversed))
+        return list(reversed(selected_reversed)), used
+
+    half = max_chars // 2
+    memory, memory_cost = escaped_prefix(user_memory, half)
+    history_budget = max_chars - memory_cost if memory_cost < half else half
+    history, history_cost = select_history(history_budget)
+    if history_cost < half and len(memory) < len(user_memory):
+        memory, memory_cost = escaped_prefix(user_memory, max_chars - history_cost)
+    elif memory_cost < half and context_messages:
+        history, _ = select_history(max_chars - memory_cost)
+    return memory, history
+
+
+def strip_leading_reply_labels(
+    text: str, *, requester_id: int, names: tuple[str, ...]
+) -> str:
+    """Remove model-added addressing only at the beginning of a reply."""
+    cleaned = text.strip()
+    cleaned = re.sub(rf"^(?:\s*<@!?{requester_id}>\s*)+", "", cleaned)
+    usable = sorted(
+        {name.strip() for name in names if name and name.strip()},
+        key=len,
+        reverse=True,
+    )
+    if not usable:
+        return cleaned
+    alternatives = "|".join(re.escape(name) for name in usable)
+    leading_at_name = re.compile(
+        rf"^\s*(?:[*_`~]{{1,3}})?\s*@(?:{alternatives})\b\s*"
+        rf"(?:[*_`~]{{1,3}})?\s*",
+        flags=re.IGNORECASE,
+    )
+    while True:
+        updated = leading_at_name.sub("", cleaned, count=1).lstrip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+    label = re.compile(
+        rf"^\s*(?:[*_`~]{{1,3}})?\s*"
+        rf"(?:@?(?:{alternatives}))(?:\s+@?(?:{alternatives}))*"
+        rf"\s*(?:[*_`~]{{1,3}})?\s*[:：\-–—]\s*"
+        rf"(?:[*_`~]{{1,3}})?\s*",
+        flags=re.IGNORECASE,
+    )
+    while True:
+        updated = label.sub("", cleaned, count=1).lstrip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned or text.strip()
 
 
 def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
@@ -259,12 +321,36 @@ class AskJob:
     summon_only: bool = False
     context_messages: list[str] = field(default_factory=list)
     user_memory: str = ""
-    memory_profile: str = ""
     memory_enabled: bool = False
     memory_batch: MemoryBatch | None = None
     image_attachment: discord.Attachment | None = None
     image_mime: str | None = None
     prompt_version: str = MENTION_PROMPT_VERSION
+    replied_message: str = ""
+    bot_names: tuple[str, ...] = ()
+
+
+@dataclass
+class MemoryJob:
+    batch: MemoryBatch
+    model: str
+
+
+@dataclass
+class ReactionJob:
+    message: discord.Message
+    model: str
+    channel_id: int
+
+
+class ContextReactionFeature:
+    """Dispatch adapter placing ordinary reactions after keyword handling."""
+
+    def __init__(self, mention_feature: "LLMMentionFeature"):
+        self.mention_feature = mention_feature
+
+    async def handle_message(self, message: discord.Message) -> bool:
+        return await self.mention_feature.handle_ordinary_message(message)
 
 
 class LLMMentionFeature:
@@ -286,9 +372,14 @@ class LLMMentionFeature:
         self.memory = memory
         self._user_last_ask: dict[int, float] = {}
         self._user_pending: set[int] = set()
-        self._queue: asyncio.Queue[AskJob] = asyncio.Queue()
+        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._queue_sequence = 0
         self._processing = False
         self._worker_task: asyncio.Task | None = None
+        self._memory_scheduler_task: asyncio.Task | None = None
+        self._memory_pending: set[tuple[int, int]] = set()
+        self._reaction_pending_channels: set[int] = set()
+        self._reaction_last_attempt: dict[int, float] = {}
         self._register_commands()
 
     def _cooldown_remaining(self, user_id: int) -> float:
@@ -301,27 +392,70 @@ class LLMMentionFeature:
 
     async def _queue_worker(self) -> None:
         while True:
-            job = await self._queue.get()
+            queued = await self._queue.get()
+            job = queued[2] if isinstance(queued, tuple) else queued
             try:
                 self._processing = True
-                await self._process_job(job)
+                if isinstance(job, AskJob):
+                    await self._process_job(job)
+                elif isinstance(job, MemoryJob):
+                    await self._process_memory_job(job)
+                else:
+                    await self._process_reaction_job(job)
             except Exception:
-                logger.exception("Unhandled error processing mention job")
+                logger.exception("Unhandled error processing LLM job")
             finally:
                 self._processing = False
                 self._queue.task_done()
-                self._user_pending.discard(job.user.id)
-                self._user_last_ask[job.user.id] = time.time()
+                if isinstance(job, AskJob):
+                    self._user_pending.discard(job.user.id)
+                    self._user_last_ask[job.user.id] = time.time()
+                elif isinstance(job, MemoryJob):
+                    self._memory_pending.discard(
+                        (job.batch.scope_id, job.batch.user_id)
+                    )
+                else:
+                    self._reaction_pending_channels.discard(job.channel_id)
 
-    async def _reply_mention(self, job: AskJob, text: str) -> None:
-        if not text.strip() or job.reply_to is None:
+    async def _put_job(self, priority: int, job) -> None:
+        self._queue_sequence += 1
+        await self._queue.put((priority, self._queue_sequence, job))
+        self._ensure_worker()
+
+    async def start_tasks(self) -> None:
+        self._ensure_worker()
+        if self._memory_scheduler_task is None or self._memory_scheduler_task.done():
+            self._memory_scheduler_task = asyncio.create_task(
+                self._memory_scheduler_loop()
+            )
+
+    async def _memory_scheduler_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            if self.memory is None:
+                continue
+            for batch in self.memory.eligible_batches():
+                await self._enqueue_memory(batch, get_selected_model())
+
+    async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> None:
+        key = (batch.scope_id, batch.user_id)
+        if key in self._memory_pending:
             return
-        # Discord mentions require the user's ID. A model-generated display
-        # name (e.g. "Robeeque:") is only text, so add the mention ourselves.
-        text = text.strip()
-        name_label = f"{job.user.display_name}:"
-        if text.startswith(name_label):
-            text = text[len(name_label):].lstrip()
+        self._memory_pending.add(key)
+        await self._put_job(1, MemoryJob(batch=batch, model=model))
+
+    async def _reply_mention(self, job: AskJob, text: str) -> str:
+        if not text.strip() or job.reply_to is None:
+            return ""
+        user_names = (
+            getattr(job.user, "display_name", ""),
+            getattr(job.user, "name", ""),
+        )
+        text = strip_leading_reply_labels(
+            text,
+            requester_id=job.user.id,
+            names=tuple(user_names) + tuple(job.bot_names),
+        )
         parts = split_discord_messages(text, first_prefix=f"<@{job.user.id}> ")
         reply = await job.reply_to.reply(
             parts[0],
@@ -345,6 +479,7 @@ class LLMMentionFeature:
                     reference=job.reply_to,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+        return text
 
     @staticmethod
     async def _reply_job_error(job: AskJob, text: str) -> None:
@@ -406,53 +541,139 @@ class LLMMentionFeature:
                     job.user.display_name,
                     model=job.model,
                 )
+                result = MentionResult(reply) if reply else None
             else:
-                reply = await asyncio.to_thread(
-                    generate_mention_reply,
+                generation_kwargs = {
+                    "model": job.model,
+                    "context_messages": job.context_messages,
+                    "user_memory": job.user_memory,
+                    "memory_enabled": job.memory_enabled,
+                    "image_bytes": image_bytes,
+                    "image_mime": job.image_mime,
+                    "replied_message": job.replied_message,
+                }
+                result = await asyncio.to_thread(
+                    generate_mention_result,
                     job.user.display_name,
                     job.question,
-                    model=job.model,
-                    context_messages=job.context_messages,
-                    user_memory=job.user_memory,
-                    memory_enabled=job.memory_enabled,
-                    image_bytes=image_bytes,
-                    image_mime=job.image_mime,
+                    **generation_kwargs,
                 )
         except Exception:
             logger.exception("Unexpected error in mention reply")
-            if job.image_attachment is not None:
-                await self._reply_job_error(
-                    job, "I couldn't process that image. Please try again in a moment."
-                )
+            await self._reply_job_error(
+                job,
+                "I couldn't process that image. Please try again in a moment."
+                if job.image_attachment is not None
+                else "I couldn't generate a reliable answer. Please try again.",
+            )
             return
 
-        if not reply:
-            if job.image_attachment is not None:
-                await self._reply_job_error(
-                    job, "I couldn't process that image. Please try again in a moment."
-                )
+        if result is None or not result.text:
+            await self._reply_job_error(
+                job,
+                "I couldn't process that image. Please try again in a moment."
+                if job.image_attachment is not None
+                else "I couldn't generate a reliable answer. Please try again.",
+            )
             return
 
-        await self._reply_mention(job, reply)
+        sent_text = await self._reply_mention(job, result.text)
+        if result.reaction and job.reply_to is not None:
+            reaction_channel_id = getattr(
+                getattr(job.reply_to, "channel", None), "id", None
+            )
+            now = time.monotonic()
+            if (
+                reaction_channel_id is not None
+                and self._reaction_channel_available(reaction_channel_id, now)
+            ):
+                self._reaction_last_attempt[reaction_channel_id] = now
+                try:
+                    await job.reply_to.add_reaction(result.reaction)
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    logger.info("Could not add mention reaction", exc_info=True)
 
-        # The user-facing answer is deliberately sent before this second model
-        # call. A consolidation failure never suppresses or delays delivery of
-        # a reply that was already generated successfully.
+        if (
+            sent_text
+            and self.memory is not None
+            and hasattr(self.memory, "record_bot_reply")
+            and job.memory_batch is not None
+        ):
+            channel_id = getattr(job.channel, "id", job.memory_batch.request_channel_id)
+            self.memory.record_bot_reply(job.memory_batch, channel_id, sent_text)
+
         if (
             not job.summon_only
             and self.memory is not None
             and job.memory_batch is not None
             and self.memory.can_process_batch(job.memory_batch)
         ):
-            result = await asyncio.to_thread(
-                generate_memory_update,
-                job.memory_profile,
-                list(job.memory_batch.observations),
-                model=job.model,
-                max_chars=MEMORY_MAX_CHARS,
+            await self._enqueue_memory(job.memory_batch, job.model)
+
+    async def _process_memory_job(self, job: MemoryJob) -> None:
+        if self.memory is None or not self.memory.can_process_batch(job.batch):
+            return
+        entries = self.memory.entries_for_batch(job.batch)
+        result = await asyncio.to_thread(
+            generate_memory_delta,
+            entries,
+            list(job.batch.observations),
+            model=job.model,
+        )
+        if result.successful and self.memory.can_process_batch(job.batch):
+            self.memory.commit_delta(job.batch, result.additions, result.corrections)
+
+    async def _process_reaction_job(self, job: ReactionJob) -> None:
+        content = getattr(job.message, "clean_content", "").strip()
+        if not content:
+            return
+        reaction = await asyncio.to_thread(
+            generate_ordinary_reaction,
+            getattr(job.message.author, "display_name", "User"),
+            content,
+            model=job.model,
+        )
+        if not reaction:
+            return
+        try:
+            await job.message.add_reaction(reaction)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            logger.info("Could not add ordinary-message reaction", exc_info=True)
+
+    def _reaction_channel_available(self, channel_id: int, now: float) -> bool:
+        return (
+            channel_id not in self._reaction_pending_channels
+            and (
+                channel_id not in self._reaction_last_attempt
+                or now - self._reaction_last_attempt[channel_id]
+                >= get_reaction_cooldown_seconds()
             )
-            if result.successful:
-                self.memory.commit_batch(job.memory_batch, result.profile)
+        )
+
+    async def handle_ordinary_message(self, message: discord.Message) -> bool:
+        """Occasionally queue one reaction while keeping mention work first."""
+        content = getattr(message, "clean_content", "").strip()
+        channel_id = getattr(message.channel, "id", None)
+        if not content or channel_id is None or random.random() >= get_reaction_chance():
+            return False
+        now = time.monotonic()
+        if (
+            self._processing
+            or self._queue.qsize() > 0
+            or not self._reaction_channel_available(channel_id, now)
+        ):
+            return False
+        self._reaction_last_attempt[channel_id] = now
+        self._reaction_pending_channels.add(channel_id)
+        await self._put_job(
+            2,
+            ReactionJob(
+                message=message,
+                model=get_selected_model(),
+                channel_id=channel_id,
+            ),
+        )
+        return True
 
     def _begin_job_checks(self, user_id: int) -> str | None:
         if user_id in self._user_pending:
@@ -464,8 +685,7 @@ class LLMMentionFeature:
 
     async def _enqueue_job(self, job: AskJob) -> None:
         self._user_pending.add(job.user.id)
-        await self._queue.put(job)
-        self._ensure_worker()
+        await self._put_job(0, job)
 
     async def handle_message(self, message: discord.Message) -> bool:
         text = extract_mention_text(message, self.bot_id)
@@ -515,14 +735,18 @@ class LLMMentionFeature:
 
         memory_enabled = False
         user_memory = ""
-        memory_profile = ""
         memory_batch = None
+        memory_history = []
         if not summon_only and self.memory is not None:
             memory_context = self.memory.context_for(message)
             memory_enabled = memory_context.enabled
-            memory_profile = memory_context.profile
-            user_memory = memory_profile
+            user_memory = memory_context.profile
             memory_batch = memory_context.batch
+            memory_history = list(getattr(memory_context, "history", ()))
+
+        # Persistent per-user conversation precedes live channel context so
+        # the newest live messages win when the shared history budget is tight.
+        context_messages = memory_history + context_messages
 
         user_memory, context_messages = budget_reference_context(
             user_memory,
@@ -534,6 +758,32 @@ class LLMMentionFeature:
             ),
         )
 
+        replied_message = ""
+        reference = getattr(message, "reference", None)
+        resolved = getattr(reference, "resolved", None)
+        if isinstance(resolved, discord.Message):
+            replied_content = resolved.clean_content.strip()
+            if replied_content:
+                replied_message = (
+                    f"{resolved.author.display_name}: {replied_content}"
+                )
+
+        bot_names = []
+        client = getattr(self, "client", None)
+        live_display_name = (
+            resolve_bot_display_name(message.guild, client) if client is not None else ""
+        )
+        if live_display_name:
+            bot_names.append(live_display_name)
+        client_user = getattr(client, "user", None)
+        for value in (
+            getattr(client_user, "display_name", ""),
+            getattr(client_user, "name", ""),
+            getattr(getattr(message.guild, "me", None), "name", ""),
+        ):
+            if value and value not in bot_names:
+                bot_names.append(value)
+
         job = AskJob(
             user=message.author,
             question=question,
@@ -543,11 +793,12 @@ class LLMMentionFeature:
             summon_only=summon_only,
             context_messages=context_messages,
             user_memory=user_memory,
-            memory_profile=memory_profile,
             memory_enabled=memory_enabled,
             memory_batch=memory_batch,
             image_attachment=image_attachment,
             image_mime=image_mime,
+            replied_message=replied_message,
+            bot_names=tuple(bot_names),
             prompt_version=(
                 SUMMON_PROMPT_VERSION
                 if summon_only

@@ -9,6 +9,7 @@ from llm_client import LlamaCppError, get_default_model, query_llm
 from features.llm_mention import (
     AskJob,
     LLMMentionFeature,
+    MemoryJob,
     DISCORD_MESSAGE_LIMIT,
     DISCORD_SAFE_LIMIT,
     MEMORY_MENTION_PROMPT_VERSION,
@@ -271,7 +272,6 @@ def test_image_mention_uses_vision_memory_feedback_version(monkeypatch):
     job = feature._enqueue_job.await_args.args[0]
     assert job.prompt_version == VISION_MEMORY_MENTION_PROMPT_VERSION
     assert len(job.user_memory) == 4000
-    assert job.memory_profile == "m" * 4000
 
 
 def test_invalid_image_is_rejected_before_queueing(monkeypatch):
@@ -331,9 +331,9 @@ def test_reply_is_sent_before_memory_consolidation(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
     feature.memory = SimpleNamespace(
         can_process_batch=MagicMock(return_value=True),
-        commit_batch=MagicMock(side_effect=lambda *args: events.append("commit"))
     )
     feature._reply_mention = AsyncMock(side_effect=lambda *args: events.append("reply"))
+    feature._enqueue_memory = AsyncMock(side_effect=lambda *args: events.append("memory"))
     batch = MemoryBatch(
         scope_id=100,
         user_id=123,
@@ -351,26 +351,21 @@ def test_reply_is_sent_before_memory_consolidation(monkeypatch):
         memory_batch=batch,
     )
     monkeypatch.setattr(
-        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
+        "features.llm_mention.generate_mention_result",
+        lambda *args, **kwargs: SimpleNamespace(text="Hi", reaction=None),
     )
-    monkeypatch.setattr(
-        "features.llm_mention.generate_memory_update",
-        lambda *args, **kwargs: SimpleNamespace(
-            successful=True, profile="# Preferences\n- Likes Python"
-        ),
-    )
-
     asyncio.run(feature._process_job(job))
 
-    assert events == ["reply", "commit"]
+    assert events == ["reply", "memory"]
 
 
 def test_failed_memory_consolidation_does_not_commit(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
     feature.memory = SimpleNamespace(
-        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+        can_process_batch=MagicMock(return_value=True),
+        entries_for_batch=MagicMock(return_value=[]),
+        commit_delta=MagicMock(),
     )
-    feature._reply_mention = AsyncMock()
     batch = MemoryBatch(
         scope_id=100,
         user_id=123,
@@ -380,62 +375,16 @@ def test_failed_memory_consolidation_does_not_commit(monkeypatch):
         through_sequence=1,
         observations=("hello",),
     )
-    job = AskJob(
-        user=SimpleNamespace(id=123, display_name="Robeeque"),
-        question="hello",
-        model="discord-bot",
-        memory_batch=batch,
-    )
     monkeypatch.setattr(
-        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
-    )
-    monkeypatch.setattr(
-        "features.llm_mention.generate_memory_update",
-        lambda *args, **kwargs: SimpleNamespace(successful=False, profile=None),
+        "features.llm_mention.generate_memory_delta",
+        lambda *args, **kwargs: SimpleNamespace(
+            successful=False, additions=(), corrections=()
+        ),
     )
 
-    asyncio.run(feature._process_job(job))
+    asyncio.run(feature._process_memory_job(MemoryJob(batch, "discord-bot")))
 
-    feature._reply_mention.assert_awaited_once()
-    feature.memory.commit_batch.assert_not_called()
-
-
-def test_memory_consolidation_uses_complete_unbudgeted_profile(monkeypatch):
-    feature = object.__new__(LLMMentionFeature)
-    feature.memory = SimpleNamespace(
-        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
-    )
-    feature._reply_mention = AsyncMock()
-    batch = MemoryBatch(
-        scope_id=100,
-        user_id=123,
-        guild_id=100,
-        request_channel_id=10,
-        generation=0,
-        through_sequence=1,
-        observations=("I like Python",),
-    )
-    full_profile = "<" * 4000
-    job = AskJob(
-        user=SimpleNamespace(id=123, display_name="Robeeque"),
-        question="hello",
-        model="discord-bot",
-        user_memory="<" * 1500,
-        memory_profile=full_profile,
-        memory_batch=batch,
-    )
-    update = MagicMock(
-        return_value=SimpleNamespace(successful=True, profile="- Likes Python")
-    )
-    monkeypatch.setattr(
-        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
-    )
-    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
-
-    asyncio.run(feature._process_job(job))
-
-    assert update.call_args.args[0] == full_profile
-    feature.memory.commit_batch.assert_called_once_with(batch, "- Likes Python")
+    feature.memory.commit_delta.assert_not_called()
 
 
 def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypatch):
@@ -444,8 +393,9 @@ def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypa
     feature._reply_mention = AsyncMock()
     feature._reply_job_error = AsyncMock()
     feature.memory = SimpleNamespace(
-        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+        can_process_batch=MagicMock(return_value=True)
     )
+    feature._enqueue_memory = AsyncMock()
     attachment = _attachment()
     batch = MemoryBatch(
         scope_id=100,
@@ -464,15 +414,12 @@ def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypa
         image_attachment=attachment,
         image_mime="image/png",
         memory_batch=batch,
-        memory_profile="- Likes concise replies",
     )
-    reply = MagicMock(return_value="A blue diagram.")
-    update = MagicMock(
-        return_value=SimpleNamespace(successful=True, profile=None)
+    reply = MagicMock(
+        return_value=SimpleNamespace(text="A blue diagram.", reaction=None)
     )
     monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
-    monkeypatch.setattr("features.llm_mention.generate_mention_reply", reply)
-    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", reply)
 
     asyncio.run(feature._process_job(job))
 
@@ -481,11 +428,7 @@ def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypa
     assert reply.call_args.kwargs["image_mime"] == "image/png"
     feature._reply_mention.assert_awaited_once_with(job, "A blue diagram.")
     feature._reply_job_error.assert_not_awaited()
-    assert update.call_args.args == (
-        "- Likes concise replies",
-        ["Please describe this"],
-    )
-    assert "image_bytes" not in update.call_args.kwargs
+    feature._enqueue_memory.assert_awaited_once_with(batch, "discord-bot")
 
 
 def test_vision_job_stops_before_download_when_projector_is_disabled(monkeypatch):
@@ -599,7 +542,7 @@ def test_vision_inference_failure_gets_user_facing_reply(monkeypatch):
     )
     monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
     monkeypatch.setattr(
-        "features.llm_mention.generate_mention_reply",
+        "features.llm_mention.generate_mention_result",
         lambda *args, **kwargs: None,
     )
 
@@ -611,9 +554,10 @@ def test_vision_inference_failure_gets_user_facing_reply(monkeypatch):
 def test_summon_never_consolidates_memory(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
     feature.memory = SimpleNamespace(
-        can_process_batch=MagicMock(return_value=True), commit_batch=MagicMock()
+        can_process_batch=MagicMock(return_value=True)
     )
     feature._reply_mention = AsyncMock()
+    feature._enqueue_memory = AsyncMock()
     batch = MemoryBatch(
         scope_id=100,
         user_id=123,
@@ -630,26 +574,23 @@ def test_summon_never_consolidates_memory(monkeypatch):
         summon_only=True,
         memory_batch=batch,
     )
-    update = MagicMock()
     monkeypatch.setattr(
         "features.llm_mention.generate_summon_reply",
         lambda *args, **kwargs: "You rang?",
     )
-    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
-
     asyncio.run(feature._process_job(job))
 
     feature._reply_mention.assert_awaited_once()
-    update.assert_not_called()
-    feature.memory.commit_batch.assert_not_called()
+    feature._enqueue_memory.assert_not_awaited()
 
 
 def test_invalidated_batch_is_not_sent_for_consolidation(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
     feature.memory = SimpleNamespace(
-        can_process_batch=MagicMock(return_value=False), commit_batch=MagicMock()
+        can_process_batch=MagicMock(return_value=False)
     )
     feature._reply_mention = AsyncMock()
+    feature._enqueue_memory = AsyncMock()
     batch = MemoryBatch(
         scope_id=100,
         user_id=123,
@@ -665,16 +606,13 @@ def test_invalidated_batch_is_not_sent_for_consolidation(monkeypatch):
         model="discord-bot",
         memory_batch=batch,
     )
-    update = MagicMock()
     monkeypatch.setattr(
-        "features.llm_mention.generate_mention_reply", lambda *args, **kwargs: "Hi"
+        "features.llm_mention.generate_mention_result",
+        lambda *args, **kwargs: SimpleNamespace(text="Hi", reaction=None),
     )
-    monkeypatch.setattr("features.llm_mention.generate_memory_update", update)
-
     asyncio.run(feature._process_job(job))
 
-    update.assert_not_called()
-    feature.memory.commit_batch.assert_not_called()
+    feature._enqueue_memory.assert_not_awaited()
 
 
 def test_split_discord_messages_splits_long_text():
