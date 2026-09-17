@@ -27,11 +27,16 @@ def test_dashboard_and_assets_are_served(dashboard_client):
 
     assert page.status_code == 200
     assert b"Bot Control" in page.data
+    assert b"Sign in to Bot Control" in page.data
+    assert b'id="login-form"' in page.data
     assert b"page-wishlist" in page.data
     assert stylesheet.status_code == 200
     assert b"@media (max-width: 780px)" in stylesheet.data
     assert script.status_code == 200
     assert b'"X-Discord-ID-Format": "string"' in script.data
+    assert b"headers.Authorization = `Bearer ${state.token}`" in script.data
+    assert b'sessionStorage.getItem("bot-dashboard-token")' in script.data
+    assert b"response.status === 401" in script.data
     assert b"return timestamp / 1000" in script.data
     assert b"if (!ticket.current()) return" in script.data
     assert b"requestVersions: new Map()" in script.data

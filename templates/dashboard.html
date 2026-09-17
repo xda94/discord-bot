@@ -8,6 +8,21 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
 </head>
 <body>
+  <div class="auth-overlay" id="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="auth-card">
+      <span class="brand-mark auth-mark">B</span>
+      <p class="eyebrow">LOCAL ADMINISTRATION</p>
+      <h1 id="auth-title">Sign in to Bot Control</h1>
+      <p>Enter the <code>API_TOKEN</code> configured on your mini PC.</p>
+      <form id="login-form" class="form-stack">
+        <label>API token<input name="token" type="password" autocomplete="current-password" required autofocus placeholder="Paste your API_TOKEN"></label>
+        <div id="login-error" class="login-error" aria-live="polite"></div>
+        <button class="button primary">Sign in</button>
+      </form>
+      <small>The token is kept only in this browser session and is never written to the bot database.</small>
+    </div>
+  </div>
+
   <aside class="sidebar" id="sidebar">
     <div class="brand">
       <span class="brand-mark">B</span>
@@ -33,6 +48,7 @@
         <label>Server ID<input id="global-guild-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord server ID"></label>
         <label>User ID<input id="global-user-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord user ID"></label>
       </div>
+      <button class="button secondary logout-button" data-action="logout">Log out</button>
     </header>
 
     <div class="content">

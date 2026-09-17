@@ -3,6 +3,7 @@
 
   const state = {
     page: "overview",
+    token: sessionStorage.getItem("bot-dashboard-token") || "",
     guildId: localStorage.getItem("bot-dashboard-guild") || "",
     userId: localStorage.getItem("bot-dashboard-user") || "",
     wishlist: [],
@@ -61,15 +62,42 @@
 
   async function api(path, options = {}) {
     const headers = { "X-Discord-ID-Format": "string", ...(options.headers || {}) };
+    if (state.token) headers.Authorization = `Bearer ${state.token}`;
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
     const response = await fetch(path, { ...options, headers });
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json") ? await response.json() : null;
+    if (response.status === 401) {
+      state.token = "";
+      sessionStorage.removeItem("bot-dashboard-token");
+      showLogin("That API token was not accepted. Try again.");
+    }
     if (!response.ok) {
       const message = payload?.detail ? `${payload.error}: ${payload.detail}` : payload?.error;
       throw new Error(message || `Request failed (${response.status})`);
     }
     return payload;
+  }
+
+  function showLogin(message = "") {
+    clearInterval(state.statsTimer); state.statsTimer = null;
+    $("#login-error").textContent = message;
+    $("#auth-overlay").classList.remove("hidden");
+    $("[name='token']", $("#login-form")).focus();
+  }
+
+  function hideLogin() {
+    $("#login-error").textContent = "";
+    $("#auth-overlay").classList.add("hidden");
+  }
+
+  async function login(token) {
+    state.token = String(token || "").trim();
+    if (!state.token) throw new Error("Enter your API token.");
+    await api("/system/stats");
+    sessionStorage.setItem("bot-dashboard-token", state.token);
+    hideLogin();
+    navigate(state.page);
   }
 
   function toast(message, kind = "success") {
@@ -321,6 +349,7 @@
     const action = button.dataset.action;
     try {
       if (action === "refresh-overview") return loadOverview();
+      if (action === "logout") { state.token = ""; sessionStorage.removeItem("bot-dashboard-token"); showLogin(); return; }
       if (action === "load-keywords") return loadKeywords();
       if (action === "load-reminders") return loadReminders();
       if (action === "load-wishlist") return loadWishlist();
@@ -347,7 +376,7 @@
     } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }
 
-  function init() {
+  async function init() {
     $("#global-guild-id").value = state.guildId; $("#global-user-id").value = state.userId;
     $$(".nav-item").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.page)));
     $("#menu-button").addEventListener("click", () => document.body.classList.toggle("menu-open"));
@@ -355,8 +384,12 @@
     let scopeTimer;
     const updateScope = () => { clearTimeout(scopeTimer); scopeTimer = setTimeout(() => { state.guildId = $("#global-guild-id").value.trim(); state.userId = $("#global-user-id").value.trim(); localStorage.setItem("bot-dashboard-guild", state.guildId); localStorage.setItem("bot-dashboard-user", state.userId); state.selectedWishlist = null; state.selectedFlight = null; loaders[state.page](); }, 350); };
     $("#global-guild-id").addEventListener("input", updateScope); $("#global-user-id").addEventListener("input", updateScope);
+    $("#login-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => login(data.get("token"))); });
     document.addEventListener("click", (event) => { const action = event.target.closest("[data-action]"); if (action) { event.preventDefault(); handleAction(action); return; } const row = event.target.closest("[data-select]"); if (row?.dataset.select === "wishlist") loadWishlistDetail(row.dataset.id); if (row?.dataset.select === "flight") loadFlightDetail(row.dataset.id); });
-    bindForms(); navigate("overview");
+    bindForms();
+    if (state.token) {
+      try { await login(state.token); } catch (_error) { showLogin("Your saved session is no longer valid. Sign in again."); }
+    } else showLogin();
   }
 
   window.DashboardTest = { idValue, unixSeconds, version };
