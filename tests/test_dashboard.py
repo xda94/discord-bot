@@ -119,10 +119,6 @@ def test_memory_channel_and_user_controls(dashboard_client):
         (),
         (),
     )
-    assert db.add_llm_memory_transcript(
-        guild_id, user_id, channel_id, "user", "I like tea"
-    )
-
     memory = client.get(
         f"/memory/users/{user_id}?scope_id={guild_id}", headers=exact_headers
     ).get_json()
@@ -130,7 +126,7 @@ def test_memory_channel_and_user_controls(dashboard_client):
     assert memory["user_id"] == str(user_id)
     assert memory["preference"] is True
     assert memory["entries"][0]["content"] == "Likes tea"
-    assert memory["transcript"][0]["channel_id"] == str(channel_id)
+    assert memory["transcript"] == []
 
     forgotten = client.delete(
         f"/memory/users/{user_id}", json={"scope_id": str(guild_id)}

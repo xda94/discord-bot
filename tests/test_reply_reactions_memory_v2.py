@@ -153,7 +153,7 @@ def test_ordinary_reaction_sampling_cooldown_and_busy_skip(monkeypatch):
     feature._queue = SimpleNamespace(qsize=lambda: 0)
     feature._reaction_pending_channels = set()
     feature._reaction_last_attempt = {}
-    feature._put_job = AsyncMock()
+    feature._put_job = AsyncMock(return_value=True)
     message = _message("Am terminat proiectul!")
     monkeypatch.setattr("features.llm_mention.random.random", lambda: 0.0)
     monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
@@ -335,27 +335,43 @@ def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch
     assert result.successful is True
     assert '"source_index": 0, "content": "First observation"' in captured["prompt"]
     assert '"source_index": 1, "content": "Second observation"' in captured["prompt"]
+    assert "fact, impression, like, dislike, or topic" in captured["prompt"]
     for key in ("add", "correct"):
-        source_index = captured["schema"]["properties"][key]["items"][
-            "properties"
-        ]["source_index"]
+        properties = captured["schema"]["properties"][key]["items"]["properties"]
+        source_index = properties["source_index"]
         assert source_index["minimum"] == 0
         assert source_index["maximum"] == 1
+        assert properties["kind"]["enum"] == [
+            "fact",
+            "impression",
+            "like",
+            "dislike",
+            "topic",
+        ]
 
 
-def test_transcript_is_bounded_and_expires(tmp_db):
-    now = time.time()
-    db.add_llm_memory_transcript(
-        100, 7, 10, "user", "expired", created_at=now - 8 * 24 * 60 * 60
+def test_memory_delta_accepts_profile_synthesis_categories(monkeypatch):
+    monkeypatch.setattr(
+        "tease_llm.query_llm",
+        lambda *args, **kwargs: (
+            '{"add":['
+            '{"kind":"like","content":"Likes tea","source_index":0},'
+            '{"kind":"impression","content":"Seems methodical","source_index":1}'
+            '],"correct":[]}'
+        ),
     )
-    for index in range(45):
-        db.add_llm_memory_transcript(
-            100, 7, 10, "user", f"message-{index}", created_at=now + index
-        )
-    rows = db.get_llm_memory_transcript(100, 7, now=now + 45)
-    assert len(rows) == 40
-    assert all(row[3] != "expired" for row in rows)
-    assert rows[0][3] == "message-5"
+
+    result = generate_memory_delta(
+        [], ["I love tea", "I check every step twice"], model="discord-bot"
+    )
+
+    assert result.successful is True
+    assert [entry["kind"] for entry in result.additions] == ["like", "impression"]
+
+
+def test_raw_transcript_is_not_persisted(tmp_db):
+    assert db.add_llm_memory_transcript(100, 7, 10, "user", "private chat") is False
+    assert db.get_llm_memory_transcript(100, 7) == []
 
 
 def test_old_profile_migrates_once_with_stable_rows(tmp_db):
@@ -381,7 +397,7 @@ def test_pending_observations_survive_restart_and_become_eligible(tmp_db):
     asyncio.run(client.close())
 
     client2, restored = _memory_feature()
-    batches = restored.eligible_batches(now=time.time() + 301)
+    batches = restored.eligible_batches(now=time.time() + 24 * 60 * 60 + 1)
     assert len(batches) == 1
     assert batches[0].observations == ("I am building a Discord bot",)
     asyncio.run(client2.close())
@@ -404,7 +420,7 @@ def test_commit_rejects_change_without_supporting_user_message(tmp_db):
     asyncio.run(client.close())
 
 
-def test_forget_deletes_entries_transcript_and_pending_observations(tmp_db):
+def test_forget_deletes_entries_and_pending_observations(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     db.apply_llm_memory_delta(
         100,
@@ -413,10 +429,9 @@ def test_forget_deletes_entries_transcript_and_pending_observations(tmp_db):
         (),
         (),
     )
-    db.add_llm_memory_transcript(100, 7, 10, "user", "hello")
     db.add_llm_memory_observation(100, 7, 100, 10, "pending")
 
-    assert db.delete_all_llm_user_memory(100, 7) == 3
+    assert db.delete_all_llm_user_memory(100, 7) == 2
     assert db.get_llm_memory_entries(100, 7) == []
     assert db.get_llm_memory_transcript(100, 7) == []
     assert db.get_llm_memory_observations(100, 7) == []

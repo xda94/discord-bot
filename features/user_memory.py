@@ -14,11 +14,11 @@ import db
 logger = logging.getLogger("discord_bot")
 
 DM_SCOPE_ID = 0
-OBSERVATION_MAX_CHARS = 2000
-OBSERVATION_MAX_MESSAGES = 20
+OBSERVATION_MESSAGE_MAX_CHARS = 2000
+SYNTHESIS_CHUNK_MAX_CHARS = 12000
+SYNTHESIS_CHUNK_MAX_MESSAGES = 100
 PRIVATE_MESSAGE_CHUNK = 1900
-MEMORY_BATCH_MESSAGES = 10
-MEMORY_BATCH_MAX_AGE_SECONDS = 5 * 60
+MEMORY_SYNTHESIS_INTERVAL_SECONDS = 24 * 60 * 60
 MEMORY_CONFIG_CACHE_SECONDS = 30
 
 
@@ -67,8 +67,9 @@ async def _send_private(interaction: discord.Interaction, text: str) -> None:
 class UserMemoryFeature:
     """Channel-controlled, per-user conversational memory.
 
-    SQLite owns stable entries, bounded transcripts, pending observations,
-    channel configuration, and explicit user preferences.
+    SQLite owns synthesized entries, pending observations, channel
+    configuration, and explicit user preferences. Pending user messages are
+    deleted atomically after a successful daily synthesis.
     """
 
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
@@ -198,7 +199,7 @@ class UserMemoryFeature:
         scope_id = _scope_id(guild_id)
         key = (scope_id, user_id)
         observations = self._buffers.setdefault(key, deque())
-        content = content[:OBSERVATION_MAX_CHARS]
+        content = content[:OBSERVATION_MESSAGE_MAX_CHARS]
         created_at = time.time()
         sequence = db.add_llm_memory_observation(
             scope_id,
@@ -219,18 +220,6 @@ class UserMemoryFeature:
             )
         )
 
-        removed_ids = []
-        while len(observations) > OBSERVATION_MAX_MESSAGES:
-            removed_ids.append(observations.popleft().sequence)
-        while (
-            len(observations) > 1
-            and sum(len(item.content) for item in observations)
-            > OBSERVATION_MAX_CHARS
-        ):
-            removed_ids.append(observations.popleft().sequence)
-        if removed_ids:
-            db.delete_llm_memory_observations(removed_ids)
-
     async def handle_message(self, message: discord.Message) -> bool:
         content = message.clean_content.strip()
         if not content:
@@ -247,13 +236,6 @@ class UserMemoryFeature:
             channel_id=message.channel.id,
             user_id=message.author.id,
             content=content,
-        )
-        db.add_llm_memory_transcript(
-            _scope_id(guild_id),
-            message.author.id,
-            message.channel.id,
-            "user",
-            content,
         )
         return False
 
@@ -282,7 +264,7 @@ class UserMemoryFeature:
         )
 
     def context_for(self, message: discord.Message) -> MemoryContext:
-        """Snapshot the requester's current profile and pending observations."""
+        """Snapshot the requester's synthesized profile and pending observations."""
         guild_id = message.guild.id if message.guild is not None else None
         channel_id = message.channel.id
         user_id = message.author.id
@@ -303,14 +285,6 @@ class UserMemoryFeature:
         # next init_db migration (useful to API callers during a rolling update).
         if not profile:
             profile = db.get_llm_user_memory(scope_id, user_id) or ""
-        history = tuple(
-            f"{'User' if role == 'user' else 'Bot'}: {content}"
-            for _row_id, _channel_id, role, content, _created_at
-            in db.get_llm_memory_transcript(scope_id, user_id)
-        )
-        current_content = getattr(message, "clean_content", "").strip()
-        if history and history[-1] == f"User: {current_content}":
-            history = history[:-1]
         observations = self._buffers.get(key)
         batch = None
         if observations:
@@ -325,7 +299,7 @@ class UserMemoryFeature:
                 observations=tuple(item.content for item in snapshot),
                 observation_ids=tuple(item.sequence for item in snapshot),
             )
-        return MemoryContext(enabled=True, profile=profile, history=history, batch=batch)
+        return MemoryContext(enabled=True, profile=profile, batch=batch)
 
     def commit_delta(self, batch: MemoryBatch, additions, corrections) -> bool:
         """Atomically apply row changes and acknowledge their source observations."""
@@ -376,6 +350,50 @@ class UserMemoryFeature:
             used += len(content)
         return selected
 
+    @staticmethod
+    def synthesis_chunks(batch: MemoryBatch) -> tuple[MemoryBatch, ...]:
+        """Split one daily snapshot without dropping any source observations."""
+        if len(batch.observation_ids) != len(batch.observations):
+            # Compatibility for manually constructed batches in callers/tests.
+            return (batch,)
+        chunks = []
+        current_ids = []
+        current_messages = []
+        current_chars = 0
+
+        def append_chunk() -> None:
+            if not current_messages:
+                return
+            chunks.append(
+                MemoryBatch(
+                    scope_id=batch.scope_id,
+                    user_id=batch.user_id,
+                    guild_id=batch.guild_id,
+                    request_channel_id=batch.request_channel_id,
+                    generation=batch.generation,
+                    through_sequence=current_ids[-1],
+                    observations=tuple(current_messages),
+                    observation_ids=tuple(current_ids),
+                )
+            )
+
+        for observation_id, message in zip(
+            batch.observation_ids, batch.observations
+        ):
+            if current_messages and (
+                len(current_messages) >= SYNTHESIS_CHUNK_MAX_MESSAGES
+                or current_chars + len(message) > SYNTHESIS_CHUNK_MAX_CHARS
+            ):
+                append_chunk()
+                current_ids = []
+                current_messages = []
+                current_chars = 0
+            current_ids.append(observation_id)
+            current_messages.append(message)
+            current_chars += len(message)
+        append_chunk()
+        return tuple(chunks)
+
     def eligible_batches(self, *, now: float | None = None) -> list[MemoryBatch]:
         now = time.time() if now is None else now
         result = []
@@ -385,10 +403,7 @@ class UserMemoryFeature:
             if not observations:
                 continue
             oldest = observations[0]
-            if (
-                len(observations) < MEMORY_BATCH_MESSAGES
-                and now - oldest.created_at < MEMORY_BATCH_MAX_AGE_SECONDS
-            ):
+            if now - oldest.created_at < MEMORY_SYNTHESIS_INTERVAL_SECONDS:
                 continue
             latest = observations[-1]
             guild_id = None if scope_id == DM_SCOPE_ID else scope_id
@@ -412,13 +427,6 @@ class UserMemoryFeature:
                 )
             )
         return result
-
-    def record_bot_reply(self, batch: MemoryBatch | None, channel_id: int, text: str) -> None:
-        if batch is None or not self.can_process_batch(batch):
-            return
-        db.add_llm_memory_transcript(
-            batch.scope_id, batch.user_id, channel_id, "assistant", text
-        )
 
     def can_process_batch(self, batch: MemoryBatch) -> bool:
         """Reject a queued snapshot invalidated by privacy/config changes."""
@@ -500,8 +508,9 @@ class UserMemoryFeature:
                 self._enabled_channels.add(pair)
                 text = (
                     "🧠 **Persistent bot memory is now enabled in this channel.**\n"
-                    "The bot may save durable facts, short topic notes, and a bounded "
-                    "seven-day conversation window for each member, then use them only "
+                    "Once a day, the bot synthesizes new messages into facts, "
+                    "impressions, likes, dislikes, and topic notes for each member. "
+                    "The source chat is then deleted and only the synthesis is used "
                     "when that same member mentions it. Use `/memory-show`, "
                     "`/memory-forget`, or `/memory-opt-out` for personal control."
                 )
@@ -560,7 +569,6 @@ class UserMemoryFeature:
         async def memory_show(interaction: discord.Interaction):
             scope_id = _scope_id(interaction.guild_id)
             entries = db.get_llm_memory_entries(scope_id, interaction.user.id)
-            transcript = db.get_llm_memory_transcript(scope_id, interaction.user.id)
             profile = db.get_llm_user_memory(scope_id, interaction.user.id)
             preference = self._preference(scope_id, interaction.user.id)
             if preference is False:
@@ -569,7 +577,7 @@ class UserMemoryFeature:
                     "You are opted out of persistent memory in this scope, and no "
                     "saved profile is being used.",
                 )
-            elif not entries and not transcript and not profile:
+            elif not entries and not profile:
                 await _send_private(
                     interaction, "The bot does not have a saved profile for you here yet."
                 )
@@ -585,14 +593,6 @@ class UserMemoryFeature:
                     )
                 elif profile:
                     sections.append(profile)
-                if transcript:
-                    sections.append(
-                        "**Recent conversation window**\n"
-                        + "\n".join(
-                            f"{'You' if role == 'user' else 'Bot'}: {content}"
-                            for _row_id, _channel_id, role, content, _created in transcript
-                        )
-                    )
                 await _send_private(interaction, "\n".join(sections))
 
         @self.tree.command(

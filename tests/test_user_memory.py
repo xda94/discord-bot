@@ -7,8 +7,9 @@ from discord import app_commands
 
 import db
 from features.user_memory import (
-    OBSERVATION_MAX_CHARS,
-    OBSERVATION_MAX_MESSAGES,
+    MEMORY_SYNTHESIS_INTERVAL_SECONDS,
+    SYNTHESIS_CHUNK_MAX_CHARS,
+    SYNTHESIS_CHUNK_MAX_MESSAGES,
     UserMemoryFeature,
 )
 
@@ -46,19 +47,88 @@ def test_capture_requires_enabled_channel_and_keeps_requester_scope(tmp_db):
     asyncio.run(client.close())
 
 
-def test_buffer_keeps_last_twenty_messages_with_bounded_text(tmp_db):
+def test_daily_synthesis_chunks_keep_every_pending_message(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()
     message = _message()
-    for index in range(30):
+    for index in range(130):
         message.clean_content = f"{index}:" + ("x" * 120)
         asyncio.run(feature.handle_message(message))
 
     batch = feature.context_for(message).batch
     assert batch is not None
-    assert len(batch.observations) <= OBSERVATION_MAX_MESSAGES
-    assert sum(len(text) for text in batch.observations) <= OBSERVATION_MAX_CHARS
-    assert batch.observations[-1].startswith("29:")
+    assert len(batch.observations) == 130
+    assert batch.observations[-1].startswith("129:")
+    chunks = feature.synthesis_chunks(batch)
+    assert sum(len(chunk.observations) for chunk in chunks) == 130
+    assert tuple(
+        text for chunk in chunks for text in chunk.observations
+    ) == batch.observations
+    assert all(
+        len(chunk.observations) <= SYNTHESIS_CHUNK_MAX_MESSAGES
+        and sum(len(text) for text in chunk.observations)
+        <= SYNTHESIS_CHUNK_MAX_CHARS
+        for chunk in chunks
+    )
+    asyncio.run(client.close())
+
+
+def test_daily_synthesis_waits_24_hours_and_deletes_source_chat(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    message = _message(content="I really like mechanical keyboards")
+    asyncio.run(feature.handle_message(message))
+    created_at = db.get_llm_memory_observations(100, 7)[0][-1]
+
+    assert feature.eligible_batches(
+        now=created_at + MEMORY_SYNTHESIS_INTERVAL_SECONDS - 1
+    ) == []
+    batches = feature.eligible_batches(
+        now=created_at + MEMORY_SYNTHESIS_INTERVAL_SECONDS
+    )
+    assert len(batches) == 1
+
+    assert feature.commit_delta(
+        batches[0],
+        (
+            {
+                "kind": "like",
+                "content": "Likes mechanical keyboards",
+                "source_text": "I really like mechanical keyboards",
+            },
+        ),
+        (),
+    )
+    assert db.get_llm_memory_observations(100, 7) == []
+    assert db.get_llm_memory_transcript(100, 7) == []
+    assert [(row[1], row[2]) for row in db.get_llm_memory_entries(100, 7)] == [
+        ("like", "Likes mechanical keyboards")
+    ]
+    asyncio.run(client.close())
+
+
+def test_new_chat_after_synthesis_starts_a_new_daily_window(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    client, _, feature = _build_feature()
+    message = _message(content="first day")
+    asyncio.run(feature.handle_message(message))
+    first_created = db.get_llm_memory_observations(100, 7)[0][-1]
+    batch = feature.eligible_batches(
+        now=first_created + MEMORY_SYNTHESIS_INTERVAL_SECONDS
+    )[0]
+    assert feature.commit_delta(batch, (), ())
+
+    message.clean_content = "second day"
+    asyncio.run(feature.handle_message(message))
+    second_created = db.get_llm_memory_observations(100, 7)[0][-1]
+    assert feature.eligible_batches(
+        now=second_created + MEMORY_SYNTHESIS_INTERVAL_SECONDS - 1
+    ) == []
+    assert len(
+        feature.eligible_batches(
+            now=second_created + MEMORY_SYNTHESIS_INTERVAL_SECONDS
+        )
+    ) == 1
     asyncio.run(client.close())
 
 

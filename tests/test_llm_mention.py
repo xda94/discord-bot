@@ -23,7 +23,6 @@ from features.llm_mention import (
     get_ask_cooldown_seconds,
     get_memory_consolidation_interval_seconds,
     get_selected_model,
-    requests_ahead,
     select_image_attachment,
     split_discord_messages,
 )
@@ -78,7 +77,7 @@ def _handling_feature(*, processing=False, queue_size=0):
     feature._user_last_ask = {}
     feature._processing = processing
     feature._queue = SimpleNamespace(qsize=lambda: queue_size)
-    feature._enqueue_job = AsyncMock()
+    feature._enqueue_job = AsyncMock(return_value=True)
     return feature
 
 
@@ -171,6 +170,56 @@ def test_memory_scheduler_uses_configured_interval(monkeypatch):
     feature.memory.eligible_batches.assert_called_once_with()
 
 
+def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
+    class SchedulerStopped(Exception):
+        pass
+
+    calls = 0
+
+    async def fake_sleep(_delay):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise SchedulerStopped
+
+    first = SimpleNamespace(scope_id=1, user_id=1)
+    second = SimpleNamespace(scope_id=1, user_id=2)
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        eligible_batches=MagicMock(return_value=[first, second])
+    )
+    feature._enqueue_memory = AsyncMock(return_value=True)
+    feature._model_busy = MagicMock(return_value=True)
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "features.llm_mention.get_selected_model", lambda: "discord-bot"
+    )
+
+    with pytest.raises(SchedulerStopped):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    feature._enqueue_memory.assert_awaited_once_with(first, "discord-bot")
+
+
+def test_worker_admission_does_not_build_a_backlog():
+    async def scenario():
+        feature = object.__new__(LLMMentionFeature)
+        feature._processing = False
+        feature._queue = asyncio.PriorityQueue()
+        feature._queue_sequence = 0
+        feature._ensure_worker = MagicMock()
+
+        first = await feature._put_job(0, "first")
+        second = await feature._put_job(0, "second")
+
+        assert first is True
+        assert second is False
+        assert feature._queue.qsize() == 1
+        assert feature._queue.get_nowait()[2] == "first"
+
+    asyncio.run(scenario())
+
+
 def test_stale_stored_model_is_replaced_with_llama_cpp_default(tmp_db):
     import db
 
@@ -178,13 +227,6 @@ def test_stale_stored_model_is_replaced_with_llama_cpp_default(tmp_db):
 
     assert get_selected_model() == "discord-bot"
     assert db.get_setting("mention_model") == "discord-bot"
-
-
-def test_requests_ahead():
-    assert requests_ahead(processing=False, queue_size=0) == 0
-    assert requests_ahead(processing=True, queue_size=0) == 1
-    assert requests_ahead(processing=True, queue_size=2) == 3
-    assert requests_ahead(processing=False, queue_size=2) == 2
 
 
 def test_image_signature_detection():
@@ -255,7 +297,7 @@ def test_image_mention_enqueues_description_or_caption(
     message.reply.assert_not_awaited()
 
 
-def test_queued_multi_image_request_gets_one_combined_notice(monkeypatch):
+def test_busy_multi_image_request_is_not_queued(monkeypatch):
     monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
     feature = _handling_feature(processing=True, queue_size=1)
     first = _attachment(filename="first.png")
@@ -264,13 +306,22 @@ def test_queued_multi_image_request_gets_one_combined_notice(monkeypatch):
 
     asyncio.run(feature.handle_message(message))
 
-    job = feature._enqueue_job.await_args.args[0]
-    assert job.image_attachment is first
+    feature._enqueue_job.assert_not_awaited()
     notice = message.reply.await_args.args[0]
-    assert "2 requests" in notice
-    assert "yours is queued" in notice
-    assert "use the first image" in notice
+    assert "didn't queue" in notice
     assert message.reply.await_args.kwargs["mention_author"] is False
+
+
+def test_mention_losing_admission_race_is_not_queued(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    feature._enqueue_job.return_value = False
+    message = _mention_message(text="hello")
+
+    asyncio.run(feature.handle_message(message))
+
+    feature._enqueue_job.assert_awaited_once()
+    assert "became busy" in message.reply.await_args.args[0]
 
 
 def test_pending_user_is_not_allowed_to_enqueue_another_image(monkeypatch):
@@ -358,7 +409,7 @@ def test_memory_enabled_reply_uses_distinct_feedback_prompt_version():
     )
 
 
-def test_reply_is_sent_before_memory_consolidation(monkeypatch):
+def test_reply_does_not_trigger_memory_synthesis(monkeypatch):
     events = []
     feature = object.__new__(LLMMentionFeature)
     feature.memory = SimpleNamespace(
@@ -388,7 +439,8 @@ def test_reply_is_sent_before_memory_consolidation(monkeypatch):
     )
     asyncio.run(feature._process_job(job))
 
-    assert events == ["reply", "memory"]
+    assert events == ["reply"]
+    feature._enqueue_memory.assert_not_awaited()
 
 
 def test_failed_memory_consolidation_does_not_commit(monkeypatch):
@@ -419,7 +471,45 @@ def test_failed_memory_consolidation_does_not_commit(monkeypatch):
     feature.memory.commit_delta.assert_not_called()
 
 
-def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypatch):
+def test_memory_job_processes_only_one_chunk_per_scheduler_pass(monkeypatch):
+    first = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=1,
+        observations=("first",),
+    )
+    second = MemoryBatch(
+        scope_id=100,
+        user_id=123,
+        guild_id=100,
+        request_channel_id=10,
+        generation=0,
+        through_sequence=2,
+        observations=("second",),
+    )
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        synthesis_chunks=MagicMock(return_value=(first, second)),
+        can_process_batch=MagicMock(return_value=True),
+        entries_for_batch=MagicMock(return_value=[]),
+        commit_delta=MagicMock(return_value=True),
+    )
+    generate = MagicMock(
+        return_value=SimpleNamespace(successful=True, additions=(), corrections=())
+    )
+    monkeypatch.setattr("features.llm_mention.generate_memory_delta", generate)
+
+    asyncio.run(feature._process_memory_job(MemoryJob(first, "discord-bot")))
+
+    generate.assert_called_once()
+    assert generate.call_args.args[1] == ["first"]
+    feature.memory.commit_delta.assert_called_once_with(first, (), ())
+
+
+def test_vision_job_downloads_only_in_worker_without_early_memory_synthesis(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
     feature.feedback = None
     feature._reply_mention = AsyncMock()
@@ -460,7 +550,7 @@ def test_vision_job_downloads_only_in_worker_and_consolidates_text_only(monkeypa
     assert reply.call_args.kwargs["image_mime"] == "image/png"
     feature._reply_mention.assert_awaited_once_with(job, "A blue diagram.")
     feature._reply_job_error.assert_not_awaited()
-    feature._enqueue_memory.assert_awaited_once_with(batch, "discord-bot")
+    feature._enqueue_memory.assert_not_awaited()
 
 
 def test_vision_job_stops_before_download_when_projector_is_disabled(monkeypatch):

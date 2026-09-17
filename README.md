@@ -77,8 +77,8 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
-| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent channel messages considered for mentions. Saved memory and conversation history share a 6,000-character budget (4,000 for vision) with half initially reserved for each. Default: `0`. |
-| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between background scans for memory batches ready to consolidate. Default: `300` (5 minutes); minimum: `1`. Mention-triggered consolidation still runs after the reply. |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. |
+| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between scans for daily memory batches. Default: `300` (5 minutes); minimum: `1`. A batch becomes eligible 24 hours after its first pending message. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -102,8 +102,15 @@ llama-server \
   --alias discord-bot \
   --host 127.0.0.1 \
   --port 8080 \
-  --ctx-size 4096
+  --ctx-size 4096 \
+  --parallel 1 \
+  --threads 3 \
+  --threads-batch 3
 ```
+
+On a four-core host, three inference threads leave one core available for the
+OS, Discord bot, and API. Four inference threads can make the machine
+unresponsive even though the bot's event loop itself is not blocked.
 
 The bot calls llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint.
 Gemma's matching multimodal projector is loaded automatically by `-hf`;
@@ -359,8 +366,8 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
 | `/llm-memory <activate\|deactivate\|status>` | Manage persistent user memory in the current channel. Requires **Manage Server** permission; memory defaults to disabled. |
 | `/llm-memory-purge <confirmation>` | Delete all saved memory for users in this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
-| `/memory-show` | Privately show saved facts, topic notes, and the recent conversation window for the current server or DM. |
-| `/memory-forget` | Erase facts, topic notes, transcript, and pending observations here without opting out. |
+| `/memory-show` | Privately show synthesized facts, impressions, likes, dislikes, and topic notes for the current server or DM. |
+| `/memory-forget` | Erase synthesized entries and pending observations here without opting out. |
 | `/memory-opt-out` | Stop memory and erase all of your memory data in the current server or DM. |
 | `/memory-opt-in` | Re-enable memory for you; required before memory can operate in DMs. |
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
@@ -371,13 +378,13 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 Vision requests accept one directly attached PNG or JPEG up to 8 MiB and 25
 megapixels. URLs, replied-to images, GIF, WebP, and multi-image reasoning are not
 supported. If several images are attached, the first is processed and the bot
-acknowledges the one-image limit. Images use the same global priority queue and
-one-pending-request-per-user guard as text mentions; when work is already active
-or queued, the bot immediately reports how many requests are ahead. Attachment
-bytes are downloaded only when their job starts, are never logged or persisted,
-and are never included in memory consolidation. Vision jobs reserve more model
-context for image tokens by limiting memory plus recent history to 4,000
-characters instead of the normal 6,000.
+acknowledges the one-image limit. Text and image mentions share one inference
+slot. When that slot is busy, the bot declines the new request instead of
+building a backlog and asks the user to retry shortly. Attachment bytes are
+downloaded only after a job is admitted, are never logged or persisted, and are
+never included in memory consolidation. Vision jobs reserve more model context
+for image tokens by limiting memory plus recent history to 4,000 characters
+instead of the normal 6,000.
 
 The bot may react to the original human message with a contextual emoji. It
 does not seed feedback reactions on its own reply. The requester may manually
@@ -388,23 +395,25 @@ prompts or response text. `/llm-feedback-summary` marks a model/prompt
 combination ready to compare only after ten ratings; it never changes a model
 or prompt automatically.
 
-Persistent memory stores durable facts and short topic notes as individual
-SQLite rows with stable IDs. New messages add rows; only an explicit newer
+Persistent memory stores daily syntheses as individual facts, impressions,
+likes, dislikes, and topic notes with stable IDs. Only an explicit newer
 statement can correct a cited row. Exact duplicates are ignored, unrelated
 rows are retained, and storage is not cut down to the prompt size. Existing
 compact profiles migrate automatically on startup.
 
-The bot also keeps a per-user recent conversation window of at most 40 messages
-and 16,000 characters for seven days. User messages feed fact extraction;
-assistant messages provide conversation continuity but cannot become personal
-facts. Pending extraction batches survive restarts and run after a successful
-mention or, for ordinary chat, after ten messages or five minutes. The
-background scan runs every five minutes by default and is configurable with
-`LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`. Direct replies have priority in
-the shared model queue. At prompt time, relevant facts
-are ranked by word overlap and recency, then share the 6,000-character reference
-budget with recent conversation. Memory remains server-scoped (with a separate
-opt-in DM scope) and is never supplied to another user.
+New user messages are temporarily stored as pending synthesis input. A batch
+becomes eligible 24 hours after its first message and is picked up by the
+background scan, which runs every five minutes by default and is configurable
+with `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`. After a successful synthesis,
+the entries are saved and all source messages in that batch are deleted in the
+same transaction. Failed synthesis retains the batch for retry so messages are
+not silently lost. Each scan admits at most one bounded chunk, and only while
+the inference slot is idle, so a large daily batch cannot pin the CPU
+continuously. The bot does not
+persist assistant replies or a raw conversation transcript. At prompt time, relevant synthesized entries are
+ranked by word overlap and recency and share the reference budget with live
+channel context. Memory remains server-scoped (with a separate opt-in DM scope)
+and is never supplied to another user.
 
 ---
 
@@ -486,13 +495,13 @@ and does not authenticate a Discord user.
 | `GET` | `/memory/channels?guild_id=<id>` | Enabled memory channels in one server |
 | `GET` | `/memory/channels/<guild_id>/<channel_id>` | Memory status for one channel |
 | `PUT` | `/memory/channels/<guild_id>/<channel_id>` | `{ "enabled": true }`; disabling also clears that channel's pending observations |
-| `GET` | `/memory/users/<user_id>?scope_id=<id>` | Preference, durable entries, legacy profile, and recent transcript; use scope `0` for DMs |
+| `GET` | `/memory/users/<user_id>?scope_id=<id>` | Preference, synthesized entries, and any legacy profile; `transcript` remains an empty compatibility field; use scope `0` for DMs |
 | `PUT` | `/memory/users/<user_id>/preference` | `{ "scope_id", "enabled" }`; opting out also erases saved memory |
 | `DELETE` | `/memory/users/<user_id>` | `{ "scope_id" }`; forget memory without changing the preference |
 | `DELETE` | `/memory/guilds/<guild_id>` | `{ "confirmation": "PURGE" }`; preserves channel settings and preferences |
 
 The bot refreshes memory channel and preference caches periodically and checks
-pending observation ownership before applying a queued memory update. API-side
+pending observation ownership before applying an in-flight memory update. API-side
 privacy changes therefore take effect without restarting the Discord process.
 
 ### Wishlist
@@ -533,7 +542,7 @@ python -m pytest
 
 **CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
 
-Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, memory migration/transcript bounds, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), registered flight login/add/show/delete command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker, row-level user-memory updates, contextual reactions, and mention vision validation/queueing/multimodal payloads.
+Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, memory migration/transcript bounds, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), registered flight login/add/show/delete command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker, row-level user-memory updates, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
