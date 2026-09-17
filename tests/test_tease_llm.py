@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -182,6 +183,57 @@ def test_generate_mention_result_passes_image_to_llm(monkeypatch):
     assert query.call_args.kwargs["image_bytes"] == b"png-data"
     assert query.call_args.kwargs["image_mime"] == "image/png"
     assert "using the attached image" in query.call_args.kwargs["prompt"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ("private-response", "Expecting value"),
+        (json.dumps(["private-response"]), "must contain only text and reaction"),
+        (json.dumps({"text": "private-response"}), "must contain only text and reaction"),
+        (
+            json.dumps({"text": "private-response", "reaction": None, "extra": 1}),
+            "must contain only text and reaction",
+        ),
+        (json.dumps({"text": 123, "reaction": None}), "text must be a string"),
+        (json.dumps({"text": "   ", "reaction": None}), "text is empty"),
+        (
+            json.dumps({"text": '\"\"', "reaction": None}),
+            "text is empty after normalization",
+        ),
+        (
+            json.dumps({"text": "private request with four words", "reaction": None}),
+            "echoed the current message",
+        ),
+        (
+            json.dumps({"text": "private-response", "reaction": "private-emoji"}),
+            "unsupported reaction",
+        ),
+        (
+            json.dumps({"text": "private-response", "reaction": {"private-emoji": 1}}),
+            "unsupported reaction",
+        ),
+    ],
+)
+def test_mention_validation_logs_reason_without_content(monkeypatch, caplog, raw, reason):
+    query = MagicMock(return_value=raw)
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    result = generate_mention_result(
+        "Alice", "private request with four words", model="discord-bot"
+    )
+
+    assert result is None
+    assert query.call_count == 2
+    warnings = [record for record in caplog.records if record.name == "discord_bot"]
+    assert len(warnings) == 2
+    for attempt, record in enumerate(warnings, start=1):
+        message = record.getMessage()
+        assert f"attempt {attempt} failed" in message
+        assert "model=discord-bot" in message
+        assert reason in message
+        assert "private" not in message
+        assert record.exc_info is None
 
 
 def test_generate_summon_reply(monkeypatch):
