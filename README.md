@@ -387,6 +387,15 @@ never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
 
+Mention prompts ask the model to answer as the person addressed and start with
+the answer. Validation removes leading requester/bot labels before comparing
+the reply with the question, including short questions and differences in
+case, punctuation, or diacritics. Echoes receive one corrective retry; a second
+echo produces a generation-failure message instead of posting the question.
+Replies that quote a question and then add an answer are accepted. These checks
+detect textual repetition; they do not judge the correctness of an answer or
+recognize every semantic paraphrase.
+
 Every inference request has an output-token limit: 384 by default, 96 for
 short social replies, 32 for reactions, and 768 for memory extraction.
 The HTTP timeout limits the client's wait; it is not a server CPU limit.

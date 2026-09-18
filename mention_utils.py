@@ -8,6 +8,42 @@ import discord
 _MENTION_RE = re.compile(r"<@!?(\d+)>")
 
 
+def strip_leading_reply_labels(
+    text: str, *, requester_id: int | None, names: tuple[str, ...]
+) -> str:
+    """Clean addressing before both validation and Discord delivery."""
+    cleaned = text.strip()
+    if requester_id is not None:
+        cleaned = re.sub(rf"^(?:\s*<@!?{requester_id}>\s*)+", "", cleaned)
+    usable = sorted(
+        {name.strip() for name in names if name and name.strip()},
+        key=len,
+        reverse=True,
+    )
+    if not usable:
+        return cleaned
+    alternatives = "|".join(re.escape(name) for name in usable)
+    leading_at_name = re.compile(
+        rf"^\s*(?:[*_`~]{{1,3}})?\s*@(?:{alternatives})\b\s*"
+        rf"(?:[*_`~]{{1,3}})?\s*",
+        flags=re.IGNORECASE,
+    )
+    label = re.compile(
+        rf"^\s*(?:[*_`~]{{1,3}})?\s*"
+        rf"(?:@?(?:{alternatives}))(?:\s+@?(?:{alternatives}))*"
+        rf"\s*(?:[*_`~]{{1,3}})?\s*[:：\-–—]\s*"
+        rf"(?:[*_`~]{{1,3}})?\s*",
+        flags=re.IGNORECASE,
+    )
+    for pattern in (leading_at_name, label):
+        while True:
+            updated = pattern.sub("", cleaned, count=1).lstrip()
+            if updated == cleaned:
+                break
+            cleaned = updated
+    return cleaned or text.strip()
+
+
 def get_bot_id() -> int:
     raw = os.getenv("BOT_ID", "").strip()
     if not raw:

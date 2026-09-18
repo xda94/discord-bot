@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from types import SimpleNamespace
@@ -71,6 +72,56 @@ def test_reply_sender_adds_only_one_requester_mention_with_bot_label():
     asyncio.run(feature._reply_mention(job, "@Robeeque Balen: Salut!"))
 
     assert original.reply.await_args.args == ("<@123> Salut!",)
+
+
+def test_worker_sends_only_corrected_answer_after_labeled_short_echo(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.feedback = None
+    original = SimpleNamespace(reply=AsyncMock(), add_reaction=AsyncMock())
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque", name="robeeque"),
+        question="Esti okay?",
+        model="discord-bot",
+        reply_to=original,
+        bot_names=("Balen",),
+    )
+    query = MagicMock(side_effect=[
+        json.dumps({"text": "<@123> Balen: Ești okay?", "reaction": "👍"}),
+        json.dumps({"text": "Da, sunt bine. Tu cum ești?", "reaction": None}),
+    ])
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    asyncio.run(feature._process_job(job))
+
+    original.reply.assert_awaited_once()
+    assert original.reply.await_args.args == ("<@123> Da, sunt bine. Tu cum ești?",)
+    original.add_reaction.assert_not_awaited()
+    assert query.call_count == 2
+
+
+def test_worker_never_posts_a_repeated_question_after_both_attempts_fail(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.feedback = None
+    original = SimpleNamespace(reply=AsyncMock(), add_reaction=AsyncMock())
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Robeeque"),
+        question="De ce te comporti urat cu Schular?",
+        model="discord-bot",
+        reply_to=original,
+    )
+    query = MagicMock(return_value=json.dumps({
+        "text": "De ce te comporți urât cu Schular?", "reaction": "👍",
+    }))
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    asyncio.run(feature._process_job(job))
+
+    original.reply.assert_awaited_once()
+    assert original.reply.await_args.args == (
+        "I couldn't generate a reliable answer. Please try again.",
+    )
+    original.add_reaction.assert_not_awaited()
+    assert query.call_count == 2
 
 
 def test_structured_mention_retries_malformed_and_echoed_outputs(monkeypatch):
