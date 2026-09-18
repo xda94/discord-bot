@@ -96,9 +96,87 @@ def test_query_llm_sends_chat_completion_options(monkeypatch):
         "model": "discord-bot",
         "messages": [{"role": "user", "content": "hello"}],
         "stream": False,
+        "max_tokens": 384,
         "temperature": 0.8,
     }
     assert mock_post.call_args.args[0] == "http://localhost:8080/v1/chat/completions"
+
+
+@pytest.mark.parametrize("options,expected", [(None, 384), ({"format": "json"}, 384), ({"max_tokens": 32}, 32)])
+def test_all_generation_paths_have_a_finite_output_budget(monkeypatch, options, expected):
+    response = MagicMock(ok=True)
+    response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", post)
+
+    query_llm("hello", options=options)
+
+    assert post.call_args.kwargs["json"]["max_tokens"] == expected
+
+
+@pytest.mark.parametrize("limit", [None, -1, 0, True, "100"])
+def test_unbounded_or_invalid_generation_is_rejected_before_http(monkeypatch, limit):
+    post = MagicMock()
+    monkeypatch.setattr(requests, "post", post)
+    with pytest.raises(LlamaCppError, match="positive integer"):
+        query_llm("hello", options={"max_tokens": limit})
+    post.assert_not_called()
+
+
+def test_truncated_valid_json_is_not_returned_for_memory_commit(monkeypatch):
+    response = MagicMock(ok=True)
+    response.json.return_value = {"choices": [{
+        "message": {"content": '{"add":[],"correct":[]}'},
+        "finish_reason": "length",
+    }]}
+    monkeypatch.setattr(requests, "post", MagicMock(return_value=response))
+    with pytest.raises(LlamaCppError, match="output token budget"):
+        query_llm("extract", options={"format": "json"})
+
+
+def test_timeout_logs_request_duration_without_prompt(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="discord_bot")
+    monkeypatch.setattr(requests, "post", MagicMock(side_effect=requests.exceptions.Timeout))
+    with pytest.raises(LlamaCppError, match="within 5s"):
+        query_llm("private-message-content", timeout=5)
+    assert "LLM request started" in caplog.text
+    assert "LLM HTTP wait ended" in caplog.text
+    assert "elapsed=" in caplog.text
+    assert "private-message-content" not in caplog.text
+
+
+def test_success_logs_server_usage_and_timings_without_content(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="discord_bot")
+    response = MagicMock(ok=True, status_code=200, text="private-answer")
+    response.json.return_value = {
+        "choices": [
+            {"message": {"content": "private-answer"}, "finish_reason": "stop"}
+        ],
+        "usage": {
+            "prompt_tokens": 120,
+            "completion_tokens": 14,
+            "total_tokens": 134,
+            "prompt_tokens_details": {"cached_tokens": 64},
+        },
+        "timings": {
+            "cache_n": 64,
+            "prompt_ms": 250.5,
+            "predicted_ms": 500.25,
+            "prompt_per_second": 40.0,
+            "predicted_per_second": 28.0,
+        },
+    }
+    monkeypatch.setattr(requests, "post", MagicMock(return_value=response))
+
+    assert query_llm("private-prompt") == "private-answer"
+
+    assert "prompt_tokens=120" in caplog.text
+    assert "cached_tokens=64" in caplog.text
+    assert "completion_tokens=14" in caplog.text
+    assert "prompt_ms=250.5" in caplog.text
+    assert "predicted_tps=28.0" in caplog.text
+    assert "private-prompt" not in caplog.text
+    assert "private-answer" not in caplog.text
 
 
 def test_query_llm_sends_multimodal_image_content(monkeypatch):

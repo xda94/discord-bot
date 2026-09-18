@@ -15,8 +15,11 @@ logger = logging.getLogger("discord_bot")
 
 DM_SCOPE_ID = 0
 OBSERVATION_MESSAGE_MAX_CHARS = 2000
-SYNTHESIS_CHUNK_MAX_CHARS = 12000
-SYNTHESIS_CHUNK_MAX_MESSAGES = 100
+# Keep daily extraction small enough for the CPU host's short context. These
+# are character budgets, not tokenizer-specific context guarantees.
+SYNTHESIS_CHUNK_MAX_CHARS = 3000
+SYNTHESIS_CHUNK_MAX_MESSAGES = 20
+SYNTHESIS_ENTRIES_MAX_CHARS = 2000
 PRIVATE_MESSAGE_CHUNK = 1900
 MEMORY_SYNTHESIS_INTERVAL_SECONDS = 24 * 60 * 60
 MEMORY_CONFIG_CACHE_SECONDS = 30
@@ -88,12 +91,16 @@ class UserMemoryFeature:
 
     def _load_pending_observations(self) -> None:
         """Recover unprocessed user-authored messages after a restart."""
-        for row_id, scope_id, user_id, _guild_id, channel_id, content, created_at in (
-            db.get_llm_memory_observations()
-        ):
+        rows = db.get_llm_memory_observations()
+        for row_id, scope_id, user_id, _guild_id, channel_id, content, created_at in rows:
             self._buffers.setdefault((scope_id, user_id), deque()).append(
                 MemoryObservation(row_id, channel_id, content, created_at)
             )
+        logger.info(
+            "Memory observations loaded observations=%d owners=%d",
+            len(rows),
+            len(self._buffers),
+        )
 
     def _sync_buffer(self, key: tuple[int, int]) -> None:
         """Reconcile one process-local queue with API-side deletions."""
@@ -112,6 +119,14 @@ class UserMemoryFeature:
             self._buffers[key] = saved
         else:
             self._buffers.pop(key, None)
+        logger.info(
+            "Memory buffer reconciled scope_id=%s user_id=%s before=%d after=%d generation=%d",
+            scope_id,
+            user_id,
+            len(current_ids),
+            len(saved_ids),
+            self._generations[key],
+        )
 
     @staticmethod
     def _key(guild_id: int | None, user_id: int) -> tuple[int, int]:
@@ -219,6 +234,16 @@ class UserMemoryFeature:
                 created_at=created_at,
             )
         )
+        logger.debug(
+            "Memory observation captured scope_id=%s user_id=%s channel_id=%s "
+            "observation_id=%s chars=%d pending=%d",
+            scope_id,
+            user_id,
+            channel_id,
+            sequence,
+            len(content),
+            len(observations),
+        )
 
     async def handle_message(self, message: discord.Message) -> bool:
         content = message.clean_content.strip()
@@ -320,17 +345,37 @@ class UserMemoryFeature:
         if not db.apply_llm_memory_delta(
             batch.scope_id, batch.user_id, additions, corrections, ids
         ):
+            logger.warning(
+                "Memory delta database commit failed scope_id=%s user_id=%s "
+                "additions=%d corrections=%d observations=%d",
+                batch.scope_id,
+                batch.user_id,
+                len(additions),
+                len(corrections),
+                len(ids),
+            )
             return False
         key = (batch.scope_id, batch.user_id)
         observations = self._buffers.get(key)
         if observations is not None:
+            acknowledged_ids = set(ids)
             retained = deque(
-                item for item in observations if item.sequence not in set(ids)
+                item for item in observations if item.sequence not in acknowledged_ids
             )
             if retained:
                 self._buffers[key] = retained
             else:
                 self._buffers.pop(key, None)
+        logger.info(
+            "Memory delta committed scope_id=%s user_id=%s additions=%d "
+            "corrections=%d observations_removed=%d observations_remaining=%d",
+            batch.scope_id,
+            batch.user_id,
+            len(additions),
+            len(corrections),
+            len(ids),
+            len(self._buffers.get(key, ())),
+        )
         return True
 
     def entries_for_batch(self, batch: MemoryBatch) -> list[dict]:
@@ -344,8 +389,8 @@ class UserMemoryFeature:
         selected = []
         used = 0
         for _overlap, _updated, entry_id, kind, content in ranked:
-            if selected and used + len(content) > 8000:
-                break
+            if used + len(content) > SYNTHESIS_ENTRIES_MAX_CHARS:
+                continue
             selected.append({"id": entry_id, "kind": kind, "content": content})
             used += len(content)
         return selected
@@ -414,6 +459,15 @@ class UserMemoryFeature:
             ):
                 continue
             snapshot = tuple(observations)
+            logger.info(
+                "Memory batch eligible scope_id=%s user_id=%s observations=%d "
+                "chars=%d age_seconds=%.1f",
+                scope_id,
+                user_id,
+                len(snapshot),
+                sum(len(item.content) for item in snapshot),
+                now - oldest.created_at,
+            )
             result.append(
                 MemoryBatch(
                     scope_id=scope_id,
@@ -432,6 +486,14 @@ class UserMemoryFeature:
         """Reject a queued snapshot invalidated by privacy/config changes."""
         key = (batch.scope_id, batch.user_id)
         if self._generations.get(key, 0) != batch.generation:
+            logger.info(
+                "Memory batch rejected reason=generation-changed scope_id=%s "
+                "user_id=%s expected=%s current=%s",
+                batch.scope_id,
+                batch.user_id,
+                batch.generation,
+                self._generations.get(key, 0),
+            )
             return False
         if batch.observation_ids:
             saved_ids = {
@@ -439,6 +501,14 @@ class UserMemoryFeature:
                 for row in db.get_llm_memory_observations(batch.scope_id, batch.user_id)
             }
             if not set(batch.observation_ids).issubset(saved_ids):
+                logger.info(
+                    "Memory batch rejected reason=observations-changed scope_id=%s "
+                    "user_id=%s batch_observations=%d saved_observations=%d",
+                    batch.scope_id,
+                    batch.user_id,
+                    len(batch.observation_ids),
+                    len(saved_ids),
+                )
                 self._invalidate_key(key, clear=False)
                 self._sync_buffer(key)
                 return False

@@ -381,6 +381,7 @@ class LLMMentionFeature:
         self._worker_task: asyncio.Task | None = None
         self._memory_scheduler_task: asyncio.Task | None = None
         self._memory_pending: set[tuple[int, int]] = set()
+        self._memory_last_finished: float | None = None
         self._reaction_pending_channels: set[int] = set()
         self._reaction_last_attempt: dict[int, float] = {}
         self._register_commands()
@@ -391,7 +392,11 @@ class LLMMentionFeature:
 
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
+            previous_state = (
+                "missing" if self._worker_task is None else "finished"
+            )
             self._worker_task = asyncio.create_task(self._queue_worker())
+            logger.info("LLM queue worker started previous_state=%s", previous_state)
 
     def _model_busy(self) -> bool:
         return self._processing or self._queue.qsize() > 0
@@ -400,6 +405,29 @@ class LLMMentionFeature:
         while True:
             queued = await self._queue.get()
             job = queued[2] if isinstance(queued, tuple) else queued
+            priority = queued[0] if isinstance(queued, tuple) else None
+            sequence = queued[1] if isinstance(queued, tuple) else None
+            started = time.monotonic()
+            job_type = type(job).__name__
+            user_id = getattr(getattr(job, "user", None), "id", None)
+            batch = getattr(job, "batch", None)
+            scope_id = getattr(batch, "scope_id", None)
+            channel_id = getattr(job, "channel_id", None)
+            if channel_id is None:
+                channel_id = getattr(getattr(job, "channel", None), "id", None)
+            outcome = "completed"
+            logger.info(
+                "LLM job started sequence=%s priority=%s type=%s model=%s "
+                "user_id=%s scope_id=%s channel_id=%s queue_remaining=%d",
+                sequence,
+                priority,
+                job_type,
+                getattr(job, "model", None),
+                user_id,
+                scope_id,
+                channel_id,
+                self._queue.qsize(),
+            )
             try:
                 self._processing = True
                 if isinstance(job, AskJob):
@@ -409,14 +437,27 @@ class LLMMentionFeature:
                 else:
                     await self._process_reaction_job(job)
             except Exception:
-                logger.exception("Unhandled error processing LLM job")
+                outcome = "failed"
+                logger.exception(
+                    "Unhandled error processing LLM job sequence=%s type=%s",
+                    sequence,
+                    job_type,
+                )
             finally:
+                logger.info(
+                    "LLM job finished sequence=%s type=%s outcome=%s elapsed=%.2fs",
+                    sequence,
+                    job_type,
+                    outcome,
+                    time.monotonic() - started,
+                )
                 self._processing = False
                 self._queue.task_done()
                 if isinstance(job, AskJob):
                     self._user_pending.discard(job.user.id)
                     self._user_last_ask[job.user.id] = time.time()
                 elif isinstance(job, MemoryJob):
+                    self._memory_last_finished = time.monotonic()
                     self._memory_pending.discard(
                         (job.batch.scope_id, job.batch.user_id)
                     )
@@ -429,9 +470,23 @@ class LLMMentionFeature:
         # handlers share one event loop, so the check-and-admit operation is
         # atomic and cannot grow a backlog between concurrent handlers.
         if self._model_busy():
+            logger.info(
+                "LLM job rejected type=%s priority=%s processing=%s queue_size=%d",
+                type(job).__name__,
+                priority,
+                self._processing,
+                self._queue.qsize(),
+            )
             return False
         self._queue_sequence += 1
         self._queue.put_nowait((priority, self._queue_sequence, job))
+        logger.info(
+            "LLM job admitted sequence=%d type=%s priority=%s queue_size=%d",
+            self._queue_sequence,
+            type(job).__name__,
+            priority,
+            self._queue.qsize(),
+        )
         self._ensure_worker()
         return True
 
@@ -441,13 +496,39 @@ class LLMMentionFeature:
             self._memory_scheduler_task = asyncio.create_task(
                 self._memory_scheduler_loop()
             )
+            logger.info(
+                "Memory scheduler started interval=%.1fs",
+                get_memory_consolidation_interval_seconds(),
+            )
 
     async def _memory_scheduler_loop(self) -> None:
         while True:
-            await asyncio.sleep(get_memory_consolidation_interval_seconds())
+            interval = get_memory_consolidation_interval_seconds()
+            await asyncio.sleep(interval)
             if self.memory is None:
+                logger.info("Memory scan skipped reason=feature-unavailable")
                 continue
-            for batch in self.memory.eligible_batches():
+            if self._model_busy():
+                logger.info(
+                    "Memory scan skipped reason=model-busy processing=%s queue_size=%d",
+                    getattr(self, "_processing", False),
+                    getattr(getattr(self, "_queue", None), "qsize", lambda: 0)(),
+                )
+                continue
+            since_finished = (
+                None
+                if self._memory_last_finished is None
+                else time.monotonic() - self._memory_last_finished
+            )
+            if since_finished is not None and since_finished < interval:
+                logger.info(
+                    "Memory scan skipped reason=rest-interval remaining=%.1fs",
+                    interval - since_finished,
+                )
+                continue
+            batches = self.memory.eligible_batches()
+            logger.info("Memory scan completed eligible_batches=%d", len(batches))
+            for batch in batches:
                 admitted = await self._enqueue_memory(batch, get_selected_model())
                 if admitted or self._model_busy():
                     # Run at most one background synthesis per scan. Remaining
@@ -457,11 +538,21 @@ class LLMMentionFeature:
     async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> bool:
         key = (batch.scope_id, batch.user_id)
         if key in self._memory_pending:
+            logger.info(
+                "Memory job skipped reason=already-pending scope_id=%s user_id=%s",
+                batch.scope_id,
+                batch.user_id,
+            )
             return False
         self._memory_pending.add(key)
         admitted = await self._put_job(1, MemoryJob(batch=batch, model=model))
         if not admitted:
             self._memory_pending.discard(key)
+            logger.info(
+                "Memory job not admitted scope_id=%s user_id=%s",
+                batch.scope_id,
+                batch.user_id,
+            )
         return admitted
 
     async def _reply_mention(self, job: AskJob, text: str) -> str:
@@ -618,6 +709,7 @@ class LLMMentionFeature:
 
     async def _process_memory_job(self, job: MemoryJob) -> None:
         if self.memory is None:
+            logger.info("Memory job stopped reason=feature-unavailable")
             return
         chunks = (
             self.memory.synthesis_chunks(job.batch)
@@ -625,22 +717,70 @@ class LLMMentionFeature:
             else (job.batch,)
         )
         if not chunks:
+            logger.info(
+                "Memory job stopped reason=no-chunks scope_id=%s user_id=%s",
+                job.batch.scope_id,
+                job.batch.user_id,
+            )
             return
         # A large daily snapshot may contain several chunks. Process only one
         # per scheduler pass so background work cannot pin the CPU continuously.
         batch = chunks[0]
         if not self.memory.can_process_batch(batch):
+            logger.info(
+                "Memory job stopped reason=batch-invalid-before-inference "
+                "scope_id=%s user_id=%s",
+                batch.scope_id,
+                batch.user_id,
+            )
             return
         entries = self.memory.entries_for_batch(batch)
+        logger.info(
+            "Memory synthesis prepared scope_id=%s user_id=%s chunks=%d "
+            "messages=%d message_chars=%d entries=%d entry_chars=%d",
+            batch.scope_id,
+            batch.user_id,
+            len(chunks),
+            len(batch.observations), sum(map(len, batch.observations)),
+            len(entries), sum(len(entry["content"]) for entry in entries),
+        )
         result = await asyncio.to_thread(
             generate_memory_delta,
             entries,
             list(batch.observations),
             model=job.model,
         )
-        if not result.successful or not self.memory.can_process_batch(batch):
+        if not result.successful:
+            logger.warning(
+                "Memory synthesis failed scope_id=%s user_id=%s observations_retained=%d",
+                batch.scope_id,
+                batch.user_id,
+                len(batch.observations),
+            )
             return
-        self.memory.commit_delta(batch, result.additions, result.corrections)
+        if not self.memory.can_process_batch(batch):
+            logger.info(
+                "Memory synthesis discarded reason=batch-invalid-after-inference "
+                "scope_id=%s user_id=%s additions=%d corrections=%d",
+                batch.scope_id,
+                batch.user_id,
+                len(result.additions),
+                len(result.corrections),
+            )
+            return
+        committed = self.memory.commit_delta(
+            batch, result.additions, result.corrections
+        )
+        logger.info(
+            "Memory synthesis commit scope_id=%s user_id=%s committed=%s "
+            "additions=%d corrections=%d observations=%d",
+            batch.scope_id,
+            batch.user_id,
+            committed,
+            len(result.additions),
+            len(result.corrections),
+            len(batch.observations),
+        )
 
     async def _process_reaction_job(self, job: ReactionJob) -> None:
         content = getattr(job.message, "clean_content", "").strip()
@@ -700,11 +840,24 @@ class LLMMentionFeature:
 
     def _begin_job_checks(self, user_id: int) -> str | None:
         if user_id in self._user_pending:
+            logger.info("Mention request blocked user_id=%s reason=user-pending", user_id)
             return "I'm already working on something for you — hang on."
         remaining = self._cooldown_remaining(user_id)
         if remaining > 0:
+            logger.info(
+                "Mention request blocked user_id=%s reason=cooldown remaining=%.1fs",
+                user_id,
+                remaining,
+            )
             return f"Please wait **{int(remaining) + 1}s** before trying again."
         if self._model_busy():
+            logger.info(
+                "Mention request blocked user_id=%s reason=model-busy "
+                "processing=%s queue_size=%d",
+                user_id,
+                self._processing,
+                self._queue.qsize(),
+            )
             return (
                 "The model is busy right now, so I didn't queue this request. "
                 "Please try again shortly."
@@ -787,6 +940,16 @@ class LLMMentionFeature:
                 if has_image
                 else REFERENCE_CONTEXT_CHAR_BUDGET
             ),
+        )
+        logger.info(
+            "Mention context prepared user_id=%s memory_enabled=%s memory_chars=%d "
+            "history_messages=%d history_chars=%d pending_observations=%d",
+            user_id,
+            memory_enabled,
+            len(user_memory),
+            len(context_messages),
+            sum(map(len, context_messages)),
+            len(memory_batch.observations) if memory_batch is not None else 0,
         )
 
         replied_message = ""
