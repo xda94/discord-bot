@@ -92,7 +92,9 @@ def test_build_mention_prompt_requires_one_direct_contextual_reply():
     lowered = prompt.lower()
     assert "using <chat_history> only to resolve context and short references" in lowered
     assert "exactly one natural, ready-to-send discord message" in lowered
-    assert "never offer drafts, options, translations, coaching" in lowered
+    assert "unless requested" in lowered
+    assert "answer questions as the person being addressed" in lowered
+    assert "start with your answer" in lowered
     assert "never repeat or merely paraphrase the current message" in lowered
     assert "mandatory output language" in lowered
     assert "use <current_message>'s language" in lowered
@@ -125,7 +127,7 @@ def test_mention_prompt_places_stable_rules_before_dynamic_context():
 
 def test_mention_prompt_is_compact():
     prompt = build_mention_prompt("Alice", "hello")
-    assert len(prompt.split()) < 85
+    assert len(prompt.split()) < 140
 
 
 def test_build_mention_prompt_has_no_system_identity():
@@ -183,6 +185,71 @@ def test_generate_mention_result_passes_image_to_llm(monkeypatch):
     assert query.call_args.kwargs["image_bytes"] == b"png-data"
     assert query.call_args.kwargs["image_mime"] == "image/png"
     assert "using the attached image" in query.call_args.kwargs["prompt"]
+
+
+@pytest.mark.parametrize(
+    "question,echo,answer",
+    [
+        ("Esti okay?", "Esti okay?", "Da, sunt bine. Tu cum ești?"),
+        ("Esti okay?", "Ești okay?", "Da, sunt bine. Tu cum ești?"),
+        (
+            "De ce te comporti urat cu Schular?",
+            "De ce te comporți urât cu Schular?",
+            "La ce mesaj te referi? Vreau să înțeleg ce a sunat urât.",
+        ),
+        ("pareri?", "**PĂRERI?!** 🤔", "Despre ce anume vrei părerea mea?"),
+        ("What is Python?", "What is Python?", "Python is a programming language."),
+        ("Esti okay?", "Esti okay? Esti okay?", "Da, sunt bine."),
+        ("Esti okay?", "@Robeeque Balen: Ești okay?", "Da, sunt bine."),
+        ("Esti okay?", "<@123> **Balen:** Ești okay?", "Da, sunt bine."),
+    ],
+)
+def test_mention_echoes_retry_with_an_actual_answer(monkeypatch, question, echo, answer):
+    query = MagicMock(side_effect=[
+        json.dumps({"text": echo, "reaction": None}),
+        json.dumps({"text": answer, "reaction": None}),
+    ])
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    result = generate_mention_result(
+        "Robeeque", question, requester_id=123, reply_names=("Balen",)
+    )
+
+    assert result.text == answer
+    assert query.call_count == 2
+    retry = query.call_args.kwargs["prompt"]
+    assert "echoed the current message" in retry
+    assert "Do not copy the question or just change its spelling" in retry
+
+
+def test_persistent_short_echo_is_not_returned_even_with_memory_and_image(monkeypatch):
+    query = MagicMock(return_value=json.dumps({"text": "Ești okay?", "reaction": "👍"}))
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    result = generate_mention_result(
+        "Robeeque", "Esti okay?", memory_enabled=True,
+        user_memory="Likes short replies", context_messages=["Alex: How are you?"],
+        image_bytes=b"png", image_mime="image/png",
+    )
+
+    assert result is None
+    assert query.call_count == 2
+    assert all(call.kwargs["image_bytes"] == b"png" for call in query.call_args_list)
+
+
+@pytest.mark.parametrize("question,answer", [
+    ("What is two plus two?", "What is two plus two? Four."),
+    ("Is Python faster than Rust?", "Python is usually slower than Rust."),
+    ("Esti okay?", "Da, sunt okay."),
+    ("De ce te comporti urat cu Schular?", "La ce conversație cu Schular te referi?"),
+    ("Say exactly: hello", "hello"),
+])
+def test_mention_real_answers_and_clarifications_are_not_rejected(monkeypatch, question, answer):
+    query = MagicMock(return_value=json.dumps({"text": answer, "reaction": None}))
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    assert generate_mention_result("Robeeque", question).text == answer
+    query.assert_called_once()
 
 
 @pytest.mark.parametrize(

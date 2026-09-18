@@ -5,7 +5,6 @@ import html
 import logging
 import os
 import random
-import re
 import time
 from dataclasses import dataclass, field
 
@@ -21,7 +20,11 @@ from llm_client import (
     get_mention_model,
     llama_supports_vision,
 )
-from mention_utils import extract_mention_text, resolve_bot_display_name
+from mention_utils import (
+    extract_mention_text,
+    resolve_bot_display_name,
+    strip_leading_reply_labels,
+)
 from tease_llm import (
     MentionResult,
     generate_memory_delta,
@@ -83,10 +86,10 @@ def get_selected_model() -> str:
 
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
-MENTION_PROMPT_VERSION = "mention-v5-structured"
-MEMORY_MENTION_PROMPT_VERSION = "mention-v6-structured-memory"
-VISION_MENTION_PROMPT_VERSION = "mention-v7-structured-vision"
-VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v8-structured-vision-memory"
+MENTION_PROMPT_VERSION = "mention-v9-answer"
+MEMORY_MENTION_PROMPT_VERSION = "mention-v9-answer-memory"
+VISION_MENTION_PROMPT_VERSION = "mention-v9-answer-vision"
+VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v9-answer-vision-memory"
 SUMMON_PROMPT_VERSION = "summon-v1"
 REFERENCE_CONTEXT_CHAR_BUDGET = 6000
 VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
@@ -235,45 +238,6 @@ def budget_reference_context(
     elif memory_cost < half and context_messages:
         history, _ = select_history(max_chars - memory_cost)
     return memory, history
-
-
-def strip_leading_reply_labels(
-    text: str, *, requester_id: int, names: tuple[str, ...]
-) -> str:
-    """Remove model-added addressing only at the beginning of a reply."""
-    cleaned = text.strip()
-    cleaned = re.sub(rf"^(?:\s*<@!?{requester_id}>\s*)+", "", cleaned)
-    usable = sorted(
-        {name.strip() for name in names if name and name.strip()},
-        key=len,
-        reverse=True,
-    )
-    if not usable:
-        return cleaned
-    alternatives = "|".join(re.escape(name) for name in usable)
-    leading_at_name = re.compile(
-        rf"^\s*(?:[*_`~]{{1,3}})?\s*@(?:{alternatives})\b\s*"
-        rf"(?:[*_`~]{{1,3}})?\s*",
-        flags=re.IGNORECASE,
-    )
-    while True:
-        updated = leading_at_name.sub("", cleaned, count=1).lstrip()
-        if updated == cleaned:
-            break
-        cleaned = updated
-    label = re.compile(
-        rf"^\s*(?:[*_`~]{{1,3}})?\s*"
-        rf"(?:@?(?:{alternatives}))(?:\s+@?(?:{alternatives}))*"
-        rf"\s*(?:[*_`~]{{1,3}})?\s*[:：\-–—]\s*"
-        rf"(?:[*_`~]{{1,3}})?\s*",
-        flags=re.IGNORECASE,
-    )
-    while True:
-        updated = label.sub("", cleaned, count=1).lstrip()
-        if updated == cleaned:
-            break
-        cleaned = updated
-    return cleaned or text.strip()
 
 
 def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
@@ -662,6 +626,8 @@ class LLMMentionFeature:
                     "image_bytes": image_bytes,
                     "image_mime": job.image_mime,
                     "replied_message": job.replied_message,
+                    "requester_id": job.user.id,
+                    "reply_names": (getattr(job.user, "name", ""), *job.bot_names),
                 }
                 result = await asyncio.to_thread(
                     generate_mention_result,
