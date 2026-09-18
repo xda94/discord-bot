@@ -11,17 +11,25 @@ def setup_logger(name, log_file):
         log_file = str(Path(log_dir) / Path(log_file).name)
 
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+    configured_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, configured_level, None)
+    if not isinstance(level, int):
+        level = logging.INFO
+        configured_level = "INFO"
+    logger.setLevel(level)
 
     formatter = logging.Formatter(
-        '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+        "%(asctime)s - %(levelname)s - [%(name)s pid=%(process)d "
+        "thread=%(threadName)s %(filename)s:%(lineno)d] - %(message)s"
     )
 
     file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=2)
+    file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
@@ -30,8 +38,14 @@ def setup_logger(name, log_file):
     # being silently dropped by Python's default root handler config.
     for child_name in ("database", "scraper"):
         child = logging.getLogger(child_name)
-        child.setLevel(logging.INFO)
+        child.setLevel(level)
         child.addHandler(file_handler)
         child.addHandler(console_handler)
 
+    logger.info(
+        "Logger initialized name=%s level=%s file=%s",
+        name,
+        configured_level,
+        log_file,
+    )
     return logger

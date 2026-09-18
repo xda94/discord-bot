@@ -318,6 +318,7 @@ def enhance_tease(mood: str, username: str, context: str) -> str | None:
             build_tease_prompt(mood, username, context),
             model=get_tease_model(),
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
+            options={"max_tokens": 96},
         )
         result = normalize_tease_response(raw)
         return result or None
@@ -561,6 +562,7 @@ def generate_summon_reply(username: str, *, model: str | None = None) -> str | N
             build_summon_prompt(username),
             model=model,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
+            options={"max_tokens": 96},
         )
         result = normalize_tease_response(raw)
         return result or None
@@ -581,7 +583,7 @@ def generate_inactivity_message(
             build_inactivity_prompt(bot_name, ask_question),
             model=model,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
-            options={"temperature": 0.8},
+            options={"temperature": 0.8, "max_tokens": 96},
         )
         return normalize_tease_response(raw) or None
     except LlamaCppError:
@@ -613,7 +615,7 @@ def generate_price_change_message(
             ),
             model=model,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
-            options={"temperature": 0.9},
+            options={"temperature": 0.9, "max_tokens": 96},
         )
         return normalize_tease_response(raw) or None
     except LlamaCppError:

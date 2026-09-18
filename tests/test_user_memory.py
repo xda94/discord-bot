@@ -107,6 +107,34 @@ def test_daily_synthesis_waits_24_hours_and_deletes_source_chat(tmp_db):
     asyncio.run(client.close())
 
 
+def test_large_memory_snapshot_uses_small_requests_without_losing_sources(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    additions = tuple(
+        {"kind": "fact", "content": str(index) + "x" * 480, "source_text": "source"}
+        for index in range(20)
+    )
+    assert db.apply_llm_memory_delta(100, 7, additions, (), ())
+    client, _, feature = _build_feature()
+    message = _message()
+    for index in range(20):
+        message.clean_content = str(index) + "y" * 990
+        asyncio.run(feature.handle_message(message))
+
+    snapshot = feature.context_for(message).batch
+    chunks = feature.synthesis_chunks(snapshot)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        entries = feature.entries_for_batch(chunk)
+        input_chars = sum(len(text) for text in chunk.observations)
+        input_chars += sum(len(entry["content"]) for entry in entries)
+        assert input_chars <= 5000
+        assert feature.commit_delta(chunk, (), ())
+    assert not db.get_llm_memory_observations(100, 7)
+    assert (100, 7) not in feature._buffers
+    assert len(db.get_llm_memory_entries(100, 7)) == 20
+    asyncio.run(client.close())
+
+
 def test_new_chat_after_synthesis_starts_a_new_daily_window(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()

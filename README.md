@@ -70,6 +70,7 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
+| `LOG_LEVEL` | No | Logging verbosity for console and rotating files. Default: `INFO`; use `DEBUG` to include per-observation memory capture metadata. |
 | `LLAMA_CPP_BASE_URL` | No (bot) | `llama-server` base URL. Default: `http://127.0.0.1:8080`. Docker defaults to `http://host.docker.internal:8080`. A URL ending in `/v1` is also accepted. |
 | `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
@@ -386,6 +387,25 @@ never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
 
+Every inference request has an output-token limit: 384 by default, 96 for
+short social replies, 32 for reactions, and 768 for memory extraction.
+The HTTP timeout limits the client's wait; it is not a server CPU limit.
+Token-limit-truncated responses are treated as failures so incomplete memory
+extractions cannot acknowledge and delete their source messages.
+
+Logs include queue admission/rejection, job start/end, scheduler skip reasons,
+memory batch and commit counts, HTTP lifecycle events, prompt/output sizes,
+token usage, prompt-cache usage, and llama-server prompt/generation timings,
+without message, prompt, completion, or image contents. Each inference gets a
+short request ID for correlation, and every log line includes the logger name,
+process ID, and thread name. A job-start line without a request-start line
+points to preparation; a request-start line followed by a long HTTP wait points
+to llama-server or the connection. CPU usage during model inference is
+expected; these logs help distinguish slow inference from a bot stall. Set
+`LOG_LEVEL=DEBUG` for per-observation memory capture metadata. The deployed
+llama-server process must be inspected separately to confirm which process is
+consuming CPU.
+
 The bot may react to the original human message with a contextual emoji. It
 does not seed feedback reactions on its own reply. The requester may manually
 add 👍 or 👎 to that reply to rate the answer; reactions from the bot or any
@@ -407,9 +427,13 @@ background scan, which runs every five minutes by default and is configurable
 with `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`. After a successful synthesis,
 the entries are saved and all source messages in that batch are deleted in the
 same transaction. Failed synthesis retains the batch for retry so messages are
-not silently lost. Each scan admits at most one bounded chunk, and only while
-the inference slot is idle, so a large daily batch cannot pin the CPU
-continuously. The bot does not
+not silently lost. Each scan admits at most one chunk of up to 20 messages /
+3,000 source characters with up to 2,000 characters of retrieved entries.
+These are input-character budgets, not exact token counts; JSON, escaping,
+instructions, and the model's chat template add overhead. Scans skip the
+database entirely while the worker is busy and leave at least one configured
+interval after memory work finishes (including failures) before admitting
+another batch. The bot does not
 persist assistant replies or a raw conversation transcript. At prompt time, relevant synthesized entries are
 ranked by word overlap and recency and share the reference budget with live
 channel context. Memory remains server-scoped (with a separate opt-in DM scope)
@@ -561,7 +585,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `chart_renderer.py` | Local Vega-Lite wishlist chart specifications and PNG rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
 | `db.py` | SQLite schema and queries |
-| `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` env for log file location |
+| `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` location and `LOG_LEVEL` verbosity |
 | `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
 | `responses.db` | Runtime DB (gitignored); path overridable via `DB_FILE` |
 

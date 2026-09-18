@@ -284,7 +284,7 @@ def test_generate_inactivity_message_passes_temperature(monkeypatch):
 
     monkeypatch.setattr("tease_llm.query_llm", mock_query)
     generate_inactivity_message("Skippy", ask_question=True)
-    assert called_kwargs.get("options") == {"temperature": 0.8}
+    assert called_kwargs.get("options") == {"temperature": 0.8, "max_tokens": 96}
 
 
 @pytest.mark.parametrize(
@@ -326,7 +326,7 @@ def test_generate_price_change_message_uses_varied_tone(monkeypatch):
 
     assert result == "Even the price tag is having a difficult day."
     assert "dramatically sad" in captured["prompt"]
-    assert captured["kwargs"]["options"] == {"temperature": 0.9}
+    assert captured["kwargs"]["options"] == {"temperature": 0.9, "max_tokens": 96}
 
 
 def test_generate_price_change_message_returns_none_on_error(monkeypatch):

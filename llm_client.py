@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
+import uuid
 
 import requests
 
@@ -12,10 +14,20 @@ LLAMA_CPP_BASE_URL = os.getenv(
     "LLAMA_CPP_BASE_URL", "http://127.0.0.1:8080"
 ).rstrip("/")
 LLAMA_CPP_TIMEOUT = int(os.getenv("LLAMA_CPP_TIMEOUT", "180"))
+DEFAULT_MAX_TOKENS = 384
 
 
 class LlamaCppError(Exception):
     pass
+
+
+def _numeric_metric(mapping: object, key: str) -> int | float | None:
+    if not isinstance(mapping, dict):
+        return None
+    value = mapping.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
 
 
 def get_allowed_models() -> tuple[str, ...]:
@@ -88,6 +100,8 @@ def llama_supports_vision(
     timeout: int = 15,
 ) -> bool:
     """Return llama-server's advertised vision capability."""
+    started = time.monotonic()
+    logger.info("LLM vision capability check started timeout=%ss", timeout)
     try:
         response = requests.get(
             _server_url(base_url, "/props"),
@@ -95,25 +109,55 @@ def llama_supports_vision(
             timeout=(10, timeout),
         )
     except requests.exceptions.Timeout as exc:
+        logger.warning(
+            "LLM vision capability check timed out elapsed=%.2fs",
+            time.monotonic() - started,
+        )
         raise LlamaCppError(
             "llama.cpp did not respond while checking vision support."
         ) from exc
     except requests.exceptions.ConnectionError as exc:
+        logger.warning(
+            "LLM vision capability connection failed elapsed=%.2fs error=%s",
+            time.monotonic() - started,
+            type(exc).__name__,
+        )
         raise LlamaCppError(
             f"Could not reach llama.cpp at {base_url} while checking vision support."
         ) from exc
     except requests.exceptions.RequestException as exc:
+        logger.warning(
+            "LLM vision capability request failed elapsed=%.2fs error=%s",
+            time.monotonic() - started,
+            type(exc).__name__,
+        )
         raise LlamaCppError(f"Could not check llama.cpp vision support: {exc}") from exc
 
     if not response.ok:
-        detail = response.text.strip() or response.reason
+        logger.warning(
+            "LLM vision capability check returned status=%s elapsed=%.2fs",
+            response.status_code,
+            time.monotonic() - started,
+        )
         raise LlamaCppError(
-            f"llama.cpp vision check returned HTTP {response.status_code}: {detail}"
+            f"llama.cpp vision check returned HTTP {response.status_code} "
+            f"({response.reason})."
         )
     try:
         data = response.json()
-        return data["modalities"]["vision"] is True
+        enabled = data["modalities"]["vision"] is True
+        logger.info(
+            "LLM vision capability check completed enabled=%s elapsed=%.2fs",
+            enabled,
+            time.monotonic() - started,
+        )
+        return enabled
     except (ValueError, KeyError, TypeError) as exc:
+        logger.warning(
+            "LLM vision capability response invalid status=%s elapsed=%.2fs",
+            response.status_code,
+            time.monotonic() - started,
+        )
         raise LlamaCppError(
             "llama.cpp returned an invalid vision-capability response."
         ) from exc
@@ -168,6 +212,7 @@ def query_llm(
         "model": model,
         "messages": [{"role": "user", "content": message_content}],
         "stream": False,
+        "max_tokens": DEFAULT_MAX_TOKENS,
     }
 
     if options:
@@ -185,6 +230,24 @@ def query_llm(
             "schema": response_schema,
         }
 
+    max_tokens = payload["max_tokens"]
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+        raise LlamaCppError("max_tokens must be a positive integer.")
+
+    request_id = uuid.uuid4().hex[:8]
+    started = time.monotonic()
+    logger.info(
+        "LLM request started request=%s model=%s prompt_chars=%d max_tokens=%d "
+        "timeout=%ss image=%s image_bytes=%d json_schema=%s",
+        request_id,
+        model,
+        len(prompt),
+        max_tokens,
+        timeout,
+        image_bytes is not None,
+        len(image_bytes) if image_bytes is not None else 0,
+        response_schema is not None,
+    )
     try:
         response = requests.post(
             _chat_completions_url(base_url),
@@ -193,34 +256,117 @@ def query_llm(
             timeout=(10, timeout),
         )
     except requests.exceptions.Timeout as exc:
+        logger.warning(
+            "LLM request timed out request=%s model=%s timeout=%ss elapsed=%.2fs",
+            request_id,
+            model,
+            timeout,
+            time.monotonic() - started,
+        )
         raise LlamaCppError(
             f"llama.cpp did not respond within {timeout}s. "
             "The model may still be loading; try again in a moment."
         ) from exc
     except requests.exceptions.ConnectionError as exc:
+        logger.warning(
+            "LLM connection failed request=%s model=%s elapsed=%.2fs error=%s",
+            request_id,
+            model,
+            time.monotonic() - started,
+            type(exc).__name__,
+        )
         raise LlamaCppError(
             f"Could not reach llama.cpp at {base_url}. Check that llama-server "
             "is running and LLAMA_CPP_BASE_URL is set correctly."
         ) from exc
     except requests.exceptions.RequestException as exc:
+        logger.warning(
+            "LLM HTTP request failed request=%s model=%s elapsed=%.2fs error=%s",
+            request_id,
+            model,
+            time.monotonic() - started,
+            type(exc).__name__,
+        )
         raise LlamaCppError(f"llama.cpp request failed: {exc}") from exc
+    finally:
+        logger.info(
+            "LLM HTTP wait ended request=%s model=%s elapsed=%.2fs",
+            request_id,
+            model,
+            time.monotonic() - started,
+        )
 
     if not response.ok:
-        detail = response.text.strip() or response.reason
+        logger.warning(
+            "LLM HTTP error request=%s model=%s status=%s response_chars=%d elapsed=%.2fs",
+            request_id,
+            model,
+            response.status_code,
+            len(response.text),
+            time.monotonic() - started,
+        )
         raise LlamaCppError(
-            f"llama.cpp returned HTTP {response.status_code}: {detail}"
+            f"llama.cpp returned HTTP {response.status_code} ({response.reason})."
         )
 
     try:
         data = response.json()
     except ValueError as exc:
+        logger.warning(
+            "LLM response was not JSON request=%s model=%s status=%s response_chars=%d",
+            request_id,
+            model,
+            response.status_code,
+            len(response.text),
+        )
         raise LlamaCppError("llama.cpp returned a non-JSON response.") from exc
 
     try:
-        answer = data["choices"][0]["message"]["content"].strip()
+        choice = data["choices"][0]
+        # Never acknowledge memory observations from a truncated extraction,
+        # even if the partial response happens to be valid JSON.
+        if choice.get("finish_reason") == "length":
+            logger.warning(
+                "LLM response hit token limit request=%s model=%s max_tokens=%d",
+                request_id,
+                model,
+                max_tokens,
+            )
+            raise LlamaCppError("llama.cpp exhausted the output token budget.")
+        answer = choice["message"]["content"].strip()
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        logger.warning(
+            "LLM response shape invalid request=%s model=%s response_chars=%d",
+            request_id,
+            model,
+            len(response.text),
+        )
         raise LlamaCppError("llama.cpp returned an invalid chat-completion response.") from exc
 
     if not answer:
+        logger.warning("LLM response empty request=%s model=%s", request_id, model)
         raise LlamaCppError("llama.cpp returned an empty response.")
+    usage = data.get("usage") if isinstance(data, dict) else None
+    timings = data.get("timings") if isinstance(data, dict) else None
+    prompt_details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else None
+    logger.info(
+        "LLM request completed request=%s model=%s finish=%s response_chars=%d "
+        "prompt_tokens=%s cached_tokens=%s completion_tokens=%s total_tokens=%s "
+        "cache_tokens=%s prompt_ms=%s predicted_ms=%s prompt_tps=%s predicted_tps=%s "
+        "elapsed=%.2fs",
+        request_id,
+        model,
+        choice.get("finish_reason"),
+        len(answer),
+        _numeric_metric(usage, "prompt_tokens"),
+        _numeric_metric(prompt_details, "cached_tokens"),
+        _numeric_metric(usage, "completion_tokens"),
+        _numeric_metric(usage, "total_tokens"),
+        _numeric_metric(timings, "cache_n"),
+        _numeric_metric(timings, "prompt_ms"),
+        _numeric_metric(timings, "predicted_ms"),
+        _numeric_metric(timings, "prompt_per_second"),
+        _numeric_metric(timings, "predicted_per_second"),
+        time.monotonic() - started,
+    )
     return answer
