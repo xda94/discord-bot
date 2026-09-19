@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 
 import db
+from analytics import record
 from features.response_gate import ResponseGate
 from features.sponsors import SponsorsFeature
 
@@ -81,10 +82,14 @@ class KeywordsFeature:
                 await message.reply(new_response, mention_author=False, suppress_embeds=False)
             except Exception:
                 logger.exception(f"Failed to send keyword reply for '{keyword}'")
+                await record("failure", "keyword-reply", guild_id=guild_id)
                 return False
 
             self.gate.mark_responded()
             db.log_keyword_usage(keyword, message.author.id, guild_id)
+            await record("automatic", "keyword-reply", guild_id=guild_id)
+            if suffix:
+                await record("automatic", "sponsor-tagged-reply", guild_id=guild_id)
             logger.info(
                 f"Triggered response for '{keyword}' in guild {guild_id} #{message.channel}"
             )

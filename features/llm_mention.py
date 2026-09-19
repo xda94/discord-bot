@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 
 import db
+from analytics import record, record_for
 from features.llm_feedback import LLMFeedbackFeature
 from features.user_memory import MemoryBatch, UserMemoryFeature
 from llm_client import (
@@ -554,12 +555,14 @@ class LLMMentionFeature:
                     reference=job.reply_to,
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+        await record_for("automatic", "llm-reply", job.reply_to)
         return text
 
     @staticmethod
     async def _reply_job_error(job: AskJob, text: str) -> None:
         if job.reply_to is None:
             return
+        await record_for("failure", "llm-reply", job.reply_to)
         await job.reply_to.reply(
             text,
             mention_author=False,
@@ -654,7 +657,11 @@ class LLMMentionFeature:
             )
             return
 
-        await self._reply_mention(job, result.text)
+        try:
+            await self._reply_mention(job, result.text)
+        except Exception:
+            await record_for("failure", "llm-reply", job.reply_to)
+            raise
         if result.reaction and job.reply_to is not None:
             reaction_channel_id = getattr(
                 getattr(job.reply_to, "channel", None), "id", None
@@ -667,8 +674,10 @@ class LLMMentionFeature:
                 self._reaction_last_attempt[reaction_channel_id] = now
                 try:
                     await job.reply_to.add_reaction(result.reaction)
+                    await record_for("automatic", "mention-reaction", job.reply_to)
                 except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
                     logger.info("Could not add mention reaction: %s", exc)
+                    await record_for("failure", "mention-reaction", job.reply_to)
 
         # Persistent memory is synthesized only by the daily scheduler. A
         # mention reply must not trigger early extraction or persist raw chat.
@@ -717,6 +726,12 @@ class LLMMentionFeature:
             model=job.model,
         )
         if not result.successful:
+            await record(
+                "failure",
+                "memory-batch",
+                guild_id=batch.scope_id if batch.scope_id else None,
+                scope_type="guild" if batch.scope_id else "dm",
+            )
             logger.warning(
                 "Memory synthesis failed scope_id=%s user_id=%s observations_retained=%d",
                 batch.scope_id,
@@ -737,6 +752,20 @@ class LLMMentionFeature:
         committed = self.memory.commit_delta(
             batch, result.additions, result.corrections
         )
+        if committed:
+            await record(
+                "processing",
+                "memory-batch",
+                guild_id=batch.scope_id if batch.scope_id else None,
+                scope_type="guild" if batch.scope_id else "dm",
+            )
+        else:
+            await record(
+                "failure",
+                "memory-batch",
+                guild_id=batch.scope_id if batch.scope_id else None,
+                scope_type="guild" if batch.scope_id else "dm",
+            )
         logger.info(
             "Memory synthesis commit scope_id=%s user_id=%s committed=%s "
             "additions=%d corrections=%d observations=%d",
@@ -762,8 +791,10 @@ class LLMMentionFeature:
             return
         try:
             await job.message.add_reaction(reaction)
+            await record_for("automatic", "context-reaction", job.message)
         except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
             logger.info("Could not add ordinary-message reaction: %s", exc)
+            await record_for("failure", "context-reaction", job.message)
 
     def _reaction_channel_available(self, channel_id: int, now: float) -> bool:
         return (

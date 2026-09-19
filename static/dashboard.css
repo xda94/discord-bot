@@ -159,6 +159,19 @@ textarea { min-height: 92px; resize: vertical; }
 .chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .chart .dot { fill: var(--accent-2); }
 .chart-values { color: var(--muted); font-size: 10px; line-height: 1.55; margin-top: 6px; }
+.analytics-toolbar { display: flex; align-items: end; gap: 18px; margin-bottom: 14px; }
+.analytics-metrics { grid-template-columns: repeat(5, 1fr); }
+.analytics-toolbar label { min-width: 150px; }
+.analytics-toolbar .cell-muted { margin-bottom: 9px; max-width: none; }
+.analytics-chart-panel { margin-bottom: 14px; }
+.analytics-chart { min-height: 190px; }
+.analytics-chart svg { display: block; width: 100%; height: 190px; }
+.analytics-chart .grid { stroke: #2b303c; stroke-width: 1; }
+.analytics-chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.analytics-chart text { fill: #778092; font-size: 10px; }
+.analytics-columns select { width: auto; min-width: 125px; padding: 7px 9px; }
+.analytics-note { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 4px 2px 0; }
+.analytics-inactive-panel { margin-bottom: 14px; }
 .detail-form { border-top: 1px solid var(--line); padding-top: 15px; margin-top: 12px; }
 .subsection { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
 .subsection h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
@@ -223,4 +236,5 @@ textarea { min-height: 92px; resize: vertical; }
   .span-all { grid-column: auto; }
   .detail-stats { grid-template-columns: 1fr 1fr; }
   .danger-zone { align-items: flex-start; flex-direction: column; }
+  .analytics-toolbar { align-items: stretch; flex-direction: column; }
 }

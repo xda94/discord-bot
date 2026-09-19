@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from analytics import record, record_for
 from flight_provider import (
     FlightOffer,
     FlightProviderError,
@@ -161,6 +162,7 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
         try:
             await asyncio.to_thread(provider.validate_credentials)
         except FlightProviderError as exc:
+            await record_for("failure", "flight-login-modal-submit", interaction)
             await interaction.followup.send(
                 f"SerpApi rejected that key. Nothing was saved: `{exc}`",
                 ephemeral=True,
@@ -168,6 +170,7 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
             return
 
         if not db.set_flight_api_credentials(interaction.user.id, api_key):
+            await record_for("failure", "flight-login-modal-submit", interaction)
             await interaction.followup.send(
                 "The credentials were valid, but the database could not save them.",
                 ephemeral=True,
@@ -180,6 +183,7 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
         logger.info(
             f"SerpApi key validated and stored for user {interaction.user.id}"
         )
+        await record_for("control", "flight-login-modal-submit", interaction)
         if self._pending_tracker is not None:
             await self._feature._add_tracker(interaction, self._pending_tracker)
         else:
@@ -442,10 +446,14 @@ class FlightTrackerFeature:
             offer = await self._search_and_persist(tracker)
         except NoFlightOffers as exc:
             logger.info(f"No offer for flight tracker {tracker['id']}: {exc}")
+            await record("failure", "flight-check", scope_type="global")
             return
         except FlightProviderError as exc:
             logger.warning(f"Flight tracker {tracker['id']} check failed: {exc}")
+            await record("failure", "flight-check", scope_type="global")
             return
+        finally:
+            await record("processing", "flight-check", scope_type="global")
 
         # A first successful result after previous failures is useful, as is a
         # strict price drop. Equal/higher prices stay quiet to avoid DM spam.
@@ -461,10 +469,12 @@ class FlightTrackerFeature:
                     f"Flight tracker **#{tracker['id']}**: **{tracker['origin']} -> "
                     f"{tracker['destination']}**\n{label}.\n{_format_offer(offer)}"
                 )
+                await record("scheduled", "flight-notification", scope_type="dm")
         except Exception as exc:
             logger.error(
                 f"Could not send flight tracker DM to user {tracker['user_id']}: {exc}"
             )
+            await record("failure", "flight-notification", scope_type="dm")
 
     @tasks.loop(hours=FLIGHT_CHECK_INTERVAL_HOURS)
     async def _check_loop(self):
@@ -479,5 +489,6 @@ class FlightTrackerFeature:
                 await self._process_tracker(tracker)
             except Exception:
                 logger.exception(f"Unexpected error checking flight tracker {tracker['id']}")
+                await record("failure", "flight-check", scope_type="global")
             if FLIGHT_CHECK_GAP_SECONDS:
                 await asyncio.sleep(FLIGHT_CHECK_GAP_SECONDS)

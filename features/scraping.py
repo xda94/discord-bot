@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from analytics import record
 from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph
 from chart_renderer import render_multi_price_history_png, render_price_history_png
 from tease_llm import generate_price_change_message
@@ -237,7 +238,7 @@ class CurrencyConverter:
     SUPPORTED_DISPLAY_CURRENCIES = ("RON", "DKK", "EUR", "USD", "GBP")
     DEFAULT_DISPLAY_CURRENCY = "RON"
 
-    def refresh(self) -> None:
+    def refresh(self) -> bool:
         """Fetch the latest EUR-relative rates and persist the subset we
         actually display in `/wishlist-*` commands.
 
@@ -253,7 +254,7 @@ class CurrencyConverter:
             rates = data.get("rates")
             if not rates:
                 logger.error("Exchange rate API returned no rates table.")
-                return
+                return False
 
             db.set_exchange_rate("EUR", 1.0)
             for currency in self.SUPPORTED_DISPLAY_CURRENCIES:
@@ -267,10 +268,12 @@ class CurrencyConverter:
                         f"API response — keeping previously stored rate."
                     )
             logger.info("Exchange rates updated successfully.")
+            return True
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch exchange rates from API: {e}")
         except Exception:
             logger.exception("Error in update_exchange_rates_task")
+        return False
 
     def convert(self, price, from_currency, to_currency):
         """Convert `price` from `from_currency` to `to_currency`.
@@ -877,13 +880,16 @@ class ScrapingFeature:
         result = await asyncio.to_thread(self.scraper.fetch, url)
         status = result.failure or "ok"
         db.update_scraped_item_check_status(item_id, status)
+        await record("processing", "wishlist-check", scope_type="global")
 
         if result.failure == FAILURE_BLOCKED:
+            await record("failure", "wishlist-check", scope_type="global")
             return (
                 f"Refresh failed: {_domain(url)} blocked or could not be reached.\n"
                 f"{self._format_check_status(time.time(), status)}"
             )
         if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
+            await record("failure", "wishlist-check", scope_type="global")
             return (
                 f"Refresh failed: {_domain(url)} returned no supported price/stock data.\n"
                 f"{self._format_check_status(time.time(), status)}"
@@ -983,14 +989,17 @@ class ScrapingFeature:
         # during the scrape pass.
         result = await asyncio.to_thread(self.scraper.fetch, url)
         db.update_scraped_item_check_status(item_id, result.failure or "ok")
+        await record("processing", "wishlist-check", scope_type="global")
 
         # Transport-level failure (timeout, anti-bot block, 5xx): trust
         # nothing, change nothing. Try again next pass.
         if result.failure == FAILURE_BLOCKED:
+            await record("failure", "wishlist-check", scope_type="global")
             return
         # Page reachable but literally nothing useful was parsed — same
         # outcome. Don't overwrite known-good state with empty data.
         if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
+            await record("failure", "wishlist-check", scope_type="global")
             return
 
         # Detect what changed against the previously-persisted state.
@@ -1087,6 +1096,7 @@ class ScrapingFeature:
                             f"(target: {target_price:.2f} {target_currency}).\n"
                         )
                     await user.send(msg, suppress_embeds=True)
+                    await record("scheduled", "wishlist-notification", scope_type="dm")
                     logger.info(
                         f"Scrape DM sent to user {user_id} for {url} "
                         f"(price_changed={price_changed}, back_in_stock={back_in_stock}, "
@@ -1095,6 +1105,7 @@ class ScrapingFeature:
                     )
             except Exception as e:
                 logger.error(f"Could not send DM to user {user_id}: {e}")
+                await record("failure", "wishlist-notification", scope_type="dm")
 
         # Persist the latest price / stock / title / currency snapshot. COALESCE
         # inside the SQL means passing None for any field leaves the previous
@@ -1116,7 +1127,6 @@ class ScrapingFeature:
             db.update_item_alert_state(
                 item_id, decision.new_state, decision.new_state_price,
             )
-
     def _format_alert_section(self, decision: "AlertDecision", source_currency: str | None) -> str:
         """Render the LOW/HIGH alert block of the per-item DM.
 
@@ -1174,6 +1184,7 @@ class ScrapingFeature:
                 # with full traceback + URL context so we can investigate.
                 url = item[2] if len(item) > 2 else "<unknown>"
                 logger.exception(f"Unexpected error scraping {url}; skipping")
+                await record("failure", "wishlist-check", scope_type="global")
             # Politeness sleep between fetches — even with `to_thread` we
             # don't want to flood a host that has multiple tracked URLs in
             # one pass. The bot's event loop stays responsive during the
@@ -1188,4 +1199,7 @@ class ScrapingFeature:
 
     @tasks.loop(hours=24)
     async def _refresh_rates_loop(self):
-        self.converter.refresh()
+        if await asyncio.to_thread(self.converter.refresh):
+            await record("processing", "exchange-rate-refresh", scope_type="global")
+        else:
+            await record("failure", "exchange-rate-refresh", scope_type="global")

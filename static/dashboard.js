@@ -11,6 +11,7 @@
     selectedWishlist: null,
     selectedFlight: null,
     ranges: { wishlist: 30, flight: 90 },
+    analytics: null,
     requestVersions: new Map(),
     statsTimer: null,
   };
@@ -351,13 +352,77 @@
     } catch (error) { if (ticket.current()) toast(error.message, "error"); }
   }
 
-  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, settings: loadSettings };
+  function renderAnalyticsCommands() {
+    const target = $("#analytics-commands");
+    const rows = state.analytics?.commands?.active || [];
+    const ascending = $("#analytics-command-sort").value === "asc";
+    const sorted = [...rows].sort((a, b) => ascending
+      ? a.count - b.count || a.name.localeCompare(b.name)
+      : b.count - a.count || a.name.localeCompare(b.name));
+    target.innerHTML = sorted.length ? `<table class="data-table"><thead><tr><th>Command</th><th>Uses</th><th>Latest in period</th></tr></thead><tbody>${sorted.map((row) => `<tr><td><code>/${escapeHtml(row.name)}</code></td><td>${row.count}</td><td>${escapeHtml(formatDate(row.latest_at))}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">No active commands are registered yet.</div>';
+  }
+
+  function renderAnalyticsList(target, rows, emptyText, nameKey = "name") {
+    target.innerHTML = rows?.length ? `<table class="data-table"><thead><tr><th>Activity</th><th>Category</th><th>Count</th><th>Latest</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${nameKey === "name" ? `<code>/${escapeHtml(row[nameKey])}</code>` : escapeHtml(row[nameKey])}</td><td>${escapeHtml(row.category || (row.active === false ? "inactive command" : "command"))}</td><td>${row.count}</td><td>${escapeHtml(formatDate(row.latest_at))}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">${escapeHtml(emptyText)}</div>`;
+  }
+
+  function renderAnalyticsChart(rows) {
+    const target = $("#analytics-chart");
+    if (!rows?.length || !rows.some((row) => row.total > 0)) {
+      target.innerHTML = '<div class="empty">No activity has been recorded in this period.</div>';
+      return;
+    }
+    const width = 900; const height = 190; const pad = 24;
+    const max = Math.max(...rows.map((row) => row.total), 1);
+    const points = rows.map((row, index) => {
+      const x = rows.length === 1 ? width / 2 : pad + index * (width - pad * 2) / (rows.length - 1);
+      const y = height - pad - row.total / max * (height - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+    target.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily bot activity"><line class="grid" x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}"></line><polyline class="line" points="${points}"></polyline><text x="${pad}" y="${height - 5}">${escapeHtml(rows[0].date)}</text><text text-anchor="end" x="${width - pad}" y="${height - 5}">${escapeHtml(rows[rows.length - 1].date)}</text><text x="${pad}" y="14">max ${max}</text></svg>`;
+  }
+
+  async function loadAnalytics() {
+    const ticket = version("analytics");
+    const params = { period: $("#analytics-period").value };
+    if (state.guildId) params.guild_id = state.guildId;
+    try {
+      const data = await api(`/analytics/summary?${query(params)}`);
+      if (!ticket.current()) return;
+      state.analytics = data;
+      $("#analytics-command-total").textContent = data.category_totals.command || 0;
+      $("#analytics-mention-total").textContent = data.category_totals.mention || 0;
+      $("#analytics-automatic-total").textContent = data.category_totals.automatic || 0;
+      $("#analytics-scheduled-total").textContent = data.category_totals.scheduled || 0;
+      $("#analytics-failure-total").textContent = data.category_totals.failure || 0;
+      $("#analytics-tracking").textContent = `Tracking since ${data.tracking_started_date} · showing ${data.period.start} to ${data.period.end} UTC`;
+      $("#analytics-scope").textContent = state.guildId ? `server ${state.guildId}` : `all · server ${data.scope_totals.guild} · DM ${data.scope_totals.dm} · global ${data.scope_totals.global}`;
+      renderAnalyticsCommands();
+      renderAnalyticsList($("#analytics-unused"), data.commands.unused, "Every active command was used in this period.");
+      renderAnalyticsList($("#analytics-features"), data.features, "No non-command activity in this period.", "activity");
+      renderAnalyticsList($("#analytics-failures"), data.failures, "No failures in this period.", "activity");
+      renderAnalyticsList($("#analytics-inactive"), data.commands.inactive, "No inactive commands have historical data.");
+      renderAnalyticsChart(data.daily);
+    } catch (error) {
+      if (!ticket.current()) return;
+      state.analytics = null;
+      $("#analytics-chart").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+      $("#analytics-commands").innerHTML = '<div class="empty">Could not load command analytics.</div>';
+      $("#analytics-unused").innerHTML = '<div class="empty">Could not load unused commands.</div>';
+      $("#analytics-features").innerHTML = '<div class="empty">Could not load feature analytics.</div>';
+      $("#analytics-failures").innerHTML = '<div class="empty">Could not load failure analytics.</div>';
+      $("#analytics-inactive").innerHTML = '<div class="empty">Could not load inactive commands.</div>';
+    }
+  }
+
+  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
   function navigate(page) {
     if (!loaders[page]) return;
     state.page = page;
     $$(".page").forEach((node) => node.classList.toggle("active", node.id === `page-${page}`));
     $$(".nav-item").forEach((node) => node.classList.toggle("active", node.dataset.page === page));
     $("#page-title").textContent = $(`#page-${page}`).dataset.title;
+    $("#global-user-scope").hidden = page === "analytics";
     document.body.classList.remove("menu-open");
     clearInterval(state.statsTimer); state.statsTimer = null;
     loaders[page]();
@@ -400,6 +465,7 @@
       if (action === "load-flights") return loadFlights();
       if (action === "load-memory") return loadMemory();
       if (action === "load-settings") return loadSettings();
+      if (action === "load-analytics") return loadAnalytics();
       if (action === "delete-keyword-response" || action === "delete-keyword") {
         if (!confirm(action.endsWith("response") ? "Delete this response?" : "Delete every response for this keyword?")) return;
         const payload = { guild_id: requireGuild(), keyword: button.dataset.keyword };
@@ -435,6 +501,8 @@
     const updateScope = () => { clearTimeout(scopeTimer); scopeTimer = setTimeout(() => { state.guildId = $("#global-guild-id").value.trim(); state.userId = $("#global-user-id").value.trim(); localStorage.setItem("bot-dashboard-guild", state.guildId); localStorage.setItem("bot-dashboard-user", state.userId); state.selectedWishlist = null; state.selectedFlight = null; loaders[state.page](); }, 350); };
     $("#global-guild-id").addEventListener("input", updateScope); $("#global-user-id").addEventListener("input", updateScope);
     $("#memory-scope").addEventListener("change", loadMemory);
+    $("#analytics-period").addEventListener("change", loadAnalytics);
+    $("#analytics-command-sort").addEventListener("change", renderAnalyticsCommands);
     $("#login-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => login(data.get("token"))); });
     document.addEventListener("click", (event) => { const action = event.target.closest("[data-action]"); if (action) { event.preventDefault(); handleAction(action); return; } const row = event.target.closest("[data-select]"); if (row?.dataset.select === "wishlist") loadWishlistDetail(row.dataset.id); if (row?.dataset.select === "flight") loadFlightDetail(row.dataset.id); });
     bindForms();

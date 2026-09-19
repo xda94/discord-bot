@@ -11,6 +11,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from analytics import record_for
 
 logger = logging.getLogger("discord_bot")
 
@@ -63,6 +64,7 @@ class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if self.password.value != self._feature.password:
+            await record_for("failure", "sponsor-modal-submit", interaction)
             await interaction.response.send_message("Wrong password.", ephemeral=True)
             return
 
@@ -81,6 +83,7 @@ class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
             )
         else:
             await interaction.response.send_message("Sponsor cleared.", ephemeral=True)
+        await record_for("control", "sponsor-modal-submit", interaction)
 
 
 class SponsorsFeature:
@@ -209,10 +212,15 @@ class SponsorsFeature:
                         None,
                     )
                     if channel:
-                        await channel.send(
-                            f"@everyone Sponsorship for **{self.sponsor}** is going to expire in one day. "
-                            f"Who would like to be the next sponsor?"
-                        )
+                        try:
+                            await channel.send(
+                                f"@everyone Sponsorship for **{self.sponsor}** is going to expire in one day. "
+                                f"Who would like to be the next sponsor?"
+                            )
+                            await record_for("scheduled", "sponsor-expiry-warning", channel)
+                        except Exception:
+                            await record_for("failure", "sponsor-expiry-warning", channel)
+                            logger.exception("Could not send sponsor expiry warning in guild %s", guild.id)
                 logger.info(f"Sponsor expiry warning sent for '{self.sponsor}'")
 
             if elapsed >= ONE_YEAR_SECONDS:

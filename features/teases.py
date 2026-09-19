@@ -8,6 +8,7 @@ from datetime import date
 import discord
 from discord import app_commands
 
+from analytics import record_for
 from tease_llm import enhance_tease
 
 logger = logging.getLogger("discord_bot")
@@ -54,9 +55,11 @@ class TeasesFeature:
             await message.reply(tease, mention_author=False)
         except Exception:
             logger.exception("Failed to send tease")
+            await record_for("failure", "tease-reply", message)
             return False
 
         self.teases_today += 1
+        await record_for("automatic", "tease-reply", message)
         logger.info(
             f"Tease #{self.teases_today} triggered on {message.author} in #{message.channel}"
         )

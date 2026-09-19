@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from analytics import record, record_for
 
 logger = logging.getLogger("discord_bot")
 
@@ -60,6 +61,7 @@ class RemindersFeature:
         try:
             due = db.get_due_reminders()
             for rem_id, user_id, channel_id, message in due:
+                channel = None
                 try:
                     channel = self.client.get_channel(channel_id)
                     if channel:
@@ -67,11 +69,17 @@ class RemindersFeature:
                             f"🔔 <@{user_id}>, here is your reminder: **{message}**",
                             suppress_embeds=True,
                         )
+                        await record_for("scheduled", "reminder-delivery", channel)
                         logger.info(f"Delivered reminder {rem_id} to user {user_id}")
                     else:
                         logger.warning(f"Reminder {rem_id}: Channel {channel_id} inaccessible")
+                        await record("failure", "reminder-delivery", scope_type="global")
                 except Exception as e:
                     logger.error(f"Failed to send reminder {rem_id}: {e}")
+                    if channel:
+                        await record_for("failure", "reminder-delivery", channel)
+                    else:
+                        await record("failure", "reminder-delivery", scope_type="global")
                 finally:
                     # CRITICAL: always delete the reminder so we don't spam errors infinitely.
                     db.delete_reminder(rem_id)

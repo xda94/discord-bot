@@ -36,6 +36,7 @@
       <button class="nav-item" data-page="wishlist"><span>♡</span>Wishlist</button>
       <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
       <button class="nav-item" data-page="memory"><span>◉</span>LLM memory</button>
+      <button class="nav-item" data-page="analytics"><span>⌁</span>Analytics</button>
       <button class="nav-item" data-page="settings"><span>⚙</span>Bot settings</button>
     </nav>
     <div class="sidebar-note"><span class="status-dot"></span><div><strong>LAN administration</strong><small>IDs select data; they do not sign in users.</small></div></div>
@@ -47,7 +48,7 @@
       <div><p class="eyebrow">DISCORD BOT</p><h1 id="page-title">Overview</h1></div>
       <div class="scope-controls">
         <label>Server ID<input id="global-guild-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord server ID"></label>
-        <label>User ID<input id="global-user-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord user ID"></label>
+        <label id="global-user-scope">User ID<input id="global-user-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord user ID"></label>
       </div>
       <button class="button secondary logout-button" data-action="logout">Log out</button>
     </header>
@@ -132,6 +133,29 @@
           <article class="panel"><div class="panel-title"><h3>Setting by key</h3><span class="scope-pill global">global</span></div><form id="setting-form" class="form-stack"><label>Key<input name="key" required pattern="[A-Za-z0-9_.-]+"></label><label>Value<textarea name="value" required></textarea></label><div class="button-row"><button type="button" class="button secondary" data-action="read-setting">Read</button><button class="button primary">Save</button></div></form></article>
         </div>
         <article class="panel table-panel"><div class="panel-title"><div><h3>LLM feedback</h3><p>At least 10 ratings in a group are needed before comparison.</p></div><span class="scope-pill">server</span></div><div id="settings-feedback" class="empty">Enter a server ID to load feedback.</div></article>
+      </section>
+
+      <section class="page" id="page-analytics" data-title="Analytics">
+        <div class="page-heading"><div><p class="eyebrow">DEPLOYER ONLY</p><h2>Bot activity</h2><p>Daily UTC totals collected since analytics was deployed. A blank Server ID includes server, DM, and global activity.</p></div><button class="button secondary" data-action="load-analytics">Refresh</button></div>
+        <article class="panel compact analytics-toolbar"><label>Period<select id="analytics-period"><option value="7d">7 days</option><option value="30d" selected>30 days</option><option value="90d">90 days</option><option value="all">All time</option></select></label><span id="analytics-tracking" class="cell-muted">Loading tracking dates…</span></article>
+        <div class="metric-grid analytics-metrics">
+          <article class="metric"><span>Command invocations</span><strong id="analytics-command-total">—</strong><small>Includes commands that later fail validation</small></article>
+          <article class="metric"><span>Bot mentions</span><strong id="analytics-mention-total">—</strong><small>Includes cooldown and capacity rejections</small></article>
+          <article class="metric"><span>Automatic activity</span><strong id="analytics-automatic-total">—</strong><small>Replies and reactions successfully delivered</small></article>
+          <article class="metric"><span>Scheduled activity</span><strong id="analytics-scheduled-total">—</strong><small>Deliveries successfully sent</small></article>
+          <article class="metric"><span>Failures</span><strong id="analytics-failure-total">—</strong><small>Failed commands, deliveries, and background work</small></article>
+        </div>
+        <article class="panel analytics-chart-panel"><div class="panel-title"><div><h3>Daily activity</h3><p>All categories combined, grouped by UTC date.</p></div><span class="scope-pill global" id="analytics-scope">all activity</span></div><div id="analytics-chart" class="analytics-chart empty">Loading analytics…</div></article>
+        <div class="two-column analytics-columns">
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Command ranking</h3><p>Use the sort control to compare most- and least-used commands.</p></div><select id="analytics-command-sort"><option value="desc">Most used</option><option value="asc">Least used</option></select></div><div id="analytics-commands" class="empty">Loading commands…</div></article>
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Unused commands</h3><p>Active commands with zero invocations in this period.</p></div></div><div id="analytics-unused" class="empty">Loading commands…</div></article>
+        </div>
+        <div class="two-column analytics-columns">
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Other bot features</h3><p>Controls, automatic behavior, scheduled deliveries, processing, and feedback.</p></div></div><div id="analytics-features" class="empty">Loading features…</div></article>
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Failures</h3><p>Failed command execution, delivery, generation, provider, and processing operations.</p></div></div><div id="analytics-failures" class="empty">No failures in this period.</div></article>
+        </div>
+        <article class="panel table-panel analytics-inactive-panel"><div class="panel-title"><div><h3>Inactive commands</h3><p>Removed commands retain their historical totals.</p></div></div><div id="analytics-inactive" class="empty">No inactive commands.</div></article>
+        <p class="analytics-note">Counts contain no message text, command arguments, credentials, or individual user history. Low usage is informational and never removes or flags a command automatically.</p>
       </section>
     </div>
   </main>
