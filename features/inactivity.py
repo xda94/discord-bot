@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from analytics import record, record_for
 from mention_utils import resolve_bot_display_name
 from tease_llm import generate_inactivity_message
 
@@ -131,6 +132,7 @@ class InactivityFeature:
                     # Keep the guild overdue so the next scheduled check can
                     # retry once llama.cpp is available again.
                     continue
+                await record("scheduled", "inactivity-nudge", guild_id=guild_id)
                 guild_state["last_time"] = now
                 # Mirror the in-memory reset so a restart right after a nudge
                 # doesn't fire it again from the stale DB row.
@@ -152,11 +154,16 @@ class InactivityFeature:
         )
         if text is None:
             logger.warning("Skipping inactivity nudge because LLM generation failed")
+            await record_for("failure", "inactivity-nudge", channel)
             return False
-        if target is not None:
-            await channel.send(f"<@{target.id}> {text}")
-        else:
-            await channel.send(text)
+        try:
+            if target is not None:
+                await channel.send(f"<@{target.id}> {text}")
+            else:
+                await channel.send(text)
+        except Exception:
+            await record_for("failure", "inactivity-nudge", channel)
+            raise
         return True
 
     async def _pick_recent_chatter(

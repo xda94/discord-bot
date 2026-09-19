@@ -33,6 +33,7 @@ from db import (
     get_all_reminders,
     get_all_responses,
     get_all_scraped_items,
+    get_analytics_summary,
     get_flight_price_history,
     get_flight_api_credentials,
     get_flight_tracker,
@@ -147,6 +148,23 @@ def require_token(f):
             logger.warning(
                 f"Unauthorized request to {request.path} from {request.remote_addr}"
             )
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return wrapper
+
+
+def require_analytics_token(f):
+    """Analytics is deployer-only and is disabled without an API token."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not API_TOKEN:
+            return jsonify({"error": "Analytics requires API_TOKEN configuration"}), 503
+        auth = request.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if not auth.startswith(prefix) or not hmac.compare_digest(
+            auth[len(prefix):], API_TOKEN
+        ):
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
 
@@ -279,6 +297,20 @@ def _collect_system_stats():
 @require_token
 def api_system_stats():
     return jsonify(_collect_system_stats())
+
+
+@app.route("/analytics/summary", methods=["GET"])
+@require_analytics_token
+def api_analytics_summary():
+    period = request.args.get("period", "30d")
+    raw_guild_id = request.args.get("guild_id")
+    try:
+        guild_id = (
+            None if raw_guild_id in (None, "") else _discord_id(raw_guild_id, "guild_id")
+        )
+        return jsonify(get_analytics_summary(period, guild_id))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 def _serialize_scraped_item(item):

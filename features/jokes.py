@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import db
+from analytics import record
 
 logger = logging.getLogger("discord_bot")
 
@@ -274,6 +275,7 @@ class JokesFeature:
                 f"Joke channel {channel_id} (guild {guild_id}) not accessible — "
                 f"check that the bot is still in the guild and has read access."
             )
+            await record("failure", "daily-joke", guild_id=guild_id)
             return
 
         try:
@@ -283,7 +285,10 @@ class JokesFeature:
                 f"Missing permissions to post in channel {channel_id} "
                 f"(guild {guild_id}); skipping joke."
             )
+            await record("failure", "daily-joke", guild_id=guild_id)
             return
+
+        await record("scheduled", "daily-joke", guild_id=guild_id)
 
         db.mark_guild_joke_sent(guild_id, joke_id)
         db.set_guild_joke_last_sent(guild_id, today_iso)

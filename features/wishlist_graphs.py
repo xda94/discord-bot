@@ -13,6 +13,7 @@ from functools import partial
 import discord
 
 import db
+from analytics import record_for
 from chart_renderer import render_multi_price_history_png, render_price_history_png
 
 logger = logging.getLogger("discord_bot")
@@ -107,7 +108,9 @@ class CustomDaysModal(discord.ui.Modal):
                 f"Enter a whole number from 1 to {GRAPH_MAX_DAYS}.", ephemeral=True
             )
             return
-        await self.graph_view.update_graph(interaction, days=days)
+        await self.graph_view.update_graph(
+            interaction, days=days, analytics_activity="wishlist-graph-custom-period"
+        )
 
 
 class WishlistGraphView(discord.ui.View):
@@ -122,7 +125,9 @@ class WishlistGraphView(discord.ui.View):
             button = discord.ui.Button(label=f"{period} days", custom_id=f"graph-days-{period}")
 
             async def select_period(interaction, selected=period):
-                await self.update_graph(interaction, days=selected)
+                await self.update_graph(
+                    interaction, days=selected, analytics_activity="wishlist-graph-period-button"
+                )
 
             button.callback = select_period
             self.add_item(button)
@@ -137,7 +142,9 @@ class WishlistGraphView(discord.ui.View):
             toggle = discord.ui.Button(label="", custom_id="graph-toggle-percentage", row=1)
 
             async def toggle_percentage(interaction):
-                await self.update_graph(interaction, toggle=True)
+                await self.update_graph(
+                    interaction, toggle=True, analytics_activity="wishlist-graph-toggle-button"
+                )
 
             toggle.callback = toggle_percentage
             self.add_item(toggle)
@@ -160,9 +167,12 @@ class WishlistGraphView(discord.ui.View):
             return False
         return True
 
-    async def update_graph(self, interaction, *, days=None, toggle=False):
+    async def update_graph(
+        self, interaction, *, days=None, toggle=False, analytics_activity="wishlist-graph-control"
+    ):
         if not await self.interaction_check(interaction):
             return
+        await record_for("control", analytics_activity, interaction)
         if self._lock.locked():
             await interaction.response.send_message("Your graph is still rendering. Please wait.", ephemeral=True)
             return
@@ -187,6 +197,7 @@ class WishlistGraphView(discord.ui.View):
                     raise
             except Exception:
                 logger.exception("Could not update wishlist graph for user %s", self.user_id)
+                await record_for("failure", analytics_activity, interaction)
                 await interaction.followup.send("Could not render the graph. Please try again.", ephemeral=True)
             finally:
                 if file:

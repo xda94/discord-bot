@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import discord
-from discord import app_commands
 
 # IMPORTANT: configure logging BEFORE importing any feature module. Some
 # feature modules (e.g. scraping) emit `logger.warning` at import time to
@@ -19,6 +18,7 @@ from logger import setup_logger
 logger = setup_logger("discord_bot", "bot.log")
 
 import db
+from analytics import AnalyticsCommandTree, record_message_mention, refresh_command_catalog
 from features.azi_se_spala import AziSeSpalaFeature
 from features.llm_mention import ContextReactionFeature, LLMMentionFeature
 from features.help_feature import HelpFeature
@@ -71,7 +71,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+tree = AnalyticsCommandTree(client)
 
 db.init_db()
 
@@ -130,6 +130,7 @@ BACKGROUND_FEATURES = (
 async def on_ready():
     try:
         await tree.sync()
+        await refresh_command_catalog(tree)
         for feature in BACKGROUND_FEATURES:
             await feature.start_tasks()
         logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
@@ -141,6 +142,7 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    await record_message_mention(message, BOT_ID)
     for handler in MESSAGE_HANDLERS:
         # A handler returns True if it produced a "real" response and wants the
         # dispatch chain to stop (currently only KeywordsFeature does this).
