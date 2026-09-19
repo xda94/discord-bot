@@ -70,11 +70,12 @@ class LLMFeedbackFeature:
         if rating is None:
             return
         if db.set_llm_response_rating(payload.message_id, payload.user_id, rating):
+            guild_id = getattr(payload, "guild_id", None)
             await record(
                 "feedback",
                 "llm-rating",
-                guild_id=payload.guild_id,
-                scope_type="guild" if payload.guild_id is not None else "dm",
+                guild_id=guild_id,
+                scope_type="guild" if guild_id is not None else "dm",
             )
             logger.info(
                 "LLM feedback recorded: message=%s rating=%s",
