@@ -34,9 +34,12 @@ async def record(
             guild_id=guild_id,
             scope_type=scope_type,
         )
-    except Exception:
-        logger.exception(
-            "Could not record analytics category=%s activity=%s", category, activity
+    except Exception as exc:
+        logger.warning(
+            "Could not record analytics category=%s activity=%s error=%s",
+            category,
+            activity,
+            type(exc).__name__,
         )
 
 

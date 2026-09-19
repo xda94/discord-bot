@@ -152,7 +152,9 @@ def test_command_tree_counts_invocations_but_not_autocomplete(monkeypatch):
     ]
 
 
-def test_mentions_count_once_and_analytics_failures_do_not_break_messages(monkeypatch):
+def test_mentions_count_once_and_analytics_failures_do_not_break_messages(
+    monkeypatch, caplog
+):
     calls = []
 
     async def fake_record_for(category, activity, message):
@@ -172,6 +174,8 @@ def test_mentions_count_once_and_analytics_failures_do_not_break_messages(monkey
 
     monkeypatch.setattr(db, "record_analytics_activity", fail)
     asyncio.run(analytics.record("automatic", "test", scope_type="global"))
+    assert caplog.records[-1].exc_info is None
+    assert "OperationalError" in caplog.records[-1].message
 
 
 def test_multipart_llm_delivery_counts_once_and_failed_delivery_is_not_counted(monkeypatch):
