@@ -206,6 +206,47 @@ def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
     feature._enqueue_memory.assert_awaited_once_with(first, "discord-bot")
 
 
+def test_memory_scheduler_waits_only_remaining_rest_interval(monkeypatch):
+    class SchedulerStopped(Exception):
+        pass
+
+    clock = [0.0]
+    sleep_delays = []
+
+    async def fake_sleep(delay):
+        if len(sleep_delays) >= 3:
+            raise SchedulerStopped
+        sleep_delays.append(delay)
+        clock[0] += delay
+
+    first = SimpleNamespace(scope_id=1, user_id=1)
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        eligible_batches=MagicMock(return_value=[first])
+    )
+    feature._model_busy = MagicMock(return_value=False)
+    feature._memory_last_finished = None
+
+    async def admit(_batch, _model):
+        # The worker finishes ten seconds after the first scan admits it.
+        feature._memory_last_finished = clock[0] + 10
+        return True
+
+    feature._enqueue_memory = admit
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "300")
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("features.llm_mention.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "features.llm_mention.get_selected_model", lambda: "discord-bot"
+    )
+
+    with pytest.raises(SchedulerStopped):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    assert sleep_delays == [300.0, 300.0, 10.0]
+    assert feature.memory.eligible_batches.call_count == 2
+
+
 def test_worker_admission_does_not_build_a_backlog():
     async def scenario():
         feature = object.__new__(LLMMentionFeature)

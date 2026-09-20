@@ -467,11 +467,29 @@ class LLMMentionFeature:
             )
 
     async def _memory_scheduler_loop(self) -> None:
+        wait_seconds = get_memory_consolidation_interval_seconds()
         while True:
             interval = get_memory_consolidation_interval_seconds()
-            await asyncio.sleep(interval)
+            await asyncio.sleep(wait_seconds)
+            now = time.monotonic()
+            if (
+                self._memory_last_finished is not None
+                and now - self._memory_last_finished < interval
+            ):
+                logger.info(
+                    "Memory scan skipped reason=rest-interval remaining=%.1fs",
+                    interval - (now - self._memory_last_finished),
+                )
+                # Wake exactly when the completed chunk's rest interval ends;
+                # a fixed sleep here would add another skipped interval.
+                wait_seconds = max(
+                    0.0,
+                    self._memory_last_finished + interval - now,
+                )
+                continue
             if self.memory is None:
                 logger.info("Memory scan skipped reason=feature-unavailable")
+                wait_seconds = interval
                 continue
             if self._model_busy():
                 logger.info(
@@ -479,17 +497,7 @@ class LLMMentionFeature:
                     getattr(self, "_processing", False),
                     getattr(getattr(self, "_queue", None), "qsize", lambda: 0)(),
                 )
-                continue
-            since_finished = (
-                None
-                if self._memory_last_finished is None
-                else time.monotonic() - self._memory_last_finished
-            )
-            if since_finished is not None and since_finished < interval:
-                logger.info(
-                    "Memory scan skipped reason=rest-interval remaining=%.1fs",
-                    interval - since_finished,
-                )
+                wait_seconds = interval
                 continue
             batches = self.memory.eligible_batches()
             logger.info("Memory scan completed eligible_batches=%d", len(batches))
@@ -499,6 +507,7 @@ class LLMMentionFeature:
                     # Run at most one background synthesis per scan. Remaining
                     # eligible work is reconsidered after the next interval.
                     break
+            wait_seconds = interval
 
     async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> bool:
         key = (batch.scope_id, batch.user_id)
@@ -679,7 +688,7 @@ class LLMMentionFeature:
                     logger.info("Could not add mention reaction: %s", exc)
                     await record_for("failure", "mention-reaction", job.reply_to)
 
-        # Persistent memory is synthesized only by the daily scheduler. A
+        # Persistent memory is synthesized only by the background scheduler. A
         # mention reply must not trigger early extraction or persist raw chat.
 
     async def _process_memory_job(self, job: MemoryJob) -> None:
@@ -698,8 +707,8 @@ class LLMMentionFeature:
                 job.batch.user_id,
             )
             return
-        # A large daily snapshot may contain several chunks. Process only one
-        # per scheduler pass so background work cannot pin the CPU continuously.
+        # A cycle author group may contain several chunks. Process only one per
+        # scheduler pass so background work cannot pin the CPU continuously.
         batch = chunks[0]
         if not self.memory.can_process_batch(batch):
             logger.info(

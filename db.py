@@ -349,6 +349,23 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_llm_memory_observations_owner "
                 "ON llm_memory_observations(scope_id, user_id, created_at)"
             )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_llm_memory_observations_channel "
+                "ON llm_memory_observations(scope_id, channel_id, id)"
+            )
+            # A channel cycle is deliberately separate from user memory. The
+            # checkpoint and endpoint survive a restart while source rows are
+            # deleted one author-sized chunk at a time.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS llm_memory_progress (
+                    scope_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    last_completed_observation_id INTEGER NOT NULL DEFAULT 0,
+                    active_cycle_endpoint_observation_id INTEGER,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (scope_id, channel_id)
+                )
+            """)
             # Migrate the previous one-blob profile format. The old row is
             # removed only after each complete fact has been copied, making
             # repeated startup safe through the unique normalized value.
@@ -904,6 +921,12 @@ def set_llm_memory_channel_enabled(guild_id, channel_id, enabled):
                 "enabled = excluded.enabled, updated_at = excluded.updated_at",
                 (guild_id, channel_id, int(bool(enabled)), time.time()),
             )
+            if not enabled:
+                c.execute(
+                    "DELETE FROM llm_memory_progress "
+                    "WHERE scope_id = ? AND channel_id = ?",
+                    (guild_id, channel_id),
+                )
         return True
     except Exception:
         logger.exception(
@@ -994,6 +1017,10 @@ def purge_guild_llm_user_memories(guild_id):
                 "llm_memory_observations",
             ):
                 c.execute(f"DELETE FROM {table} WHERE scope_id = ?", (guild_id,))
+            c.execute(
+                "DELETE FROM llm_memory_progress WHERE scope_id = ?",
+                (guild_id,),
+            )
         return removed
     except Exception:
         logger.exception("Failed to purge LLM user memories for guild %s", guild_id)
@@ -1108,6 +1135,161 @@ def get_llm_memory_observations(scope_id=None, user_id=None):
         return []
 
 
+def get_llm_memory_observation_channels():
+    """Return scope/channel pairs that have captured observations."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT DISTINCT scope_id, channel_id "
+                "FROM llm_memory_observations"
+            )
+            return c.fetchall()
+    except Exception:
+        logger.exception("Failed to list memory observation channels")
+        return []
+
+
+def get_llm_memory_channel_observations(
+    scope_id,
+    channel_id,
+    *,
+    after_id=0,
+    through_id=None,
+    max_created_at=None,
+):
+    """Return captured observations for one channel in observation order."""
+    try:
+        with _connect() as c:
+            query = (
+                "SELECT id, scope_id, user_id, guild_id, channel_id, "
+                "content, created_at FROM llm_memory_observations "
+                "WHERE scope_id = ? AND channel_id = ? AND id > ?"
+            )
+            args = [scope_id, channel_id, after_id]
+            if through_id is not None:
+                query += " AND id <= ?"
+                args.append(through_id)
+            if max_created_at is not None:
+                query += " AND created_at <= ?"
+                args.append(max_created_at)
+            query += " ORDER BY id"
+            c.execute(query, args)
+            return c.fetchall()
+    except Exception:
+        logger.exception(
+            "Failed to read memory observations for scope %s channel %s",
+            scope_id,
+            channel_id,
+        )
+        return []
+
+
+def get_llm_memory_progress(scope_id, channel_id):
+    """Return ``(checkpoint, active_endpoint)`` for a channel."""
+    try:
+        with _connect() as c:
+            c.execute(
+                "SELECT last_completed_observation_id, "
+                "active_cycle_endpoint_observation_id "
+                "FROM llm_memory_progress WHERE scope_id = ? AND channel_id = ?",
+                (scope_id, channel_id),
+            )
+            row = c.fetchone()
+        return (0, None) if row is None else (row[0], row[1])
+    except Exception:
+        logger.exception(
+            "Failed to read memory progress for scope %s channel %s",
+            scope_id,
+            channel_id,
+        )
+        return (0, None)
+
+
+def begin_llm_memory_cycle(scope_id, channel_id, endpoint_observation_id):
+    """Persist a fixed endpoint if the channel has no active cycle."""
+    try:
+        with _connect(commit=True) as c:
+            now = time.time()
+            c.execute(
+                "INSERT INTO llm_memory_progress "
+                "(scope_id, channel_id, last_completed_observation_id, "
+                "active_cycle_endpoint_observation_id, updated_at) "
+                "VALUES (?, ?, 0, ?, ?) "
+                "ON CONFLICT(scope_id, channel_id) DO UPDATE SET "
+                "active_cycle_endpoint_observation_id = excluded."
+                "active_cycle_endpoint_observation_id, updated_at = excluded.updated_at "
+                "WHERE llm_memory_progress.active_cycle_endpoint_observation_id IS NULL",
+                (scope_id, channel_id, int(endpoint_observation_id), now),
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(
+            "Failed to start memory cycle for scope %s channel %s",
+            scope_id,
+            channel_id,
+        )
+        return False
+
+
+def complete_llm_memory_cycle_if_empty(scope_id, channel_id):
+    """Advance a channel checkpoint only after its active cycle is empty."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "SELECT last_completed_observation_id, "
+                "active_cycle_endpoint_observation_id "
+                "FROM llm_memory_progress WHERE scope_id = ? AND channel_id = ?",
+                (scope_id, channel_id),
+            )
+            progress = c.fetchone()
+            if progress is None or progress[1] is None:
+                return False
+            checkpoint, endpoint = progress
+            c.execute(
+                "SELECT 1 FROM llm_memory_observations "
+                "WHERE scope_id = ? AND channel_id = ? "
+                "AND id > ? AND id <= ? LIMIT 1",
+                (scope_id, channel_id, checkpoint, endpoint),
+            )
+            if c.fetchone() is not None:
+                return False
+            c.execute(
+                "UPDATE llm_memory_progress SET "
+                "last_completed_observation_id = ?, "
+                "active_cycle_endpoint_observation_id = NULL, updated_at = ? "
+                "WHERE scope_id = ? AND channel_id = ? "
+                "AND active_cycle_endpoint_observation_id = ?",
+                (endpoint, time.time(), scope_id, channel_id, endpoint),
+            )
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(
+            "Failed to complete memory cycle for scope %s channel %s",
+            scope_id,
+            channel_id,
+        )
+        return False
+
+
+def clear_llm_memory_progress(scope_id, channel_id):
+    """Clear a channel checkpoint and any active cycle."""
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM llm_memory_progress "
+                "WHERE scope_id = ? AND channel_id = ?",
+                (scope_id, channel_id),
+            )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to clear memory progress for scope %s channel %s",
+            scope_id,
+            channel_id,
+        )
+        return False
+
+
 def delete_llm_memory_observations(ids):
     ids = tuple(dict.fromkeys(int(value) for value in ids))
     if not ids:
@@ -1135,17 +1317,43 @@ def delete_llm_memory_channel_observations(scope_id, channel_id):
                 "WHERE scope_id = ? AND channel_id = ?",
                 (scope_id, channel_id),
             )
+            c.execute(
+                "DELETE FROM llm_memory_progress "
+                "WHERE scope_id = ? AND channel_id = ?",
+                (scope_id, channel_id),
+            )
         return True
     except Exception:
         logger.exception("Failed to clear channel memory observations")
         return False
 
 
-def apply_llm_memory_delta(scope_id, user_id, additions, corrections, observation_ids):
+def apply_llm_memory_delta(
+    scope_id,
+    user_id,
+    additions,
+    corrections,
+    observation_ids,
+    *,
+    channel_id=None,
+    cycle_endpoint_observation_id=None,
+):
     """Atomically apply synthesized entries and delete their raw observations."""
     try:
         now = time.time()
         with _connect(commit=True) as c:
+            progress = None
+            if channel_id is not None and cycle_endpoint_observation_id is not None:
+                c.execute(
+                    "SELECT last_completed_observation_id, "
+                    "active_cycle_endpoint_observation_id "
+                    "FROM llm_memory_progress "
+                    "WHERE scope_id = ? AND channel_id = ?",
+                    (scope_id, channel_id),
+                )
+                progress = c.fetchone()
+                if progress is None or progress[1] != cycle_endpoint_observation_id:
+                    raise ValueError("memory cycle is no longer active")
             for correction in corrections:
                 entry_id = int(correction["id"])
                 c.execute(
@@ -1207,6 +1415,33 @@ def apply_llm_memory_delta(scope_id, user_id, additions, corrections, observatio
                     "AND user_id = ? AND id IN (" + placeholders + ")",
                     (scope_id, user_id, *ids),
                 )
+                if c.rowcount != len(ids):
+                    raise ValueError("memory observations changed during commit")
+            if progress is not None:
+                checkpoint, endpoint = progress
+                c.execute(
+                    "SELECT 1 FROM llm_memory_observations "
+                    "WHERE scope_id = ? AND channel_id = ? "
+                    "AND id > ? AND id <= ? LIMIT 1",
+                    (scope_id, channel_id, checkpoint, endpoint),
+                )
+                if c.fetchone() is None:
+                    c.execute(
+                        "UPDATE llm_memory_progress SET "
+                        "last_completed_observation_id = ?, "
+                        "active_cycle_endpoint_observation_id = NULL, "
+                        "updated_at = ? WHERE scope_id = ? AND channel_id = ? "
+                        "AND active_cycle_endpoint_observation_id = ?",
+                        (
+                            endpoint,
+                            now,
+                            scope_id,
+                            channel_id,
+                            endpoint,
+                        ),
+                    )
+                    if c.rowcount != 1:
+                        raise ValueError("memory cycle changed during commit")
         return True
     except Exception:
         logger.exception(

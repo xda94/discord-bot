@@ -15,13 +15,17 @@ logger = logging.getLogger("discord_bot")
 
 DM_SCOPE_ID = 0
 OBSERVATION_MESSAGE_MAX_CHARS = 2000
-# Keep daily extraction small enough for the CPU host's short context. These
-# are character budgets, not tokenizer-specific context guarantees.
+# Keep extraction small enough for the CPU host's short context. These are
+# character budgets, not tokenizer-specific context guarantees.
 SYNTHESIS_CHUNK_MAX_CHARS = 3000
 SYNTHESIS_CHUNK_MAX_MESSAGES = 20
 SYNTHESIS_ENTRIES_MAX_CHARS = 2000
 PRIVATE_MESSAGE_CHUNK = 1900
-MEMORY_SYNTHESIS_INTERVAL_SECONDS = 24 * 60 * 60
+MEMORY_CYCLE_MIN_OBSERVATIONS = 50
+MEMORY_OBSERVATION_MIN_AGE_SECONDS = 10 * 60
+# Import-compatible alias for callers that imported the old constant. The
+# scheduler no longer uses a daily age threshold.
+MEMORY_SYNTHESIS_INTERVAL_SECONDS = MEMORY_OBSERVATION_MIN_AGE_SECONDS
 MEMORY_CONFIG_CACHE_SECONDS = 30
 
 
@@ -43,6 +47,8 @@ class MemoryBatch:
     through_sequence: int
     observations: tuple[str, ...]
     observation_ids: tuple[int, ...] = ()
+    cycle_endpoint_observation_id: int | None = None
+    oldest_observation_created_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -71,8 +77,8 @@ class UserMemoryFeature:
     """Channel-controlled, per-user conversational memory.
 
     SQLite owns synthesized entries, pending observations, channel
-    configuration, and explicit user preferences. Pending user messages are
-    deleted atomically after a successful daily synthesis.
+    configuration, cycle progress, and explicit user preferences. Pending user
+    messages are deleted atomically after each successful synthesis chunk.
     """
 
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
@@ -177,9 +183,14 @@ class UserMemoryFeature:
     def _invalidate_key(self, key: tuple[int, int], *, clear: bool) -> None:
         self._generations[key] = self._generations.get(key, 0) + 1
         if clear:
-            observations = self._buffers.pop(key, None)
-            if observations:
-                db.delete_llm_memory_observations(item.sequence for item in observations)
+            self._buffers.pop(key, None)
+            # Include rows written by the API or another process, not only
+            # this feature instance's deque.
+            observation_ids = (
+                row[0]
+                for row in db.get_llm_memory_observations(*key)
+            )
+            db.delete_llm_memory_observations(observation_ids)
 
     def _invalidate_channel(self, guild_id: int, channel_id: int) -> None:
         for key, observations in list(self._buffers.items()):
@@ -343,7 +354,17 @@ class UserMemoryFeature:
             if item.sequence <= batch.through_sequence
         )
         if not db.apply_llm_memory_delta(
-            batch.scope_id, batch.user_id, additions, corrections, ids
+            batch.scope_id,
+            batch.user_id,
+            additions,
+            corrections,
+            ids,
+            channel_id=(
+                batch.request_channel_id
+                if batch.cycle_endpoint_observation_id is not None
+                else None
+            ),
+            cycle_endpoint_observation_id=batch.cycle_endpoint_observation_id,
         ):
             logger.warning(
                 "Memory delta database commit failed scope_id=%s user_id=%s "
@@ -397,7 +418,7 @@ class UserMemoryFeature:
 
     @staticmethod
     def synthesis_chunks(batch: MemoryBatch) -> tuple[MemoryBatch, ...]:
-        """Split one daily snapshot without dropping any source observations."""
+        """Split one channel-cycle author group without dropping observations."""
         if len(batch.observation_ids) != len(batch.observations):
             # Compatibility for manually constructed batches in callers/tests.
             return (batch,)
@@ -419,6 +440,8 @@ class UserMemoryFeature:
                     through_sequence=current_ids[-1],
                     observations=tuple(current_messages),
                     observation_ids=tuple(current_ids),
+                    cycle_endpoint_observation_id=batch.cycle_endpoint_observation_id,
+                    oldest_observation_created_at=batch.oldest_observation_created_at,
                 )
             )
 
@@ -439,47 +462,197 @@ class UserMemoryFeature:
         append_chunk()
         return tuple(chunks)
 
-    def eligible_batches(self, *, now: float | None = None) -> list[MemoryBatch]:
-        now = time.time() if now is None else now
-        result = []
-        for key in list(self._buffers):
-            self._sync_buffer(key)
-        for (scope_id, user_id), observations in list(self._buffers.items()):
-            if not observations:
-                continue
-            oldest = observations[0]
-            if now - oldest.created_at < MEMORY_SYNTHESIS_INTERVAL_SECONDS:
-                continue
-            latest = observations[-1]
-            guild_id = None if scope_id == DM_SCOPE_ID else scope_id
-            if not self._is_enabled(
-                guild_id=guild_id,
-                channel_id=latest.channel_id,
+    def _memory_channels(self) -> set[tuple[int, int]]:
+        """Return enabled guild channels plus DM channels with observations."""
+        self._refresh_enabled_channels()
+        channels = set(self._enabled_channels)
+        channels.update(
+            (scope_id, channel_id)
+            for scope_id, channel_id in db.get_llm_memory_observation_channels()
+            if scope_id == DM_SCOPE_ID
+        )
+        return channels
+
+    def _permitted_rows(self, scope_id: int, channel_id: int, rows) -> list:
+        permitted = []
+        invalidated_users = set()
+        guild_id = None if scope_id == DM_SCOPE_ID else scope_id
+        for row in rows:
+            (
+                _row_id,
+                _scope_id,
+                user_id,
+                row_guild_id,
+                _channel_id,
+                _content,
+                _created,
+            ) = row
+            effective_guild_id = guild_id if guild_id is not None else row_guild_id
+            if self._is_enabled(
+                guild_id=effective_guild_id,
+                channel_id=channel_id,
                 user_id=user_id,
             ):
-                continue
-            snapshot = tuple(observations)
-            logger.info(
-                "Memory batch eligible scope_id=%s user_id=%s observations=%d "
-                "chars=%d age_seconds=%.1f",
-                scope_id,
-                user_id,
-                len(snapshot),
-                sum(len(item.content) for item in snapshot),
-                now - oldest.created_at,
+                permitted.append(row)
+            elif (
+                user_id not in invalidated_users
+                and self._preference(scope_id, user_id) is False
+            ):
+                # A row may have been written by another process after the
+                # opt-out cache was populated. Remove it before it can block
+                # completion of an active channel cycle.
+                self._invalidate_key((scope_id, user_id), clear=True)
+                invalidated_users.add(user_id)
+        return permitted
+
+    def _batches_for_rows(
+        self,
+        *,
+        scope_id: int,
+        channel_id: int,
+        endpoint: int,
+        rows,
+    ) -> list[MemoryBatch]:
+        grouped: dict[int, list[MemoryObservation]] = {}
+        guild_id = None if scope_id == DM_SCOPE_ID else scope_id
+        for (
+            row_id,
+            _scope_id,
+            user_id,
+            _row_guild_id,
+            row_channel_id,
+            content,
+            created_at,
+        ) in rows:
+            grouped.setdefault(user_id, []).append(
+                MemoryObservation(row_id, row_channel_id, content, created_at)
             )
-            result.append(
+
+        batches = []
+        for user_id, observations in grouped.items():
+            observations.sort(key=lambda item: (item.created_at, item.sequence))
+            batches.append(
                 MemoryBatch(
                     scope_id=scope_id,
                     user_id=user_id,
                     guild_id=guild_id,
-                    request_channel_id=latest.channel_id,
+                    request_channel_id=channel_id,
                     generation=self._generations.get((scope_id, user_id), 0),
-                    through_sequence=latest.sequence,
-                    observations=tuple(item.content for item in snapshot),
-                    observation_ids=tuple(item.sequence for item in snapshot),
+                    through_sequence=observations[-1].sequence,
+                    observations=tuple(item.content for item in observations),
+                    observation_ids=tuple(item.sequence for item in observations),
+                    cycle_endpoint_observation_id=endpoint,
+                    oldest_observation_created_at=observations[0].created_at,
                 )
             )
+        batches.sort(
+            key=lambda batch: (
+                min(
+                    observation.created_at
+                    for observation in grouped[batch.user_id]
+                ),
+                batch.observation_ids[0],
+                batch.user_id,
+            )
+        )
+        return batches
+
+    def eligible_batches(self, *, now: float | None = None) -> list[MemoryBatch]:
+        """Return author groups for the next chunk in each channel cycle.
+
+        A new cycle is admitted only after 50 permitted observations have
+        reached the ten-minute age threshold. Its endpoint is persisted before
+        a job is queued, so messages arriving during a multi-check cycle wait
+        for the next cycle.
+        """
+        now = time.time() if now is None else now
+        cutoff = now - MEMORY_OBSERVATION_MIN_AGE_SECONDS
+        result = []
+        for key in list(self._buffers):
+            self._sync_buffer(key)
+
+        for scope_id, channel_id in sorted(self._memory_channels()):
+            checkpoint, endpoint = db.get_llm_memory_progress(scope_id, channel_id)
+            if endpoint is None:
+                eligible = self._permitted_rows(
+                    scope_id,
+                    channel_id,
+                    db.get_llm_memory_channel_observations(
+                        scope_id,
+                        channel_id,
+                        after_id=checkpoint,
+                        max_created_at=cutoff,
+                    ),
+                )
+                if len(eligible) < MEMORY_CYCLE_MIN_OBSERVATIONS:
+                    if eligible:
+                        logger.info(
+                            "Memory cycle skipped scope_id=%s channel_id=%s "
+                            "eligible=%d required=%d",
+                            scope_id,
+                            channel_id,
+                            len(eligible),
+                            MEMORY_CYCLE_MIN_OBSERVATIONS,
+                        )
+                    continue
+                endpoint = max(row[0] for row in eligible)
+                if not db.begin_llm_memory_cycle(scope_id, channel_id, endpoint):
+                    logger.info(
+                        "Memory cycle skipped scope_id=%s channel_id=%s "
+                        "reason=cycle-already-active",
+                        scope_id,
+                        channel_id,
+                    )
+                    continue
+                logger.info(
+                    "Memory cycle admitted scope_id=%s channel_id=%s "
+                    "eligible=%d endpoint=%s",
+                    scope_id,
+                    channel_id,
+                    len(eligible),
+                    endpoint,
+                )
+                rows = eligible
+            else:
+                rows = self._permitted_rows(
+                    scope_id,
+                    channel_id,
+                    db.get_llm_memory_channel_observations(
+                        scope_id,
+                        channel_id,
+                        after_id=checkpoint,
+                        through_id=endpoint,
+                    ),
+                )
+                if not rows:
+                    if db.complete_llm_memory_cycle_if_empty(scope_id, channel_id):
+                        logger.info(
+                            "Memory cycle completed scope_id=%s channel_id=%s "
+                            "checkpoint=%s",
+                            scope_id,
+                            channel_id,
+                            endpoint,
+                        )
+                    continue
+
+            result.extend(
+                self._batches_for_rows(
+                    scope_id=scope_id,
+                    channel_id=channel_id,
+                    endpoint=endpoint,
+                    rows=rows,
+                )
+            )
+
+        result.sort(
+            key=lambda batch: (
+                batch.oldest_observation_created_at,
+                batch.observation_ids[0],
+                batch.scope_id,
+                batch.request_channel_id,
+                batch.user_id,
+            )
+        )
         return result
 
     def can_process_batch(self, batch: MemoryBatch) -> bool:
@@ -511,6 +684,20 @@ class UserMemoryFeature:
                 )
                 self._invalidate_key(key, clear=False)
                 self._sync_buffer(key)
+                return False
+        if batch.cycle_endpoint_observation_id is not None:
+            _checkpoint, endpoint = db.get_llm_memory_progress(
+                batch.scope_id, batch.request_channel_id
+            )
+            if endpoint != batch.cycle_endpoint_observation_id:
+                logger.info(
+                    "Memory batch rejected reason=cycle-changed scope_id=%s "
+                    "channel_id=%s expected_endpoint=%s current_endpoint=%s",
+                    batch.scope_id,
+                    batch.request_channel_id,
+                    batch.cycle_endpoint_observation_id,
+                    endpoint,
+                )
                 return False
         return self._is_enabled(
             guild_id=batch.guild_id,
@@ -578,7 +765,8 @@ class UserMemoryFeature:
                 self._enabled_channels.add(pair)
                 text = (
                     "🧠 **Persistent bot memory is now enabled in this channel.**\n"
-                    "Once a day, the bot synthesizes new messages into facts, "
+                    "Once this channel has 50 captured messages that are at least "
+                    "10 minutes old, the bot synthesizes them into facts, "
                     "impressions, likes, dislikes, and topic notes for each member. "
                     "The source chat is then deleted and only the synthesis is used "
                     "when that same member mentions it. Use `/memory-show`, "

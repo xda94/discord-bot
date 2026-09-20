@@ -142,7 +142,7 @@ HELP_TEXT = (
     "Server managers can enter `PURGE` to permanently remove all saved memory "
     "for this server. Channel settings and individual opt-outs remain unchanged.\n\n"
     "**/memory-show**\n"
-    "Privately show the daily synthesis saved for you in this server or DM, including "
+    "Privately show the saved memory synthesis for you in this server or DM, including "
     "facts, impressions, likes, dislikes, and topics. Raw chat is deleted after synthesis.\n\n"
     "**/memory-forget**\n"
     "Erase all saved memory and pending observations here without opting out.\n\n"
