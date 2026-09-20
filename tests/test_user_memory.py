@@ -7,7 +7,6 @@ from discord import app_commands
 
 import db
 from features.user_memory import (
-    MEMORY_SYNTHESIS_INTERVAL_SECONDS,
     SYNTHESIS_CHUNK_MAX_CHARS,
     SYNTHESIS_CHUNK_MAX_MESSAGES,
     UserMemoryFeature,
@@ -47,7 +46,7 @@ def test_capture_requires_enabled_channel_and_keeps_requester_scope(tmp_db):
     asyncio.run(client.close())
 
 
-def test_daily_synthesis_chunks_keep_every_pending_message(tmp_db):
+def test_cycle_chunks_keep_every_pending_message(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()
     message = _message()
@@ -73,37 +72,115 @@ def test_daily_synthesis_chunks_keep_every_pending_message(tmp_db):
     asyncio.run(client.close())
 
 
-def test_daily_synthesis_waits_24_hours_and_deletes_source_chat(tmp_db):
+def test_memory_cycle_requires_50_eligible_observations_and_advances_checkpoint(
+    tmp_db,
+):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()
-    message = _message(content="I really like mechanical keyboards")
-    asyncio.run(feature.handle_message(message))
-    created_at = db.get_llm_memory_observations(100, 7)[0][-1]
+    now = 1000.0
+    for index in range(49):
+        db.add_llm_memory_observation(100, 7, 100, 10, f"old {index}", created_at=399)
 
-    assert feature.eligible_batches(
-        now=created_at + MEMORY_SYNTHESIS_INTERVAL_SECONDS - 1
-    ) == []
-    batches = feature.eligible_batches(
-        now=created_at + MEMORY_SYNTHESIS_INTERVAL_SECONDS
-    )
+    assert feature.eligible_batches(now=now) == []
+    assert db.get_llm_memory_progress(100, 10) == (0, None)
+
+    db.add_llm_memory_observation(100, 7, 100, 10, "exactly ten minutes", created_at=400)
+    batches = feature.eligible_batches(now=now)
     assert len(batches) == 1
+    assert len(batches[0].observations) == 50
+    assert db.get_llm_memory_progress(100, 10) == (0, 50)
 
-    assert feature.commit_delta(
-        batches[0],
-        (
-            {
-                "kind": "like",
-                "content": "Likes mechanical keyboards",
-                "source_text": "I really like mechanical keyboards",
-            },
-        ),
-        (),
-    )
+    while True:
+        pending = feature.eligible_batches(now=now)
+        if not pending:
+            break
+        chunk = feature.synthesis_chunks(pending[0])[0]
+        assert feature.commit_delta(chunk, (), ())
+
     assert db.get_llm_memory_observations(100, 7) == []
     assert db.get_llm_memory_transcript(100, 7) == []
-    assert [(row[1], row[2]) for row in db.get_llm_memory_entries(100, 7)] == [
-        ("like", "Likes mechanical keyboards")
+    assert db.get_llm_memory_progress(100, 10) == (50, None)
+    asyncio.run(client.close())
+
+
+def test_age_boundary_authors_and_channels_are_independent(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    db.set_llm_memory_channel_enabled(100, 11, True)
+    for index in range(49):
+        db.add_llm_memory_observation(
+            100, 7, 100, 10, f"channel 10 old {index}", created_at=399
+        )
+    db.add_llm_memory_observation(
+        100, 8, 100, 10, "channel 10 too young", created_at=401
+    )
+    for index in range(50):
+        db.add_llm_memory_observation(
+            100,
+            7 if index % 2 == 0 else 8,
+            100,
+            11,
+            f"channel 11 {index}",
+            created_at=399,
+        )
+
+    client, _, feature = _build_feature()
+    first_scan = feature.eligible_batches(now=1000)
+    assert {batch.request_channel_id for batch in first_scan} == {11}
+    assert {batch.user_id for batch in first_scan} == {7, 8}
+
+    db.add_llm_memory_observation(
+        100, 7, 100, 10, "channel 10 exactly ten minutes", created_at=400
+    )
+    channel_10 = [
+        batch
+        for batch in feature.eligible_batches(now=1000)
+        if batch.request_channel_id == 10
     ]
+    assert {batch.user_id for batch in channel_10} == {7}
+    assert len(channel_10[0].observations) == 50
+    asyncio.run(client.close())
+
+
+def test_active_cycle_keeps_partial_work_below_threshold_and_excludes_new_arrivals(
+    tmp_db,
+):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    for index in range(50):
+        db.add_llm_memory_observation(100, 7, 100, 10, f"cycle {index}", created_at=399)
+    client, _, feature = _build_feature()
+    first = feature.eligible_batches(now=1000)[0]
+    endpoint = first.cycle_endpoint_observation_id
+    db.add_llm_memory_observation(100, 7, 100, 10, "new arrival", created_at=399)
+
+    chunk = feature.synthesis_chunks(first)[0]
+    assert feature.commit_delta(chunk, (), ())
+    asyncio.run(client.close())
+    client, _, restored = _build_feature()
+    next_batch = restored.eligible_batches(now=1000)[0]
+    assert "new arrival" not in next_batch.observations
+    assert next_batch.cycle_endpoint_observation_id == endpoint
+    asyncio.run(client.close())
+
+
+def test_failed_cycle_commit_retains_rows_and_disable_clears_progress(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    for index in range(50):
+        db.add_llm_memory_observation(100, 7, 100, 10, f"retry {index}", created_at=399)
+    client, _, feature = _build_feature()
+    batch = feature.eligible_batches(now=1000)[0]
+    chunk = feature.synthesis_chunks(batch)[0]
+    assert feature.commit_delta(
+        chunk,
+        ({"kind": "fact", "content": "unsupported", "source_text": "missing"},),
+        (),
+    ) is False
+    assert db.get_llm_memory_progress(100, 10) == (0, 50)
+    assert len(db.get_llm_memory_observations(100, 7)) == 50
+
+    assert db.set_llm_memory_channel_enabled(100, 10, False)
+    assert db.get_llm_memory_progress(100, 10) == (0, None)
+    assert db.delete_llm_memory_channel_observations(100, 10)
+    assert db.get_llm_memory_observations(100, 7) == []
     asyncio.run(client.close())
 
 
@@ -135,28 +212,27 @@ def test_large_memory_snapshot_uses_small_requests_without_losing_sources(tmp_db
     asyncio.run(client.close())
 
 
-def test_new_chat_after_synthesis_starts_a_new_daily_window(tmp_db):
+def test_new_cycle_uses_checkpoint_and_waits_for_50_new_observations(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, _, feature = _build_feature()
-    message = _message(content="first day")
-    asyncio.run(feature.handle_message(message))
-    first_created = db.get_llm_memory_observations(100, 7)[0][-1]
-    batch = feature.eligible_batches(
-        now=first_created + MEMORY_SYNTHESIS_INTERVAL_SECONDS
-    )[0]
-    assert feature.commit_delta(batch, (), ())
-
-    message.clean_content = "second day"
-    asyncio.run(feature.handle_message(message))
-    second_created = db.get_llm_memory_observations(100, 7)[0][-1]
-    assert feature.eligible_batches(
-        now=second_created + MEMORY_SYNTHESIS_INTERVAL_SECONDS - 1
-    ) == []
-    assert len(
-        feature.eligible_batches(
-            now=second_created + MEMORY_SYNTHESIS_INTERVAL_SECONDS
+    for index in range(50):
+        db.add_llm_memory_observation(100, 7, 100, 10, f"first {index}", created_at=399)
+    now = 1000.0
+    while True:
+        pending = feature.eligible_batches(now=now)
+        if not pending:
+            break
+        assert feature.commit_delta(
+            feature.synthesis_chunks(pending[0])[0],
+            (),
+            (),
         )
-    ) == 1
+
+    for index in range(49):
+        db.add_llm_memory_observation(100, 7, 100, 10, f"second {index}", created_at=399)
+    assert feature.eligible_batches(now=now) == []
+    db.add_llm_memory_observation(100, 7, 100, 10, "second 49", created_at=400)
+    assert len(feature.eligible_batches(now=now)) == 1
     asyncio.run(client.close())
 
 

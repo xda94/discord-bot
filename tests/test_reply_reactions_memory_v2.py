@@ -443,14 +443,16 @@ def test_old_profile_migrates_once_with_stable_rows(tmp_db):
 def test_pending_observations_survive_restart_and_become_eligible(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     client, feature = _memory_feature()
-    message = _message("I am building a Discord bot")
-    asyncio.run(feature.handle_message(message))
+    message = _message("I am building a Discord bot 0")
+    for index in range(50):
+        message.clean_content = f"I am building a Discord bot {index}"
+        asyncio.run(feature.handle_message(message))
     asyncio.run(client.close())
 
     client2, restored = _memory_feature()
-    batches = restored.eligible_batches(now=time.time() + 24 * 60 * 60 + 1)
+    batches = restored.eligible_batches(now=time.time() + 10 * 60 + 1)
     assert len(batches) == 1
-    assert batches[0].observations == ("I am building a Discord bot",)
+    assert len(batches[0].observations) == 50
     asyncio.run(client2.close())
 
 
