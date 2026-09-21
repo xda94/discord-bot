@@ -79,7 +79,8 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. |
-| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between memory eligibility scans. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
+| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between scans that may start new memory cycles. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
+| `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Rest between chunks or retries while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -434,22 +435,25 @@ New user messages are temporarily stored as pending synthesis input. A new
 cycle starts only when one enabled channel has at least 50 captured, permitted
 user messages that are at least 600 seconds old. The newest eligible
 observation becomes that cycle's fixed endpoint; messages arriving after it
-wait for the next cycle. The background scan runs every five minutes by
-default and is configurable with `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`.
+wait for the next cycle. New-cycle scans run every five minutes by default and
+are configurable with `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`. An active
+cycle drains one chunk at a time after the rest configured by
+`LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS`, also five minutes by default.
 After a successful chunk, the entries are saved and that chunk's source
 messages are deleted in the same transaction. Failed synthesis retains the
 chunk for retry so messages are not silently lost. Each scan admits at most one
-chunk of up to 20 messages / 3,000 source characters with up to 2,000
+chunk of up to 10 messages / 3,000 source characters with up to 2,000
 characters of retrieved entries. These are input-character budgets, not exact
 token counts; JSON, escaping, instructions, and the model's chat template add
 overhead. Remaining cycle observations are grouped by author, and the oldest
 remaining author group is selected first. Scans skip the database entirely
-while the worker is busy and wait one configured interval after memory work
-finishes (including failures) before admitting another chunk. The bot does not
-persist assistant replies or a raw conversation transcript. At prompt time, relevant synthesized entries are
-ranked by word overlap and recency and share the reference budget with live
-channel context. Memory remains server-scoped (with a separate opt-in DM scope)
-and is never supplied to another user.
+while the worker is busy and wait one configured active-chunk rest after
+memory work finishes (including failures) before admitting another chunk. The
+bot does not persist assistant replies or a raw conversation transcript. At
+prompt time, relevant synthesized entries are ranked by word overlap and
+recency and share the reference budget with live channel context. Memory
+remains server-scoped (with a separate opt-in DM scope) and is never supplied
+to another user.
 
 ---
 

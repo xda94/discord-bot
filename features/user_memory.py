@@ -18,7 +18,7 @@ OBSERVATION_MESSAGE_MAX_CHARS = 2000
 # Keep extraction small enough for the CPU host's short context. These are
 # character budgets, not tokenizer-specific context guarantees.
 SYNTHESIS_CHUNK_MAX_CHARS = 3000
-SYNTHESIS_CHUNK_MAX_MESSAGES = 20
+SYNTHESIS_CHUNK_MAX_MESSAGES = 10
 SYNTHESIS_ENTRIES_MAX_CHARS = 2000
 PRIVATE_MESSAGE_CHUNK = 1900
 MEMORY_CYCLE_MIN_OBSERVATIONS = 50
@@ -557,13 +557,19 @@ class UserMemoryFeature:
         )
         return batches
 
-    def eligible_batches(self, *, now: float | None = None) -> list[MemoryBatch]:
+    def eligible_batches(
+        self,
+        *,
+        now: float | None = None,
+        allow_new_cycles: bool = True,
+    ) -> list[MemoryBatch]:
         """Return author groups for the next chunk in each channel cycle.
 
         A new cycle is admitted only after 50 permitted observations have
         reached the ten-minute age threshold. Its endpoint is persisted before
         a job is queued, so messages arriving during a multi-check cycle wait
-        for the next cycle.
+        for the next cycle. Active-cycle scans pass ``allow_new_cycles=False``
+        so they cannot admit unrelated work before the next scheduled scan.
         """
         now = time.time() if now is None else now
         cutoff = now - MEMORY_OBSERVATION_MIN_AGE_SECONDS
@@ -574,6 +580,8 @@ class UserMemoryFeature:
         for scope_id, channel_id in sorted(self._memory_channels()):
             checkpoint, endpoint = db.get_llm_memory_progress(scope_id, channel_id)
             if endpoint is None:
+                if not allow_new_cycles:
+                    continue
                 eligible = self._permitted_rows(
                     scope_id,
                     channel_id,
