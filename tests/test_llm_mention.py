@@ -23,6 +23,7 @@ from features.llm_mention import (
     budget_reference_context,
     detect_image_mime,
     get_ask_cooldown_seconds,
+    get_memory_active_chunk_rest_seconds,
     get_memory_consolidation_interval_seconds,
     get_selected_model,
     select_image_attachment,
@@ -149,29 +150,96 @@ def test_get_memory_consolidation_interval_seconds(monkeypatch):
     assert get_memory_consolidation_interval_seconds() == 900.0
 
 
-def test_memory_scheduler_uses_configured_interval(monkeypatch):
+def test_get_memory_active_chunk_rest_seconds(monkeypatch):
+    monkeypatch.delenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", raising=False)
+    assert get_memory_active_chunk_rest_seconds() == 300.0
+
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "45")
+    assert get_memory_active_chunk_rest_seconds() == 45.0
+
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "0")
+    assert get_memory_active_chunk_rest_seconds() == 1.0
+
+
+def test_memory_scheduler_uses_cycle_interval_then_active_chunk_rest(monkeypatch):
     class SchedulerStopped(Exception):
         pass
 
+    clock = [0.0]
     sleep_delays = []
 
     async def fake_sleep(delay):
-        sleep_delays.append(delay)
-        if len(sleep_delays) > 1:
+        if len(sleep_delays) >= 3:
             raise SchedulerStopped
+        sleep_delays.append(delay)
+        clock[0] += delay
 
+    batch = SimpleNamespace(scope_id=1, user_id=1)
     feature = object.__new__(LLMMentionFeature)
-    feature.memory = SimpleNamespace(eligible_batches=MagicMock(return_value=[]))
+    feature.memory = SimpleNamespace(
+        eligible_batches=MagicMock(side_effect=[[], [batch], []])
+    )
+    feature._enqueue_memory = AsyncMock(return_value=True)
     feature._model_busy = MagicMock(return_value=False)
     feature._memory_last_finished = None
-    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "900")
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "18000")
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "300")
     monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("features.llm_mention.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "features.llm_mention.get_selected_model", lambda: "discord-bot"
+    )
 
     with pytest.raises(SchedulerStopped):
         asyncio.run(feature._memory_scheduler_loop())
 
-    assert sleep_delays == [900.0, 900.0]
-    feature.memory.eligible_batches.assert_called_once_with()
+    assert sleep_delays == [300.0, 17700.0, 300.0]
+    assert [call.kwargs for call in feature.memory.eligible_batches.call_args_list] == [
+        {"allow_new_cycles": False},
+        {"allow_new_cycles": True},
+        {"allow_new_cycles": False},
+    ]
+
+
+def test_memory_scheduler_retries_retained_batch_after_active_rest(monkeypatch):
+    class SchedulerStopped(Exception):
+        pass
+
+    clock = [0.0]
+    sleeps = []
+
+    async def fake_sleep(delay):
+        if len(sleeps) >= 3:
+            raise SchedulerStopped
+        sleeps.append(delay)
+        clock[0] += delay
+
+    batch = SimpleNamespace(scope_id=1, user_id=1)
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        eligible_batches=MagicMock(side_effect=[[], [batch], [batch]])
+    )
+    feature._enqueue_memory = AsyncMock(return_value=True)
+    feature._model_busy = MagicMock(return_value=False)
+    feature._memory_last_finished = None
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "18000")
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "300")
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("features.llm_mention.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "features.llm_mention.get_selected_model", lambda: "discord-bot"
+    )
+
+    with pytest.raises(SchedulerStopped):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    assert sleeps == [300.0, 17700.0, 300.0]
+    assert feature._enqueue_memory.await_count == 2
+    assert [call.kwargs for call in feature.memory.eligible_batches.call_args_list] == [
+        {"allow_new_cycles": False},
+        {"allow_new_cycles": True},
+        {"allow_new_cycles": False},
+    ]
 
 
 def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
@@ -195,6 +263,7 @@ def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
     feature._enqueue_memory = AsyncMock(return_value=True)
     feature._model_busy = MagicMock(return_value=False)
     feature._memory_last_finished = None
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "1")
     monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
         "features.llm_mention.get_selected_model", lambda: "discord-bot"
@@ -234,6 +303,7 @@ def test_memory_scheduler_waits_only_remaining_rest_interval(monkeypatch):
 
     feature._enqueue_memory = admit
     monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "300")
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "300")
     monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("features.llm_mention.time.monotonic", lambda: clock[0])
     monkeypatch.setattr(
@@ -283,6 +353,7 @@ def test_memory_scan_skips_active_work_and_waits_after_completion(
     feature._model_busy = MagicMock(return_value=busy)
     feature._memory_last_finished = last_finished
     monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "300")
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "300")
     monkeypatch.setattr("features.llm_mention.asyncio.sleep", sleep)
     monkeypatch.setattr("features.llm_mention.time.monotonic", lambda: now)
 

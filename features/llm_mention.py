@@ -60,6 +60,13 @@ def get_memory_consolidation_interval_seconds() -> float:
     )
 
 
+def get_memory_active_chunk_rest_seconds() -> float:
+    return max(
+        1.0,
+        float(os.getenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "300")),
+    )
+
+
 def get_model_choices() -> list[app_commands.Choice[str]]:
     return [
         app_commands.Choice(name=model, value=model)
@@ -462,34 +469,39 @@ class LLMMentionFeature:
                 self._memory_scheduler_loop()
             )
             logger.info(
-                "Memory scheduler started interval=%.1fs",
+                "Memory scheduler started cycle_interval=%.1fs active_chunk_rest=%.1fs",
                 get_memory_consolidation_interval_seconds(),
+                get_memory_active_chunk_rest_seconds(),
             )
 
     async def _memory_scheduler_loop(self) -> None:
-        wait_seconds = get_memory_consolidation_interval_seconds()
+        cycle_interval = get_memory_consolidation_interval_seconds()
+        wait_seconds = get_memory_active_chunk_rest_seconds()
+        next_cycle_scan_at = time.monotonic() + cycle_interval
         while True:
-            interval = get_memory_consolidation_interval_seconds()
             await asyncio.sleep(wait_seconds)
             now = time.monotonic()
+            cycle_interval = get_memory_consolidation_interval_seconds()
+            active_chunk_rest = get_memory_active_chunk_rest_seconds()
+            allow_new_cycles = now >= next_cycle_scan_at
             if (
                 self._memory_last_finished is not None
-                and now - self._memory_last_finished < interval
+                and now - self._memory_last_finished < active_chunk_rest
             ):
                 logger.info(
                     "Memory scan skipped reason=rest-interval remaining=%.1fs",
-                    interval - (now - self._memory_last_finished),
+                    active_chunk_rest - (now - self._memory_last_finished),
                 )
-                # Wake exactly when the completed chunk's rest interval ends;
-                # a fixed sleep here would add another skipped interval.
                 wait_seconds = max(
                     0.0,
-                    self._memory_last_finished + interval - now,
+                    self._memory_last_finished + active_chunk_rest - now,
                 )
                 continue
             if self.memory is None:
                 logger.info("Memory scan skipped reason=feature-unavailable")
-                wait_seconds = interval
+                wait_seconds = cycle_interval
+                if allow_new_cycles:
+                    next_cycle_scan_at = now + cycle_interval
                 continue
             if self._model_busy():
                 logger.info(
@@ -497,17 +509,30 @@ class LLMMentionFeature:
                     getattr(self, "_processing", False),
                     getattr(getattr(self, "_queue", None), "qsize", lambda: 0)(),
                 )
-                wait_seconds = interval
+                # Retry soon without consuming a scheduled new-cycle scan.
+                wait_seconds = active_chunk_rest
                 continue
-            batches = self.memory.eligible_batches()
-            logger.info("Memory scan completed eligible_batches=%d", len(batches))
+            batches = self.memory.eligible_batches(
+                allow_new_cycles=allow_new_cycles
+            )
+            if allow_new_cycles:
+                next_cycle_scan_at = now + cycle_interval
+            logger.info(
+                "Memory scan completed mode=%s eligible_batches=%d",
+                "new-cycle" if allow_new_cycles else "active-cycle",
+                len(batches),
+            )
             for batch in batches:
                 admitted = await self._enqueue_memory(batch, get_selected_model())
                 if admitted or self._model_busy():
                     # Run at most one background synthesis per scan. Remaining
-                    # eligible work is reconsidered after the next interval.
+                    # active-cycle work is reconsidered after the short rest.
                     break
-            wait_seconds = interval
+            wait_seconds = (
+                active_chunk_rest
+                if batches
+                else max(0.0, next_cycle_scan_at - now)
+            )
 
     async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> bool:
         key = (batch.scope_id, batch.user_id)

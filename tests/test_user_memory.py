@@ -103,6 +103,34 @@ def test_memory_cycle_requires_50_eligible_observations_and_advances_checkpoint(
     asyncio.run(client.close())
 
 
+def test_active_cycle_scan_continues_work_without_starting_another_cycle(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    for index in range(50):
+        db.add_llm_memory_observation(
+            100, 7, 100, 10, f"active {index}", created_at=399
+        )
+    client, _, feature = _build_feature()
+
+    assert feature.eligible_batches(
+        now=1000, allow_new_cycles=False
+    ) == []
+    active = feature.eligible_batches(now=1000)
+    assert {batch.request_channel_id for batch in active} == {10}
+
+    db.set_llm_memory_channel_enabled(100, 11, True)
+    for index in range(50):
+        db.add_llm_memory_observation(
+            100, 8, 100, 11, f"new {index}", created_at=399
+        )
+
+    draining = feature.eligible_batches(
+        now=1000, allow_new_cycles=False
+    )
+    assert {batch.request_channel_id for batch in draining} == {10}
+    assert db.get_llm_memory_progress(100, 11) == (0, None)
+    asyncio.run(client.close())
+
+
 def test_age_boundary_authors_and_channels_are_independent(tmp_db):
     db.set_llm_memory_channel_enabled(100, 10, True)
     db.set_llm_memory_channel_enabled(100, 11, True)
