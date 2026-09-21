@@ -728,11 +728,23 @@ class LLMMentionFeature:
             len(batch.observations), sum(map(len, batch.observations)),
             len(entries), sum(len(entry["content"]) for entry in entries),
         )
+        bot_user = getattr(getattr(self, "client", None), "user", None)
+        bot_names = tuple(
+            dict.fromkeys(
+                name.strip()
+                for name in (
+                    getattr(bot_user, "display_name", ""),
+                    getattr(bot_user, "name", ""),
+                )
+                if isinstance(name, str) and name.strip()
+            )
+        )
         result = await asyncio.to_thread(
             generate_memory_delta,
             entries,
             list(batch.observations),
             model=job.model,
+            bot_names=bot_names,
         )
         if not result.successful:
             await record(
