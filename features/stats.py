@@ -12,6 +12,8 @@ import discord
 import psutil
 from discord import app_commands
 
+from system_metrics import get_temperature_celsius
+
 logger = logging.getLogger("discord_bot")
 
 
@@ -45,28 +47,8 @@ def _disk_target() -> str:
 
 
 def _temperature_string() -> str:
-    sensor_func = getattr(psutil, "sensors_temperatures", None)
-    if sensor_func is None:
-        return "N/A"
-    temperatures = _safe_call(sensor_func, {}) or {}
-
-    # Prefer conventional CPU sensor groups, then fall back to any sane
-    # temperature. This works for Raspberry Pi/Linux while degrading cleanly
-    # on Windows and virtual/container hosts where no sensor API is exposed.
-    preferred = ("cpu_thermal", "coretemp", "k10temp", "zenpower", "acpitz")
-    ordered_groups = []
-    for name in preferred:
-        if name in temperatures:
-            ordered_groups.append(temperatures[name])
-    ordered_groups.extend(
-        entries for name, entries in temperatures.items() if name not in preferred
-    )
-    for entries in ordered_groups:
-        for reading in entries or ():
-            current = getattr(reading, "current", None)
-            if isinstance(current, (int, float)) and -50 <= current <= 200:
-                return f"{current:.1f}°C"
-    return "N/A"
+    temperature = get_temperature_celsius()
+    return f"{temperature:.1f}°C" if temperature is not None else "N/A"
 
 
 def _collect_stats() -> str:

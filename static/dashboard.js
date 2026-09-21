@@ -145,6 +145,7 @@
       if (!ticket.current()) return;
       const setMetric = (name, value) => { $(`[data-metric="${name}"]`).textContent = value; };
       setMetric("cpu", data.cpu_percent === null ? "Unavailable" : `${Number(data.cpu_percent).toFixed(1)}%`);
+      setMetric("temperature", data.temperature_celsius === null ? "Unavailable" : `${Number(data.temperature_celsius).toFixed(1)}°C`);
       setMetric("memory", data.memory ? `${Number(data.memory.percent).toFixed(1)}%` : "Unavailable");
       setMetric("disk", data.disk ? `${Number(data.disk.percent).toFixed(1)}%` : "Unavailable");
       setMetric("uptime", formatUptime(data.uptime_seconds));

@@ -85,6 +85,7 @@ from scraper import (
     _domain,
     _is_valid_http_url,
 )
+from system_metrics import get_temperature_celsius
 
 logger = setup_logger("flask_api", "api.log")
 
@@ -267,6 +268,7 @@ def _optional_call(func, *args, **kwargs):
 def _collect_system_stats():
     """Return JSON-friendly PM2 host metrics, tolerating missing sensors/APIs."""
     cpu_percent = _optional_call(psutil.cpu_percent, interval=0.1)
+    temperature_celsius = get_temperature_celsius()
     memory = _optional_call(psutil.virtual_memory)
     disk_path = Path.cwd().anchor or os.path.abspath(os.sep)
     disk = _optional_call(psutil.disk_usage, disk_path)
@@ -275,6 +277,7 @@ def _collect_system_stats():
     timezone = datetime.now().astimezone().tzinfo
     return {
         "cpu_percent": cpu_percent,
+        "temperature_celsius": temperature_celsius,
         "memory": None if memory is None else {
             "total": memory.total,
             "used": memory.used,

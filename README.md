@@ -232,8 +232,8 @@ sent as an `Authorization: Bearer` header, and removed on logout or an
 unauthorized response. The dashboard manages
 keywords, reminders, jokes, wishlist items, flight trackers, and bot settings.
 It also manages persistent LLM memory channels and user controls, and shows
-saved keyword/LLM/price analytics plus live mini PC CPU, memory, disk, and
-uptime metrics. Server and user IDs select records; they are not an
+saved keyword/LLM/price analytics plus live mini PC CPU, temperature, memory,
+disk, and uptime metrics. Server and user IDs select records; they are not an
 authentication mechanism.
 
 The HTML and static assets remain loadable so the login screen can open. All
@@ -471,7 +471,7 @@ IDs such as reminder, joke, item, and tracker IDs remain numeric.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/` | Local dashboard HTML; CSS and JavaScript are served below `/static/` |
-| `GET` | `/system/stats` | CPU, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
+| `GET` | `/system/stats` | CPU, temperature in Celsius, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
 
 The API manages stored data and configuration. It does not post to Discord,
 emulate Discord interactions, or run shell commands. `POST /wishlist/add` and

@@ -42,6 +42,8 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"if (!ticket.current()) return" in script.data
     assert b"requestVersions: new Map()" in script.data
     assert b"setInterval(loadStats, 15000)" in script.data
+    assert b'data-metric="temperature"' in page.data
+    assert b"data.temperature_celsius" in script.data
     assert b'class="keyword-groups"' in script.data
     assert b'class="keyword-group"' in script.data
     assert b"Delete response" in script.data
@@ -224,6 +226,12 @@ def test_system_stats_returns_structured_metrics(dashboard_client, monkeypatch):
         percent = 25.0
 
     monkeypatch.setattr(api.psutil, "cpu_percent", lambda interval: 12.5)
+    monkeypatch.setattr(
+        api.psutil,
+        "sensors_temperatures",
+        lambda: {"gpu": [type("Reading", (), {"current": 70.0})()], "coretemp": [type("Reading", (), {"current": 52.5})()]},
+        raising=False,
+    )
     monkeypatch.setattr(api.psutil, "virtual_memory", lambda: Memory())
     monkeypatch.setattr(api.psutil, "disk_usage", lambda _path: Disk())
     monkeypatch.setattr(api.psutil, "boot_time", lambda: api.time.time() - 300)
@@ -231,6 +239,7 @@ def test_system_stats_returns_structured_metrics(dashboard_client, monkeypatch):
     stats = client.get("/system/stats").get_json()
 
     assert stats["cpu_percent"] == 12.5
+    assert stats["temperature_celsius"] == 52.5
     assert stats["memory"] == {"total": 1_000, "used": 400, "percent": 40.0}
     assert stats["disk"]["percent"] == 25.0
     assert 299 <= stats["uptime_seconds"] <= 301
@@ -244,6 +253,7 @@ def test_system_stats_uses_null_for_unavailable_metrics(dashboard_client, monkey
         raise OSError("not exposed")
 
     monkeypatch.setattr(api.psutil, "cpu_percent", unavailable)
+    monkeypatch.setattr(api.psutil, "sensors_temperatures", unavailable, raising=False)
     monkeypatch.setattr(api.psutil, "virtual_memory", unavailable)
     monkeypatch.setattr(api.psutil, "disk_usage", unavailable)
     monkeypatch.setattr(api.psutil, "boot_time", unavailable)
@@ -251,6 +261,7 @@ def test_system_stats_uses_null_for_unavailable_metrics(dashboard_client, monkey
     stats = client.get("/system/stats").get_json()
 
     assert stats["cpu_percent"] is None
+    assert stats["temperature_celsius"] is None
     assert stats["memory"] is None
     assert stats["disk"] is None
     assert stats["uptime_seconds"] is None

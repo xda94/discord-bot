@@ -72,7 +72,7 @@ textarea { min-height: 92px; resize: vertical; }
 .page-heading p:not(.eyebrow), .panel-title p { color: var(--muted); margin: 0; font-size: 13px; line-height: 1.55; }
 .panel code { color: var(--accent-2); }
 
-.metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+.metric-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 14px; }
 .metric, .panel { border: 1px solid var(--line); background: linear-gradient(145deg, rgba(24,28,38,.94), rgba(17,20,28,.94)); border-radius: var(--radius); }
 .metric { min-height: 142px; padding: 20px; display: flex; flex-direction: column; }
 .metric > span { color: var(--muted); font-size: 12px; }
