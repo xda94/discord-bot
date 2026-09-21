@@ -584,6 +584,9 @@ def test_memory_job_processes_only_one_chunk_per_scheduler_pass(monkeypatch):
         observations=("second",),
     )
     feature = object.__new__(LLMMentionFeature)
+    feature.client = SimpleNamespace(
+        user=SimpleNamespace(display_name="Balen", name="balen")
+    )
     feature.memory = SimpleNamespace(
         synthesis_chunks=MagicMock(return_value=(first, second)),
         can_process_batch=MagicMock(return_value=True),
@@ -599,6 +602,7 @@ def test_memory_job_processes_only_one_chunk_per_scheduler_pass(monkeypatch):
 
     generate.assert_called_once()
     assert generate.call_args.args[1] == ["first"]
+    assert generate.call_args.kwargs["bot_names"] == ("Balen", "balen")
     feature.memory.commit_delta.assert_called_once_with(first, (), ())
 
 

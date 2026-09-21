@@ -401,6 +401,41 @@ def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch
         ]
 
 
+def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
+    monkeypatch,
+):
+    captured = {}
+
+    def query(prompt, **kwargs):
+        captured["prompt"] = prompt
+        return (
+            '{"add":['
+            '{"kind":"fact","content":"Balen prefers a manual razor",'
+            '"source_index":0},'
+            '{"kind":"fact","content":"The user likes tea",'
+            '"source_index":1},'
+            '{"kind":"fact","content":"Prefers a manual razor",'
+            '"source_index":2}],"correct":[]}'
+        )
+
+    monkeypatch.setattr("tease_llm.query_llm", query)
+
+    result = generate_memory_delta(
+        [],
+        ["I use a razor", "I like tea", "I prefer a manual razor"],
+        model="discord-bot",
+        bot_names=("Balen",),
+    )
+
+    assert result.successful is True
+    assert [entry["content"] for entry in result.additions] == [
+        "Prefers a manual razor"
+    ]
+    assert "subject-neutral" in captured["prompt"]
+    assert "Balen" in captured["prompt"]
+    assert "never to the memory owner" in captured["prompt"]
+
+
 def test_memory_delta_accepts_profile_synthesis_categories(monkeypatch):
     monkeypatch.setattr(
         "tease_llm.query_llm",
