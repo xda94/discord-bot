@@ -67,7 +67,7 @@ def _mention_message(*, text="", attachments=None, user_id=123):
         role_mentions=[],
         channel_mentions=[],
         attachments=list(attachments or []),
-        channel=SimpleNamespace(),
+        channel=SimpleNamespace(id=456),
         guild=None,
         reply=AsyncMock(),
     )
@@ -597,6 +597,12 @@ def test_image_mention_uses_vision_memory_feedback_version(monkeypatch):
     asyncio.run(feature.handle_message(message))
 
     job = feature._enqueue_job.await_args.args[0]
+    feature.memory.context_for.assert_called_once_with(
+        user_id=123,
+        guild_id=None,
+        channel_id=456,
+        query="<@999888777>",
+    )
     assert job.prompt_version == VISION_MEMORY_MENTION_PROMPT_VERSION
     assert len(job.user_memory) == 4000
 
