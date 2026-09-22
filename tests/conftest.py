@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import db  # noqa: E402  (sys.path tweak needs to happen first)
+from db import bot_data, connection  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -34,8 +35,8 @@ def tmp_db(tmp_path, monkeypatch):
     tests don't leak cached state into each other (the cache is a process-
     wide global by design, not per-instance)."""
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(db, "DB_FILE", str(db_path))
-    db._invalidate_responses_cache()
+    monkeypatch.setattr(connection, "DB_FILE", str(db_path))
+    bot_data._invalidate_responses_cache()
     db.init_db()
     yield db_path
-    db._invalidate_responses_cache()
+    bot_data._invalidate_responses_cache()

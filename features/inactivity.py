@@ -12,7 +12,7 @@ from discord.ext import tasks
 import db
 from analytics import record, record_for
 from mention_utils import resolve_bot_display_name
-from tease_llm import generate_inactivity_message
+from llm.responses import generate_inactivity_message
 
 logger = logging.getLogger("discord_bot")
 

@@ -305,17 +305,16 @@ def analytics_client(tmp_db, monkeypatch):
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9999")
     api = importlib.import_module("api")
-    monkeypatch.setattr(api, "_db_initialized", True)
-    api.app.config.update(TESTING=True)
-    return api, api.app.test_client()
+    app = api.create_app({"TESTING": True, "API_TOKEN": None})
+    return app, app.test_client()
 
 
 def test_analytics_endpoint_requires_configured_token(analytics_client, monkeypatch):
-    api, client = analytics_client
-    monkeypatch.setattr(api, "API_TOKEN", None)
+    app, client = analytics_client
+    app.config["API_TOKEN"] = None
     assert client.get("/analytics/summary").status_code == 503
 
-    monkeypatch.setattr(api, "API_TOKEN", "secret")
+    app.config["API_TOKEN"] = "secret"
     assert client.get("/analytics/summary").status_code == 401
     assert client.get(
         "/analytics/summary", headers={"Authorization": "Bearer wrong"}
@@ -325,8 +324,8 @@ def test_analytics_endpoint_requires_configured_token(analytics_client, monkeypa
 def test_analytics_endpoint_validates_filters_and_returns_totals(
     analytics_client, monkeypatch
 ):
-    api, client = analytics_client
-    monkeypatch.setattr(api, "API_TOKEN", "secret")
+    app, client = analytics_client
+    app.config["API_TOKEN"] = "secret"
     db.refresh_analytics_command_catalog(["help"])
     db.record_analytics_activity("command", "help", guild_id=123)
     headers = {"Authorization": "Bearer secret", "X-Discord-ID-Format": "string"}

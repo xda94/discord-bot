@@ -14,25 +14,27 @@ from discord import app_commands
 import db
 from analytics import record, record_for
 from features.llm_feedback import LLMFeedbackFeature
-from features.user_memory import MemoryBatch, UserMemoryFeature
-from llm_client import (
+from features.user_memory import UserMemoryFeature
+from llm.client import (
     LlamaCppError,
     get_allowed_models,
     get_mention_model,
     llama_supports_vision,
 )
+from llm.memory import MemoryBatch, MemoryStore
 from mention_utils import (
     extract_mention_text,
     resolve_bot_display_name,
     strip_leading_reply_labels,
 )
-from tease_llm import (
+from llm.memory_extraction import generate_memory_delta
+from llm.responses import (
     MentionResult,
-    generate_memory_delta,
     generate_mention_result,
     generate_ordinary_reaction,
     generate_summon_reply,
 )
+from llm.worker import SingleSlotWorker, WorkerResult
 
 logger = logging.getLogger("discord_bot")
 
@@ -352,16 +354,21 @@ class LLMMentionFeature:
         *,
         bot_id: int,
         feedback: LLMFeedbackFeature | None = None,
-        memory: UserMemoryFeature | None = None,
+        memory: UserMemoryFeature | MemoryStore | None = None,
     ):
         self.client = client
         self.tree = tree
         self.bot_id = bot_id
         self.feedback = feedback
-        self.memory = memory
+        self.memory = getattr(memory, "store", memory)
         self._user_last_ask: dict[int, float] = {}
         self._user_pending: set[int] = set()
-        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        self._worker = SingleSlotWorker(
+            self._process_queued_job,
+            self._finish_queued_job,
+        )
+        # Compatibility aliases for diagnostics and existing tests.
+        self._queue = self._worker.queue
         self._queue_sequence = 0
         self._processing = False
         self._worker_task: asyncio.Task | None = None
@@ -378,117 +385,65 @@ class LLMMentionFeature:
         return max(0.0, get_ask_cooldown_seconds() - (time.time() - last))
 
     def _ensure_worker(self) -> None:
-        if self._worker_task is None or self._worker_task.done():
-            previous_state = (
-                "missing" if self._worker_task is None else "finished"
-            )
-            self._worker_task = asyncio.create_task(self._queue_worker())
-            logger.info("LLM queue worker started previous_state=%s", previous_state)
+        self._worker.start()
+        self._worker_task = self._worker.task
 
     def _model_busy(self) -> bool:
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            return worker.busy()
         return self._processing or self._queue.qsize() > 0
 
     async def _queue_worker(self) -> None:
-        while True:
-            queued = await self._queue.get()
-            job = queued[2] if isinstance(queued, tuple) else queued
-            priority = queued[0] if isinstance(queued, tuple) else None
-            sequence = queued[1] if isinstance(queued, tuple) else None
-            started = time.monotonic()
-            job_type = type(job).__name__
-            user_id = getattr(getattr(job, "user", None), "id", None)
-            batch = getattr(job, "batch", None)
-            scope_id = getattr(batch, "scope_id", None)
-            channel_id = getattr(job, "channel_id", None)
-            if channel_id is None:
-                channel_id = getattr(getattr(job, "channel", None), "id", None)
-            outcome = "completed"
-            memory_succeeded: bool | None = None
-            logger.info(
-                "LLM job started sequence=%s priority=%s type=%s model=%s "
-                "user_id=%s scope_id=%s channel_id=%s queue_remaining=%d",
-                sequence,
-                priority,
-                job_type,
-                getattr(job, "model", None),
-                user_id,
-                scope_id,
-                channel_id,
-                self._queue.qsize(),
+        await self._worker.run()
+
+    async def _process_queued_job(self, job) -> WorkerResult:
+        if isinstance(job, AskJob):
+            await self._process_job(job)
+            return WorkerResult()
+        if isinstance(job, MemoryJob):
+            succeeded = await self._process_memory_job(job)
+            outcome = "failed" if succeeded is False else (
+                "skipped" if succeeded is None else "completed"
             )
-            try:
-                self._processing = True
-                if isinstance(job, AskJob):
-                    await self._process_job(job)
-                elif isinstance(job, MemoryJob):
-                    memory_succeeded = await self._process_memory_job(job)
-                    if memory_succeeded is False:
-                        outcome = "failed"
-                    elif memory_succeeded is None:
-                        outcome = "skipped"
-                else:
-                    await self._process_reaction_job(job)
-            except Exception:
-                outcome = "failed"
-                if isinstance(job, MemoryJob):
-                    memory_succeeded = False
-                logger.exception(
-                    "Unhandled error processing LLM job sequence=%s type=%s",
-                    sequence,
-                    job_type,
+            return WorkerResult(outcome, succeeded)
+        await self._process_reaction_job(job)
+        return WorkerResult()
+
+    def _finish_queued_job(self, job, result: WorkerResult) -> None:
+        if isinstance(job, AskJob):
+            self._user_pending.discard(job.user.id)
+            self._user_last_ask[job.user.id] = time.time()
+        elif isinstance(job, MemoryJob):
+            self._memory_last_finished = time.monotonic()
+            if result.outcome == "failed":
+                self._memory_consecutive_failures = (
+                    getattr(self, "_memory_consecutive_failures", 0) + 1
                 )
-            finally:
-                logger.info(
-                    "LLM job finished sequence=%s type=%s outcome=%s elapsed=%.2fs",
-                    sequence,
-                    job_type,
-                    outcome,
-                    time.monotonic() - started,
-                )
-                self._processing = False
-                self._queue.task_done()
-                if isinstance(job, AskJob):
-                    self._user_pending.discard(job.user.id)
-                    self._user_last_ask[job.user.id] = time.time()
-                elif isinstance(job, MemoryJob):
-                    self._memory_last_finished = time.monotonic()
-                    if memory_succeeded is False:
-                        self._memory_consecutive_failures = (
-                            getattr(self, "_memory_consecutive_failures", 0) + 1
-                        )
-                    else:
-                        # Successful commits and jobs skipped before inference
-                        # both clear stale failure backoff.
-                        self._memory_consecutive_failures = 0
-                    self._memory_pending.discard(
-                        (job.batch.scope_id, job.batch.user_id)
-                    )
-                else:
-                    self._reaction_pending_channels.discard(job.channel_id)
+            else:
+                self._memory_consecutive_failures = 0
+            self._memory_pending.discard((job.batch.scope_id, job.batch.user_id))
+        else:
+            self._reaction_pending_channels.discard(job.channel_id)
 
     async def _put_job(self, priority: int, job) -> bool:
         """Admit one job only when the model worker has no outstanding work."""
         # This coroutine deliberately has no await before put_nowait(). Discord
         # handlers share one event loop, so the check-and-admit operation is
         # atomic and cannot grow a backlog between concurrent handlers.
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            admitted = await worker.submit(priority, job)
+            self._queue_sequence = worker.sequence
+            self._processing = worker.processing
+            self._worker_task = worker.task
+            return admitted
+        # Compatibility for isolated unit tests constructing the feature
+        # without running its initializer.
         if self._model_busy():
-            logger.info(
-                "LLM job rejected type=%s priority=%s processing=%s queue_size=%d",
-                type(job).__name__,
-                priority,
-                self._processing,
-                self._queue.qsize(),
-            )
             return False
         self._queue_sequence += 1
         self._queue.put_nowait((priority, self._queue_sequence, job))
-        logger.info(
-            "LLM job admitted sequence=%d type=%s priority=%s queue_size=%d",
-            self._queue_sequence,
-            type(job).__name__,
-            priority,
-            self._queue.qsize(),
-        )
         self._ensure_worker()
         return True
 

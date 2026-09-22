@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from llm_client import (
+from llm.client import (
     LlamaCppError,
     get_allowed_models,
     get_default_model,

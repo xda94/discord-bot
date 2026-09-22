@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 
 from analytics import record_for
-from tease_llm import enhance_tease
+from llm.responses import enhance_tease
 
 logger = logging.getLogger("discord_bot")
 TEASE_BASE_CHANCE = 0.10

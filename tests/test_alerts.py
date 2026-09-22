@@ -1,4 +1,4 @@
-"""Tests for the buy-signal alert classifier in `features.scraping`.
+"""Tests for the buy-signal alert classifier in `features.wishlist`.
 
 `_classify_price` is the pure decision function the scrape loop calls
 on every pass to decide whether to fire a LOW ("buy now") or HIGH
@@ -16,12 +16,12 @@ from discord import app_commands
 
 import db
 
-from features.scraping import (
+from features.wishlist import (
     ALERT_LOW_REALERT_DROP_PCT,
     ALERT_MIN_DATA_POINTS,
     AlertDecision,
     ScrapeResult,
-    ScrapingFeature,
+    WishlistFeature,
     _classify_price,
 )
 
@@ -29,7 +29,7 @@ from features.scraping import (
 def test_wishlist_refresh_refreshes_all_eligible_owned_items(tmp_db, monkeypatch):
     client = discord.Client(intents=discord.Intents.none())
     tree = app_commands.CommandTree(client)
-    feature = ScrapingFeature(client, tree)
+    feature = WishlistFeature(client, tree)
     first_url = "https://shop.example/first"
     cooling_url = "https://shop.example/cooling"
     other_user_url = "https://shop.example/not-mine"
@@ -39,8 +39,8 @@ def test_wishlist_refresh_refreshes_all_eligible_owned_items(tmp_db, monkeypatch
 
     feature._manual_refresh_at[(123, cooling_url)] = 950.0
     feature._manual_refresh_item = AsyncMock(return_value="Refreshed: First item")
-    monkeypatch.setattr("features.scraping.time.monotonic", lambda: 1_000.0)
-    monkeypatch.setattr("features.scraping.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("features.wishlist.time.monotonic", lambda: 1_000.0)
+    monkeypatch.setattr("features.wishlist.asyncio.sleep", AsyncMock())
 
     interaction = MagicMock()
     interaction.user.id = 123
@@ -63,7 +63,7 @@ def test_wishlist_refresh_refreshes_all_eligible_owned_items(tmp_db, monkeypatch
 def test_wishlist_refresh_with_url_refreshes_only_that_owned_item(tmp_db):
     client = discord.Client(intents=discord.Intents.none())
     tree = app_commands.CommandTree(client)
-    feature = ScrapingFeature(client, tree)
+    feature = WishlistFeature(client, tree)
     first_url = "https://shop.example/first"
     selected_url = "https://shop.example/selected"
     db.add_scraped_item(123, first_url)
@@ -382,7 +382,7 @@ def test_decision_returns_dataclass_instance():
 
 
 def test_target_price_uses_configured_currency(monkeypatch):
-    feature = object.__new__(ScrapingFeature)
+    feature = object.__new__(WishlistFeature)
     feature.converter = MagicMock()
     feature.converter.to_currency.return_value = 399.5
 
@@ -396,7 +396,7 @@ def test_target_price_uses_configured_currency(monkeypatch):
 
 
 def test_target_price_preserves_state_when_conversion_is_unavailable():
-    feature = object.__new__(ScrapingFeature)
+    feature = object.__new__(WishlistFeature)
     feature.converter = MagicMock()
     feature.converter.to_currency.return_value = None
 
@@ -409,7 +409,7 @@ def test_target_price_preserves_state_when_conversion_is_unavailable():
 
 
 def test_price_change_dm_includes_llm_reaction(monkeypatch):
-    feature = object.__new__(ScrapingFeature)
+    feature = object.__new__(WishlistFeature)
     feature.scraper = MagicMock()
     feature.scraper.fetch.return_value = ScrapeResult(
         price=80.0,
@@ -428,12 +428,12 @@ def test_price_change_dm_includes_llm_reaction(monkeypatch):
     feature.client.fetch_user = AsyncMock(return_value=user)
     generate_message = MagicMock(return_value="The price finally chose kindness.")
 
-    monkeypatch.setattr("features.scraping.db.get_price_history", lambda *args: [])
-    monkeypatch.setattr("features.scraping.db.add_price_history", MagicMock())
-    monkeypatch.setattr("features.scraping.db.update_scraped_item_status", MagicMock())
-    monkeypatch.setattr("features.scraping.db.update_item_alert_state", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.get_price_history", lambda *args: [])
+    monkeypatch.setattr("features.wishlist.db.add_price_history", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.update_scraped_item_status", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.update_item_alert_state", MagicMock())
     monkeypatch.setattr(
-        "features.scraping.generate_price_change_message", generate_message
+        "features.wishlist.generate_price_change_message", generate_message
     )
 
     item = (
@@ -462,7 +462,7 @@ def test_price_change_dm_includes_llm_reaction(monkeypatch):
 
 
 def test_price_change_dm_survives_missing_llm_reaction(monkeypatch):
-    feature = object.__new__(ScrapingFeature)
+    feature = object.__new__(WishlistFeature)
     feature.scraper = MagicMock()
     feature.scraper.fetch.return_value = ScrapeResult(
         price=120.0,
@@ -480,12 +480,12 @@ def test_price_change_dm_survives_missing_llm_reaction(monkeypatch):
     feature.client = MagicMock()
     feature.client.fetch_user = AsyncMock(return_value=user)
 
-    monkeypatch.setattr("features.scraping.db.get_price_history", lambda *args: [])
-    monkeypatch.setattr("features.scraping.db.add_price_history", MagicMock())
-    monkeypatch.setattr("features.scraping.db.update_scraped_item_status", MagicMock())
-    monkeypatch.setattr("features.scraping.db.update_item_alert_state", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.get_price_history", lambda *args: [])
+    monkeypatch.setattr("features.wishlist.db.add_price_history", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.update_scraped_item_status", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.update_item_alert_state", MagicMock())
     monkeypatch.setattr(
-        "features.scraping.generate_price_change_message", lambda *args: None
+        "features.wishlist.generate_price_change_message", lambda *args: None
     )
 
     item = (

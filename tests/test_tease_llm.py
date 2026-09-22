@@ -3,21 +3,24 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from llm_client import LlamaCppError
-from tease_llm import (
-    build_inactivity_prompt,
+from llm.client import LlamaCppError
+from llm.memory_extraction import (
     build_memory_entry_prompt,
+    generate_memory_delta,
+    get_memory_max_tokens,
+)
+from llm.responses import (
+    build_inactivity_prompt,
     build_mention_prompt,
     build_price_change_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
     generate_inactivity_message,
-    generate_memory_delta,
     generate_mention_result,
     generate_price_change_message,
     generate_summon_reply,
-    get_memory_max_tokens,
+    get_mention_max_tokens,
     normalize_tease_response,
 )
 
@@ -53,7 +56,7 @@ def test_normalize_tease_response_truncates_long_text():
 
 def test_enhance_tease_uses_llm(monkeypatch):
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         lambda prompt, **kwargs: "sure buddy, riveting stuff",
     )
     result = enhance_tease("bad", "Alice", "hello")
@@ -64,14 +67,14 @@ def test_enhance_tease_returns_none_on_error(monkeypatch):
     def _fail(*args, **kwargs):
         raise LlamaCppError("down")
 
-    monkeypatch.setattr("tease_llm.query_llm", _fail)
+    monkeypatch.setattr("llm.client.query_llm", _fail)
     assert enhance_tease("bad", "Alice", "hello") is None
 
 
 def test_enhance_tease_disabled(monkeypatch):
-    monkeypatch.setattr("tease_llm.TEASE_LLM_ENABLED", False)
+    monkeypatch.setattr("llm.responses.TEASE_LLM_ENABLED", False)
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         MagicMock(side_effect=AssertionError("should not call llama.cpp")),
     )
     assert enhance_tease("bad", "Alice", "hello") is None
@@ -173,6 +176,31 @@ def test_get_memory_max_tokens(monkeypatch):
     assert get_memory_max_tokens() == 1
 
 
+def test_get_mention_max_tokens(monkeypatch):
+    monkeypatch.delenv("LLM_MENTION_MAX_TOKENS", raising=False)
+    assert get_mention_max_tokens() == 384
+
+    monkeypatch.setenv("LLM_MENTION_MAX_TOKENS", "768")
+    assert get_mention_max_tokens() == 768
+
+    monkeypatch.setenv("LLM_MENTION_MAX_TOKENS", "0")
+    assert get_mention_max_tokens() == 1
+
+
+def test_mention_uses_configured_output_budget(monkeypatch):
+    query = MagicMock(return_value='{"text":"Configured reply.","reaction":null}')
+    monkeypatch.setattr("llm.client.query_llm", query)
+    monkeypatch.setenv("LLM_MENTION_MAX_TOKENS", "768")
+
+    result = generate_mention_result("Alice", "Give me a detailed answer")
+
+    assert result.text == "Configured reply."
+    assert query.call_args.kwargs["options"] == {
+        "format": "json",
+        "max_tokens": 768,
+    }
+
+
 def test_memory_delta_uses_bounded_schema_and_configured_output_budget(monkeypatch):
     query = MagicMock(
         return_value=json.dumps(
@@ -188,7 +216,7 @@ def test_memory_delta_uses_bounded_schema_and_configured_output_budget(monkeypat
             }
         )
     )
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
     monkeypatch.setenv("LLM_MEMORY_MAX_TOKENS", "1536")
     observations = [f"message {index}" for index in range(7)]
 
@@ -241,7 +269,7 @@ def test_generate_mention_result_passes_image_to_llm(monkeypatch):
     query = MagicMock(
         return_value='{"text":"A blue square.","reaction":null}'
     )
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_mention_result(
         "Alice",
@@ -278,7 +306,7 @@ def test_mention_echoes_retry_with_an_actual_answer(monkeypatch, question, echo,
         json.dumps({"text": echo, "reaction": None}),
         json.dumps({"text": answer, "reaction": None}),
     ])
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_mention_result(
         "Robeeque", question, requester_id=123, reply_names=("Balen",)
@@ -293,7 +321,7 @@ def test_mention_echoes_retry_with_an_actual_answer(monkeypatch, question, echo,
 
 def test_persistent_short_echo_is_not_returned_even_with_memory_and_image(monkeypatch):
     query = MagicMock(return_value=json.dumps({"text": "Ești okay?", "reaction": "👍"}))
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_mention_result(
         "Robeeque", "Esti okay?", memory_enabled=True,
@@ -315,7 +343,7 @@ def test_persistent_short_echo_is_not_returned_even_with_memory_and_image(monkey
 ])
 def test_mention_real_answers_and_clarifications_are_not_rejected(monkeypatch, question, answer):
     query = MagicMock(return_value=json.dumps({"text": answer, "reaction": None}))
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     assert generate_mention_result("Robeeque", question).text == answer
     query.assert_called_once()
@@ -353,7 +381,7 @@ def test_mention_real_answers_and_clarifications_are_not_rejected(monkeypatch, q
 )
 def test_mention_validation_logs_reason_without_content(monkeypatch, caplog, raw, reason):
     query = MagicMock(return_value=raw)
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_mention_result(
         "Alice", "private request with four words", model="discord-bot"
@@ -374,7 +402,7 @@ def test_mention_validation_logs_reason_without_content(monkeypatch, caplog, raw
 
 def test_generate_summon_reply(monkeypatch):
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         lambda prompt, **kwargs: "You rang? What do you need?",
     )
     assert generate_summon_reply("Alice") == "You rang? What do you need?"
@@ -395,7 +423,7 @@ def test_build_inactivity_prompt_without_name_or_question():
 
 def test_generate_inactivity_message_success(monkeypatch):
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         lambda prompt, **kwargs: "yo, is anyone still alive in here?",
     )
     assert generate_inactivity_message("Skippy", ask_question=False) == (
@@ -407,7 +435,7 @@ def test_generate_inactivity_message_returns_none_on_error(monkeypatch):
     def _fail(*args, **kwargs):
         raise LlamaCppError("down")
 
-    monkeypatch.setattr("tease_llm.query_llm", _fail)
+    monkeypatch.setattr("llm.client.query_llm", _fail)
     assert generate_inactivity_message("Skippy", ask_question=True) is None
 
 
@@ -418,7 +446,7 @@ def test_generate_inactivity_message_passes_temperature(monkeypatch):
         called_kwargs = kwargs
         return "mocked inactivity message"
 
-    monkeypatch.setattr("tease_llm.query_llm", mock_query)
+    monkeypatch.setattr("llm.client.query_llm", mock_query)
     generate_inactivity_message("Skippy", ask_question=True)
     assert called_kwargs.get("options") == {"temperature": 0.8, "max_tokens": 96}
 
@@ -447,14 +475,14 @@ def test_build_price_change_prompt_uses_direction(
 def test_generate_price_change_message_uses_varied_tone(monkeypatch):
     captured = {}
 
-    monkeypatch.setattr("tease_llm.random.choice", lambda choices: "sad")
+    monkeypatch.setattr("llm.responses.random.choice", lambda choices: "sad")
 
     def mock_query(prompt, **kwargs):
         captured["prompt"] = prompt
         captured["kwargs"] = kwargs
         return "Even the price tag is having a difficult day."
 
-    monkeypatch.setattr("tease_llm.query_llm", mock_query)
+    monkeypatch.setattr("llm.client.query_llm", mock_query)
 
     result = generate_price_change_message(
         "Coffee machine", 100.0, 120.0, "100.00 RON", "120.00 RON"
@@ -469,7 +497,7 @@ def test_generate_price_change_message_returns_none_on_error(monkeypatch):
     def _fail(*args, **kwargs):
         raise LlamaCppError("down")
 
-    monkeypatch.setattr("tease_llm.query_llm", _fail)
+    monkeypatch.setattr("llm.client.query_llm", _fail)
     assert (
         generate_price_change_message(
             "Coffee machine",

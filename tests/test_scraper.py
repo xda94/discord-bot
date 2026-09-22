@@ -1,4 +1,4 @@
-"""Tests for the pure scraping helpers in `features.scraping`.
+"""Tests for the pure scraping helpers in `features.wishlist`.
 
 These all run without a network round-trip — they exercise the URL
 validator, the TLD currency fallback, and the JSON-LD / meta / text-fallback
@@ -13,7 +13,7 @@ real complexity (and the real regression risk) lives.
 import pytest
 from bs4 import BeautifulSoup
 
-from features.scraping import PriceScraper, _is_valid_http_url
+from features.wishlist import PriceScraper, _is_valid_http_url
 
 
 def _parse(html: str) -> BeautifulSoup:

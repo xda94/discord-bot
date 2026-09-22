@@ -1,4 +1,4 @@
-"""Tests for `db.py`.
+"""Tests for the public `db` package.
 
 Covers the surfaces most likely to silently regress on future refactors:
 
@@ -23,7 +23,7 @@ GUILD_B = 222
 
 def test_memory_entry_schema_migrates_to_all_memory_categories(tmp_path, monkeypatch):
     database = tmp_path / "legacy-memory.db"
-    monkeypatch.setattr(db, "DB_FILE", str(database))
+    monkeypatch.setattr(db.connection, "DB_FILE", str(database))
     with sqlite3.connect(database) as connection:
         connection.execute("""
             CREATE TABLE llm_memory_entries (
@@ -126,7 +126,7 @@ def test_cache_miss_after_ttl_expires(tmp_db, monkeypatch):
     fresh dict object."""
     db.add_response("kw", "value", GUILD_A)
     first = db.get_all_responses(GUILD_A)
-    monkeypatch.setattr(db, "_RESPONSES_CACHE_TTL", 0.0)
+    monkeypatch.setattr(db.bot_data, "_RESPONSES_CACHE_TTL", 0.0)
     second = db.get_all_responses(GUILD_A)
     assert first == second
     assert first is not second

@@ -1,13 +1,12 @@
 from __future__ import annotations
 """Pure web-scraping utilities — no Discord or chart-renderer dependencies.
 
-Split out of `features/scraping.py` so that:
+Part of the shared `wishlist` package so that:
 
-  - `api.py` (Flask) can validate a URL synchronously at POST time without
+  - the Flask API can validate a URL synchronously at POST time without
     pulling discord.py + chart rendering into the API process, where neither
     is used.
-  - The bot side still gets the same `PriceScraper` via re-exports in
-    `features/scraping.py`, so nothing else has to change.
+  - the bot and API share exactly the same extraction behavior.
 
 This module is intentionally minimal in its imports: only the things needed
 to fetch a page, parse HTML, and decide whether the result is useful.
@@ -21,12 +20,12 @@ from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from llm_client import query_llm
+from llm.client import query_llm
 
 # Distinct logger name so the bot's "discord_bot" file handler and the API's
 # "flask_api" file handler can both pick this up via the setup wired in
 # `logger.py`. Without that attachment these messages go nowhere when the
-# module is imported from `api.py`.
+# module is imported from either process.
 logger = logging.getLogger("scraper")
 
 
