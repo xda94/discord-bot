@@ -17,7 +17,7 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Local LLM inference through `llama-server` |
 | `curl_cffi` (optional) | TLS fingerprinting for bot-protected shops; falls back to `requests` |
 
-**Why two Python entry points?** `scraper.py` holds pure HTTP/HTML parsing with no Discord or chart-renderer imports. `api.py` imports only `scraper.py`, so the API process stays light. `features/scraping.py` adds Discord commands, graphs, currency conversion, and alerts on top of the same scraper.
+**Why two Python entry points?** `wishlist/scraper.py` holds pure HTTP/HTML parsing with no Discord or chart-renderer imports. The API and `features/wishlist.py` reuse the same wishlist services while keeping Discord commands and notifications in the bot process.
 
 ---
 
@@ -60,6 +60,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 LLAMA_CPP_BASE_URL=http://127.0.0.1:8080
 LLAMA_CPP_DEFAULT_MODEL=discord-bot
 LLAMA_CPP_ALLOWED_MODELS=discord-bot
+LLM_MENTION_MAX_TOKENS=384
 LLM_MEMORY_ENABLED=0
 ```
 
@@ -80,6 +81,7 @@ LLM_MEMORY_ENABLED=0
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. |
+| `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. |
 | `LLM_MEMORY_ENABLED` | No (bot) | Memory mode selected at startup. Only `1` enables automatic channel capture and synthesis. `0`, a missing value, or an invalid value uses manual memory through `/memory-add`, `/memory-show`, and `/memory-erase`. Restart the bot after changing it. |
 | `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Automatic mode only. Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
 | `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Automatic mode only. Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
@@ -211,7 +213,7 @@ With a venv, point `--interpreter` at `./venv/bin/python3`.
 | `pm2 restart discord-api` | Restart API only |
 | `pm2 restart all` | Restart both |
 
-After `git pull`, restart both if either `db.py` schema or slash commands changed. The bot syncs slash commands on `on_ready`.
+After `git pull`, restart both if either the `db` package schema or slash commands changed. The bot syncs slash commands on `on_ready`.
 
 ---
 
@@ -404,9 +406,10 @@ Replies that quote a question and then add an answer are accepted. These checks
 detect textual repetition; they do not judge the correctness of an answer or
 recognize every semantic paraphrase.
 
-Every inference request has an output-token limit: 384 by default, 96 for
-short social replies, 32 for reactions, and 1,024 by default for memory
-extraction. Configure the latter with `LLM_MEMORY_MAX_TOKENS`.
+Every inference request has an output-token limit: 384 by default for mention
+replies, 96 for short social replies, 32 for reactions, and 1,024 by default
+for memory extraction. Configure mention replies with
+`LLM_MENTION_MAX_TOKENS` and memory extraction with `LLM_MEMORY_MAX_TOKENS`.
 The HTTP timeout limits the client's wait; it is not a server CPU limit.
 Token-limit-truncated responses are treated as failures so incomplete memory
 extractions cannot acknowledge and delete their source messages.
@@ -613,7 +616,7 @@ python -m pytest
 
 **CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
 
-Coverage highlights: `db.py` (CRUD, stock tri-state, FK cascades, memory migration/transcript bounds, flight tracker user isolation, exchange rates, **per-guild joke** config/sent isolation), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), registered flight login/add/show/delete command callbacks, `scraper.py` (JSON-LD, meta tags, TLD currency, URL validation), `features/scraping` currency and **alert classifier**, `features/keywords` response picker, row-level user-memory updates, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
+Coverage highlights: the `db` package (CRUD, migrations, cascades, memory, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, row-level user memory, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
@@ -626,12 +629,13 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | File | Role |
 |---|---|
 | `bot.py` | Discord client, feature wiring, `on_message` / `on_ready` |
-| `api.py` | Flask API (lazy `init_db` on first request) |
+| `api.py` | Small Flask process entry point; application and routes live in `web/` |
 | `templates/dashboard.html`, `static/dashboard.*` | Build-free local administration dashboard |
-| `scraper.py` | `PriceScraper`, `ScrapeResult`, parsing helpers — **no** Discord/chart renderer imports |
-| `chart_renderer.py` | Local Vega-Lite wishlist chart specifications and PNG rendering |
+| `wishlist/` | Scraping, refresh persistence, currency conversion, alerts, and chart rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
-| `db.py` | SQLite schema and queries |
+| `db/` | SQLite connection, schema/migrations, and domain query modules |
+| `llm/` | llama.cpp client, response generation, memory extraction/store, and single-slot worker |
+| `web/` | Flask application factory, authentication/helpers, and four route blueprints |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` location and `LOG_LEVEL` verbosity |
 | `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
 | `responses.db` | Runtime DB (gitignored); path overridable via `DB_FILE` |
@@ -643,18 +647,16 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `response_gate.py` | `ResponseGate` | Cooldown between keyword replies and teases |
 | `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword-add`, `/top-keywords` |
 | `teases.py` | `TeasesFeature` | Mood teases (LLM-enhanced), `/mood` |
-| `tease_llm.py` | — | LLM prompts and generation helpers for teases and mentions |
-| `llm_client.py` | — | Shared llama.cpp `/v1/chat/completions` client |
 | `inactivity.py` | `InactivityFeature` | Guild activity tracking, inactivity nudges |
 | `reminders.py` | `RemindersFeature` | `/remind`, delivery loop |
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
 | `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
-| `scraping.py` | `ScrapingFeature`, `CurrencyConverter` | `/wishlist-*`, scrape loop, graphs, alerts (imports `PriceScraper` from `scraper.py`) |
+| `wishlist.py` | `WishlistFeature` | `/wishlist-*` commands, scrape loop, and Discord notifications |
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
-| `user_memory.py` | `UserMemoryFeature` | Automatic channel synthesis or manual per-user memory, selected by `LLM_MEMORY_ENABLED` |
+| `user_memory.py` | `UserMemoryFeature` | Discord commands and event adapter for the shared memory store |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |

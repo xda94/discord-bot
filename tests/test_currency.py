@@ -1,4 +1,4 @@
-"""Tests for currency utilities in `features.scraping`.
+"""Tests for currency utilities in `features.wishlist`.
 
 Covers the pure helpers (`_effective_currency`, `_majority_currency`) and
 the `CurrencyConverter` class. The converter touches the DB (via
@@ -9,7 +9,7 @@ small rate table before running.
 import pytest
 
 import db
-from features.scraping import (
+from features.wishlist import (
     CurrencyConverter,
     _effective_currency,
     _majority_currency,

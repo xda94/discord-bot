@@ -29,13 +29,13 @@ from features.keywords import KeywordsFeature
 from features.llm_feedback import LLMFeedbackFeature
 from features.reminders import RemindersFeature
 from features.response_gate import ResponseGate
-from features.scraping import ScrapingFeature
+from features.wishlist import WishlistFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
 from features.user_memory import UserMemoryFeature, is_automatic_memory_enabled
 
-from llm_client import LlamaCppError, get_default_model
+from llm.client import LlamaCppError, get_default_model
 
 try:
     get_default_model()
@@ -87,7 +87,7 @@ teases = TeasesFeature(client, tree)
 inactivity = InactivityFeature(client, tree)
 reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
-scraping = ScrapingFeature(client, tree)
+wishlist = WishlistFeature(client, tree)
 flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
@@ -130,7 +130,7 @@ BACKGROUND_FEATURES = (
     inactivity,
     reminders,
     jokes,
-    scraping,
+    wishlist,
     flights,
     llm_mention,
 )

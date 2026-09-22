@@ -14,16 +14,13 @@ import db
 
 @pytest.fixture
 def client(tmp_db, monkeypatch):
-    # api.py validates these settings at import time.  Set explicit test values
-    # before its first import, then disable auth so each test can focus on the
-    # route contract.
+    # api.py validates process settings at import time. Build a fresh test app
+    # with auth disabled so each test can focus on the route contract.
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9999")
     api = importlib.import_module("api")
-    monkeypatch.setattr(api, "API_TOKEN", None)
-    monkeypatch.setattr(api, "_db_initialized", True)
-    api.app.config.update(TESTING=True)
-    return api.app.test_client()
+    app = api.create_app({"TESTING": True, "API_TOKEN": None})
+    return app.test_client()
 
 
 def test_keyword_analytics_can_be_filtered_to_requester(client):

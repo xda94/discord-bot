@@ -12,10 +12,10 @@ def dashboard_client(tmp_db, monkeypatch):
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9999")
     api = importlib.import_module("api")
-    monkeypatch.setattr(api, "API_TOKEN", None)
-    monkeypatch.setattr(api, "_db_initialized", True)
-    api.app.config.update(TESTING=True)
-    return api, api.app.test_client()
+    from web.routes import administration
+
+    app = api.create_app({"TESTING": True, "API_TOKEN": None})
+    return administration, app.test_client()
 
 
 def test_dashboard_and_assets_are_served(dashboard_client):
@@ -55,8 +55,8 @@ def test_dashboard_and_assets_are_served(dashboard_client):
 
 
 def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
-    api, client = dashboard_client
-    monkeypatch.setattr(api, "API_TOKEN", "private-token")
+    _administration, client = dashboard_client
+    client.application.config["API_TOKEN"] = "private-token"
 
     assert client.get("/system/stats").status_code == 401
     assert client.get("/wishlist/history?user_id=1&url=https://example.com").status_code == 401

@@ -14,7 +14,7 @@ import discord
 
 import db
 from analytics import record_for
-from chart_renderer import render_multi_price_history_png, render_price_history_png
+from wishlist.charts import render_multi_price_history_png, render_price_history_png
 
 logger = logging.getLogger("discord_bot")
 GRAPH_MAX_DAYS = 180

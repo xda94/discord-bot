@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 
 import db
-from llm_client import LlamaCppError
+from llm.client import LlamaCppError
 from features.llm_mention import (
     AskJob,
     LLMMentionFeature,
@@ -17,9 +17,9 @@ from features.llm_mention import (
     strip_leading_reply_labels,
 )
 from features.user_memory import UserMemoryFeature
-from tease_llm import (
+from llm.memory_extraction import generate_memory_delta
+from llm.responses import (
     MentionResult,
-    generate_memory_delta,
     generate_mention_result,
 )
 
@@ -89,7 +89,7 @@ def test_worker_sends_only_corrected_answer_after_labeled_short_echo(monkeypatch
         json.dumps({"text": "<@123> Balen: Ești okay?", "reaction": "👍"}),
         json.dumps({"text": "Da, sunt bine. Tu cum ești?", "reaction": None}),
     ])
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     asyncio.run(feature._process_job(job))
 
@@ -112,7 +112,7 @@ def test_worker_never_posts_a_repeated_question_after_both_attempts_fail(monkeyp
     query = MagicMock(return_value=json.dumps({
         "text": "De ce te comporți urât cu Schular?", "reaction": "👍",
     }))
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     asyncio.run(feature._process_job(job))
 
@@ -132,7 +132,7 @@ def test_structured_mention_retries_malformed_and_echoed_outputs(monkeypatch):
         ]
     )
     query = MagicMock(side_effect=lambda *args, **kwargs: next(replies))
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_mention_result("Robeeque", "Ce este Python?")
 
@@ -147,7 +147,7 @@ def test_structured_mention_retries_malformed_and_echoed_outputs(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "tease_llm.query_llm", MagicMock(side_effect=lambda *args, **kwargs: next(replies))
+        "llm.client.query_llm", MagicMock(side_effect=lambda *args, **kwargs: next(replies))
     )
     result = generate_mention_result(
         "Alice", "please explain this exact sentence now"
@@ -170,19 +170,19 @@ def test_structured_mention_retries_empty_but_not_connection_failure(monkeypatch
         return result
 
     mocked = MagicMock(side_effect=query)
-    monkeypatch.setattr("tease_llm.query_llm", mocked)
+    monkeypatch.setattr("llm.client.query_llm", mocked)
     assert generate_mention_result("Robeeque", "Poți răspunde?").text == "Răspuns complet."
     assert mocked.call_count == 2
 
     mocked = MagicMock(side_effect=LlamaCppError("connection refused"))
-    monkeypatch.setattr("tease_llm.query_llm", mocked)
+    monkeypatch.setattr("llm.client.query_llm", mocked)
     assert generate_mention_result("Robeeque", "Poți răspunde?") is None
     assert mocked.call_count == 1
 
 
 def test_romanian_followup_prompt_contains_conversation_context(monkeypatch):
     query = MagicMock(return_value='{"text":"Da, este mai rapid.","reaction":null}')
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_mention_result(
         "Robeeque",
@@ -349,7 +349,7 @@ def test_memory_rows_accumulate_beyond_old_limit_and_correct_one_entry(tmp_db):
 def test_memory_delta_validates_source_and_target(monkeypatch):
     existing = [{"id": 5, "kind": "fact", "content": "Prefers Python"}]
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         lambda *args, **kwargs: (
             '{"add":[],"correct":[{"id":5,"kind":"fact",'
             '"content":"Prefers Rust","source_index":0}]}'
@@ -360,7 +360,7 @@ def test_memory_delta_validates_source_and_target(monkeypatch):
     assert result.corrections[0]["source_text"] == "I prefer Rust now"
 
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         lambda *args, **kwargs: (
             '{"add":[],"correct":[{"id":99,"kind":"fact",'
             '"content":"Prefers Rust","source_index":0}]}'
@@ -377,7 +377,7 @@ def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch
         captured["schema"] = kwargs["response_schema"]
         return '{"add":[],"correct":[]}'
 
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_memory_delta(
         [], ["First observation", "Second observation"], model="discord-bot"
@@ -424,7 +424,7 @@ def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
             '"source_index":2}],"correct":[]}'
         )
 
-    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setattr("llm.client.query_llm", query)
 
     result = generate_memory_delta(
         [],
@@ -444,7 +444,7 @@ def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
 
 def test_memory_delta_accepts_profile_synthesis_categories(monkeypatch):
     monkeypatch.setattr(
-        "tease_llm.query_llm",
+        "llm.client.query_llm",
         lambda *args, **kwargs: (
             '{"add":['
             '{"kind":"like","content":"Likes tea","source_index":0},'

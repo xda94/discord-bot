@@ -239,7 +239,7 @@ def test_large_memory_snapshot_uses_small_requests_without_losing_sources(tmp_db
         assert input_chars <= 5000
         assert feature.commit_delta(chunk, (), ())
     assert not db.get_llm_memory_observations(100, 7)
-    assert (100, 7) not in feature._buffers
+    assert (100, 7) not in feature.store._buffers
     assert len(db.get_llm_memory_entries(100, 7)) == 20
     asyncio.run(client.close())
 
@@ -344,7 +344,7 @@ def test_invalidation_prevents_in_flight_profile_recreation(tmp_db):
     batch = feature.context_for(message).batch
     assert batch is not None
 
-    feature._purge_buffers(100)
+    feature.store._purge_buffers(100)
 
     assert feature.commit_delta(
         batch,
@@ -377,7 +377,7 @@ def test_dm_memory_requires_explicit_opt_in(tmp_db):
     assert feature.context_for(message).enabled is False
 
     db.set_llm_memory_preference(0, 7, True)
-    feature._preference_cache.clear()
+    feature.store._preference_cache.clear()
     asyncio.run(feature.handle_message(message))
     assert feature.context_for(message).batch.observations == ("DM fact",)
     asyncio.run(client.close())
@@ -398,7 +398,7 @@ def test_llm_memory_activation_is_public_and_channel_scoped(tmp_db):
     sent = interaction.response.send_message.await_args
     assert "enabled in this channel" in sent.args[0]
     assert "ephemeral" not in sent.kwargs
-    assert (100, 10) in feature._enabled_channels
+    assert (100, 10) in feature.store._enabled_channels
     asyncio.run(client.close())
 
 

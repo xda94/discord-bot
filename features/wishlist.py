@@ -3,29 +3,22 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import statistics
 import time
-from collections import Counter
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 import discord
-import requests
 from discord import app_commands
 from discord.ext import tasks
 
 import db
 from analytics import record
 from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph
-from chart_renderer import render_multi_price_history_png, render_price_history_png
-from tease_llm import generate_price_change_message
+from wishlist.charts import render_multi_price_history_png, render_price_history_png
+from llm.responses import generate_price_change_message
 
-# Re-export the pure scraping primitives from `scraper.py` so existing
-# call-sites and tests can keep importing them from `features.scraping`.
-# Splitting them out of this module lets `api.py` reuse `PriceScraper`
-# without dragging discord.py + the chart renderer into the API process.
-from scraper import (  # noqa: F401  (re-exported for back-compat)
+from wishlist.refresh import refresh_item
+from wishlist.scraper import (
     FAILURE_BLOCKED,
     FAILURE_UNSUPPORTED,
     PriceScraper,
@@ -50,371 +43,29 @@ PRICE_HISTORY_RETENTION_DAYS = GRAPH_MAX_DAYS
 MANUAL_REFRESH_COOLDOWN_SECONDS = 300
 
 
-# ---------------------------------------------------------------------------
-# Buy-signal alerts (LOW / HIGH)
-# ---------------------------------------------------------------------------
-#
-# Evaluated once per scrape pass per item inside `_process_scrape_item`.
-# Goal: DM the user when the price drops to a new all-time low ("buy now")
-# or rises above the historical median ("maybe wait"), without spamming
-# them on every 12 h pass while the price stays in the alert zone.
+from wishlist.alerts import (
+    ALERT_LOW_REALERT_DROP_PCT,
+    ALERT_MIN_DATA_POINTS,
+    AlertDecision,
+    classify_price as _classify_price,
+)
+from wishlist.currency import (
+    CurrencyConverter,
+    effective_currency as _effective_currency,
+    majority_currency as _majority_currency,
+)
 
-# Minimum number of historical price points required before any alert can
-# fire. Avoids noise on freshly-added items where 2 points trivially
-# define both min and median.
-ALERT_MIN_DATA_POINTS = 7
-
-# When already in the LOW zone, only re-alert if the new price is at least
-# this much lower than the price at the previous LOW alert. Prevents
-# penny-fluctuation spam while still firing on a meaningfully fresher low.
-ALERT_LOW_REALERT_DROP_PCT = 0.01  # 1 %
-
-
-@dataclass
-class AlertDecision:
-    """Result of running `_classify_price` for one scrape pass.
-
-    `alert_kind` is what to DM the user about (or None for silence).
-    `new_state` / `new_state_price` are what to persist back into
-    `scraped_items.last_alert_kind` / `last_alert_price` — they may
-    differ from `alert_kind` because we always update the state even
-    when we suppress the DM (so future passes know what zone we're in).
-
-    The remaining fields are context for message formatting (all-time
-    low, median, previous-alert price) — populated even when no alert
-    fires, so callers don't have to recompute them.
-    """
-
-    alert_kind: str | None              # "low" | "high" | None
-    new_state: str | None               # "low" | "high" | None (= neutral)
-    new_state_price: float | None
-    all_time_low: float | None = None
-    median_price: float | None = None
-    prev_alert_price: float | None = None
-
-
-def _classify_price(
-    current: float | None,
-    history: list[float | None],
-    last_alert_kind: str | None,
-    last_alert_price: float | None,
-) -> AlertDecision:
-    """Decide whether this scrape pass should fire a LOW or HIGH alert.
-
-    `current` is the price just scraped (in the item's native currency).
-    `history` is the list of historical prices for this item — call sites
-    are responsible for excluding `current` from it, so the comparison
-    is against actually-prior data.
-
-    The function is pure: no DB, no DM, no side effects. The caller
-    decides what to do with the returned `AlertDecision`.
-
-    Zones:
-      - "low"     :  current <= min(history)
-      - "high"    :  current  > median(history)
-      - None      :  neutral (between min and median, inclusive)
-
-    Firing rules:
-      - LOW fires when we *enter* the low zone (last_alert_kind != "low")
-        OR when we're already in it and the new price is at least
-        `ALERT_LOW_REALERT_DROP_PCT` lower than the previous LOW alert.
-      - HIGH fires only when we *enter* the high zone (one alert per
-        elevated period; the state resets back to neutral once the
-        price drops to/below the median, re-arming the next HIGH alert).
-
-    Guardrails (return silently before any zone logic runs):
-      - `current` must not be None.
-      - History must hold at least `ALERT_MIN_DATA_POINTS` numeric prices.
-      - All observations (history + current) must span a window at least
-        `ALERT_LOW_REALERT_DROP_PCT` wide. Otherwise the data is too flat
-        for any zone signal to be meaningful — common case is a freshly-
-        tracked stable-price item, where without this check the inclusive
-        `current <= all_time_low` comparison would fire one LOW alert on
-        the first pass to cross the minimum-data-points threshold.
-    """
-    # Not enough info to say anything.
-    if current is None:
-        return AlertDecision(None, last_alert_kind, last_alert_price)
-
-    numeric_history = [p for p in history if isinstance(p, (int, float))]
-    if len(numeric_history) < ALERT_MIN_DATA_POINTS:
-        return AlertDecision(None, last_alert_kind, last_alert_price)
-
-    all_time_low = min(numeric_history)
-    median_price = statistics.median(numeric_history)
-
-    # Variance guard: if every observation we've seen (history + the price
-    # we just scraped) sits inside a window narrower than the LOW re-alert
-    # threshold (~1 %), there isn't enough spread to derive a meaningful
-    # zone signal. Suppress alerts in that case.
-    #
-    # We deliberately include `current` in the spread calculation: a
-    # perfectly flat history followed by a real drop should still alert
-    # (the drop itself creates the spread), while a perfectly flat
-    # history followed by another flat-floor reading should not.
-    #
-    # This prevents the stable-item false positive where a flat history
-    # would otherwise fire one LOW alert per item on the first pass to
-    # cross `ALERT_MIN_DATA_POINTS` (or right after a rollout that adds
-    # the alerts feature to existing rows with stale prices).
-    all_observations = numeric_history + [current]
-    observed_max = max(all_observations)
-    observed_min = min(all_observations)
-    if observed_max < observed_min * (1 + ALERT_LOW_REALERT_DROP_PCT):
-        return AlertDecision(
-            None, last_alert_kind, last_alert_price,
-            all_time_low=all_time_low,
-            median_price=median_price,
-            prev_alert_price=last_alert_price,
-        )
-
-    # Which zone is `current` in right now?
-    if current <= all_time_low:
-        zone = "low"
-    elif current > median_price:
-        zone = "high"
-    else:
-        zone = None  # neutral
-
-    alert: str | None = None
-    new_state_price = last_alert_price  # default: preserve unless we update below
-
-    if zone == "low":
-        if last_alert_kind != "low":
-            # Just entered the low zone (was neutral or high) — fire.
-            alert = "low"
-            new_state_price = current
-        elif (
-            last_alert_price is not None
-            and current <= last_alert_price * (1 - ALERT_LOW_REALERT_DROP_PCT)
-        ):
-            # Already at the low, but the new price beats the previous
-            # alert by a meaningful margin → re-fire so the user knows
-            # the floor has dropped further.
-            alert = "low"
-            new_state_price = current
-        # else: still at the low, no meaningful further drop → silent.
-
-    elif zone == "high":
-        if last_alert_kind != "high":
-            # Just entered the high zone (was neutral or low) — fire.
-            alert = "high"
-            new_state_price = current
-        # else: already alerted on this elevated period → silent.
-        # State only re-arms when the price drops back to/below median.
-
-    else:  # neutral
-        # No alert and no remembered alert price — leaving the zone
-        # re-arms both LOW and HIGH for the next time we re-enter them.
-        new_state_price = None
-
-    return AlertDecision(
-        alert_kind=alert,
-        new_state=zone,
-        new_state_price=new_state_price,
-        all_time_low=all_time_low,
-        median_price=median_price,
-        prev_alert_price=last_alert_price,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Currency conversion
-# ---------------------------------------------------------------------------
-
-
-class CurrencyConverter:
-    """Keeps a fresh table of exchange rates in DB and converts between them.
-
-    Pivots through EUR because that's the API's native base — each stored
-    rate is "how many units of `currency` make 1 EUR", exactly as the
-    `/latest/EUR` endpoint returns. To go from A → B we convert A → EUR
-    (divide by `rate[A]`) then EUR → B (multiply by `rate[B]`).
-    """
-
-    EXCHANGE_API = "https://open.er-api.com/v6/latest/EUR"
-    # Currencies offered as `/wishlist-*` display options. Drives both the
-    # slash-command picker and which rates we persist on `refresh()`.
-    SUPPORTED_DISPLAY_CURRENCIES = ("RON", "DKK", "EUR", "USD", "GBP")
-    DEFAULT_DISPLAY_CURRENCY = "RON"
-
-    def refresh(self) -> bool:
-        """Fetch the latest EUR-relative rates and persist the subset we
-        actually display in `/wishlist-*` commands.
-
-        The API returns rates for ~150 currencies, but we only need the
-        five in `SUPPORTED_DISPLAY_CURRENCIES`. Each is stored as
-        "units of <currency> per 1 EUR" — EUR itself is the pivot at 1.0.
-        """
-        logger.info("Starting scheduled exchange rate update task...")
-        try:
-            response = requests.get(self.EXCHANGE_API, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            rates = data.get("rates")
-            if not rates:
-                logger.error("Exchange rate API returned no rates table.")
-                return False
-
-            db.set_exchange_rate("EUR", 1.0)
-            for currency in self.SUPPORTED_DISPLAY_CURRENCIES:
-                if currency == "EUR":
-                    continue
-                if currency in rates:
-                    db.set_exchange_rate(currency, rates[currency])
-                else:
-                    logger.warning(
-                        f"Currency {currency} missing from exchange rate "
-                        f"API response — keeping previously stored rate."
-                    )
-            logger.info("Exchange rates updated successfully.")
-            return True
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to fetch exchange rates from API: {e}")
-        except Exception:
-            logger.exception("Error in update_exchange_rates_task")
-        return False
-
-    def convert(self, price, from_currency, to_currency):
-        """Convert `price` from `from_currency` to `to_currency`.
-
-        Stored rates are "units per 1 EUR", so `price / rate_from` lifts
-        the amount into EUR, and multiplying by `rate_to` projects it
-        back out into the target currency.
-        """
-        if price is None or not from_currency or not to_currency:
-            return None
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
-            return None
-
-        from_rate = db.get_exchange_rate(from_currency)
-        to_rate = db.get_exchange_rate(to_currency)
-        if not from_rate or not to_rate:
-            return None
-
-        price_in_eur = price / from_rate
-        return price_in_eur * to_rate
-
-    def to_currency(self, price, source_currency, target_currency) -> float | None:
-        """Best-effort conversion of `price` from source to target. Returns the
-        converted float or None when conversion isn't possible (unknown source,
-        missing rates, non-numeric input)."""
-        if price is None or not source_currency or not target_currency:
-            return None
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
-            return None
-        if source_currency.upper() == target_currency.upper():
-            return price
-        return self.convert(price, source_currency, target_currency)
-
-    def format_in_currency(self, price, source_currency, target_currency) -> str:
-        """Format `price` (in `source_currency`) as a display string in
-        `target_currency`. Falls back gracefully when conversion isn't
-        possible:
-
-        - Unknown source currency  → "<price> (?)"   (we don't know the unit)
-        - Missing exchange rate    → "<price> SRC*"  (asterisk = unconverted)
-        - Same source as target    → "<price> TGT"
-        - Successful conversion    → "<converted> TGT"
-        """
-        if price is None:
-            return "N/A"
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
-            return "N/A"
-
-        target = target_currency.upper()
-        if not source_currency:
-            return f"{price:.2f} (?)"
-        source = source_currency.upper()
-        if source == target:
-            return f"{price:.2f} {target}"
-        converted = self.convert(price, source, target)
-        if converted is None:
-            return f"{price:.2f} {source}*"
-        return f"{converted:.2f} {target}"
-
-    def format_with_conversions(self, price, currency) -> str:
-        if price is None:
-            return "N/A"
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
-            return "N/A"
-
-        base_str = f"{price:.2f} {currency}" if currency else str(price)
-        if not currency:
-            return base_str
-
-        conversions = []
-        for target in ("DKK", "EUR", "USD", "GBP"):
-            if currency.upper() != target:
-                val = self.convert(price, currency, target)
-                if val:
-                    conversions.append(f"{val:.2f} {target}")
-
-        if conversions:
-            return f"{base_str} (~" + " | ".join(conversions) + ")"
-        return base_str
-
-
-# ---------------------------------------------------------------------------
-# Slash-command currency picker + Discord-side currency helpers
-# ---------------------------------------------------------------------------
-
-
-# Slash-command currency picker. Built from `CurrencyConverter`'s supported
-# set so this stays in sync with the conversion code automatically.
 CURRENCY_CHOICES = [
-    app_commands.Choice(name=c, value=c)
-    for c in CurrencyConverter.SUPPORTED_DISPLAY_CURRENCIES
+    app_commands.Choice(name=currency, value=currency)
+    for currency in CurrencyConverter.SUPPORTED_DISPLAY_CURRENCIES
 ]
-
-
-def _effective_currency(stored_currency: str | None, url: str) -> str | None:
-    """Pick the currency to display a tracked item in: the value persisted by
-    `PriceScraper.fetch`, or — if that's missing — the TLD-based guess (`.dk`
-    → DKK, `.ro` → RON, …).
-
-    Lets DB rows that pre-date the TLD fallback in `PriceScraper.fetch` still
-    render and convert correctly in `/wishlist-show`, `/wishlist-graph`, and
-    `/wishlist-graph-all` without needing a migration."""
-    return stored_currency or PriceScraper._currency_from_tld(url)
-
-
-def _majority_currency(url_currency_pairs) -> str:
-    """Pick the most-common effective currency across `(url, stored_currency)`
-    pairs.
-
-    Each pair is run through `_effective_currency` first so the TLD fallback
-    counts (a `.ro` row with NULL currency tallies as RON). Ties are broken
-    by insertion order — the first currency to reach the max wins.
-
-    Returns `CurrencyConverter.DEFAULT_DISPLAY_CURRENCY` (RON) when none of
-    the pairs have a known currency. Used as the default for
-    `/wishlist-graph-all` (over the user's full list) so the chart shows the
-    largest number of items without conversion."""
-    counts: Counter[str] = Counter()
-    for url, stored in url_currency_pairs:
-        eff = _effective_currency(stored, url)
-        if eff:
-            counts[eff.upper()] += 1
-    if not counts:
-        return CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
-    return counts.most_common(1)[0][0]
-
 
 # ---------------------------------------------------------------------------
 # Feature wiring
 # ---------------------------------------------------------------------------
 
 
-class ScrapingFeature:
+class WishlistFeature:
     """Owns all price-tracking commands, exchange rate refreshes, and the
     periodic price-scrape DM task."""
 
@@ -877,9 +528,8 @@ class ScrapingFeature:
             target_currency, _target_alerted, _restock_only, _last_checked,
             _last_check_status,
         ) = item
-        result = await asyncio.to_thread(self.scraper.fetch, url)
+        result = await asyncio.to_thread(refresh_item, item, self.scraper)
         status = result.failure or "ok"
-        db.update_scraped_item_check_status(item_id, status)
         await record("processing", "wishlist-check", scope_type="global")
 
         if result.failure == FAILURE_BLOCKED:
@@ -894,12 +544,6 @@ class ScrapingFeature:
                 f"Refresh failed: {_domain(url)} returned no supported price/stock data.\n"
                 f"{self._format_check_status(time.time(), status)}"
             )
-
-        if result.price is not None and result.price != old_price:
-            db.add_price_history(item_id, result.price)
-        db.update_scraped_item_status(
-            item_id, result.price, result.in_stock, result.title, result.currency
-        )
 
         title = result.title or old_title or url
         source_currency = _effective_currency(result.currency or old_currency, url)

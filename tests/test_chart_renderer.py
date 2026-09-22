@@ -2,8 +2,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import chart_renderer
-from chart_renderer import render_multi_price_history_png, render_price_history_png
+import wishlist.charts as chart_renderer
+from wishlist.charts import render_multi_price_history_png, render_price_history_png
 
 
 def _sample_points():

@@ -7,7 +7,7 @@ import requests
 import discord
 from discord import app_commands
 
-from llm_client import LlamaCppError, get_default_model, query_llm
+from llm.client import LlamaCppError, get_default_model, query_llm
 from features.llm_mention import (
     AskJob,
     LLMMentionFeature,

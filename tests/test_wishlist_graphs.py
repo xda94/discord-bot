@@ -9,7 +9,7 @@ from discord import app_commands
 
 import db
 from features import wishlist_graphs as graphs
-from features.scraping import ScrapingFeature
+from features.wishlist import WishlistFeature
 
 
 def _interaction(user_id=123):
@@ -129,9 +129,9 @@ def test_render_failure_keeps_previous_view_and_allows_retry():
 def test_graph_slash_options_accept_custom_days_and_percentage(tmp_db, monkeypatch):
     client = discord.Client(intents=discord.Intents.none())
     tree = app_commands.CommandTree(client)
-    ScrapingFeature(client, tree)
+    WishlistFeature(client, tree)
     send = AsyncMock()
-    monkeypatch.setattr("features.scraping.send_graph", send)
+    monkeypatch.setattr("features.wishlist.send_graph", send)
     interaction = _interaction()
     for name in ["wishlist-graph", "wishlist-graph-all"]:
         command = tree.get_command(name)

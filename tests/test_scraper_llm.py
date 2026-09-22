@@ -1,13 +1,13 @@
 from unittest.mock import patch
 
-from scraper import PriceScraper
+from wishlist.scraper import PriceScraper
 
 def test_extract_with_llm_success():
     scraper = PriceScraper()
     
     mock_response = '{"title": "Awesome Product", "price": 99.99, "currency": "USD", "in_stock": true}'
     
-    with patch('scraper.query_llm', return_value=mock_response) as mock_query:
+    with patch('wishlist.scraper.query_llm', return_value=mock_response) as mock_query:
         price, title, currency, in_stock = scraper._extract_with_llm("Some dummy text")
         
         mock_query.assert_called_once()
@@ -21,7 +21,7 @@ def test_extract_with_llm_invalid_json():
     
     mock_response = 'not json'
     
-    with patch('scraper.query_llm', return_value=mock_response) as mock_query:
+    with patch('wishlist.scraper.query_llm', return_value=mock_response) as mock_query:
         price, title, currency, in_stock = scraper._extract_with_llm("Some dummy text")
         
         mock_query.assert_called_once()
@@ -37,7 +37,7 @@ def test_extract_with_llm_truncates_long_text():
     long_text = "word " * 3005
     mock_response = '{"title": "Awesome Product"}'
     
-    with patch('scraper.query_llm', return_value=mock_response) as mock_query:
+    with patch('wishlist.scraper.query_llm', return_value=mock_response) as mock_query:
         scraper._extract_with_llm(long_text)
         
         # Check that the text was truncated in the prompt
