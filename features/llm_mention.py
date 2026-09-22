@@ -964,7 +964,12 @@ class LLMMentionFeature:
         memory_batch = None
         memory_history = []
         if not summon_only and self.memory is not None:
-            memory_context = self.memory.context_for(message)
+            memory_context = self.memory.context_for(
+                user_id=user_id,
+                guild_id=message.guild.id if message.guild is not None else None,
+                channel_id=message.channel.id,
+                query=message.clean_content,
+            )
             memory_enabled = memory_context.enabled
             user_memory = memory_context.profile
             memory_batch = memory_context.batch
