@@ -393,8 +393,10 @@ never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
 
-Mention prompts ask the model to answer as the person addressed and start with
-the answer. Validation removes leading requester/bot labels before comparing
+Mention prompts ask the model to answer the requester from the assistant's
+perspective and start with the answer. Saved memory is explicitly identified as
+belonging to the requester; recall uses `you`/`your` rather than adopting the
+requester's details as the assistant's own. Validation removes leading requester/bot labels before comparing
 the reply with the question, including short questions and differences in
 case, punctuation, or diacritics. Echoes receive one corrective retry; a second
 echo produces a generation-failure message instead of posting the question.

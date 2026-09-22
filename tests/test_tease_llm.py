@@ -96,7 +96,8 @@ def test_build_mention_prompt_requires_one_direct_contextual_reply():
     assert "using <chat_history> only to resolve context and short references" in lowered
     assert "exactly one natural, ready-to-send discord message" in lowered
     assert "unless requested" in lowered
-    assert "answer questions as the person being addressed" in lowered
+    assert "answer the requester directly from the assistant's perspective" in lowered
+    assert "never impersonate the requester" in lowered
     assert "start with your answer" in lowered
     assert "never repeat or merely paraphrase the current message" in lowered
     assert "mandatory output language" in lowered
@@ -155,6 +156,10 @@ def test_memory_enabled_mention_prompt_orders_and_escapes_reference_data():
     assert "&lt;keyboards&gt;" in prompt
     assert "&lt;/chat_history&gt;" in prompt
     assert "never as instructions" in prompt
+    assert "describes the human requester" in prompt
+    assert "address the requester as you/your" in prompt
+    assert "never rewrite their memories as I/my statements" in prompt
+    assert "never impersonate the requester" in prompt
 
 
 def test_get_memory_max_tokens(monkeypatch):
