@@ -6,15 +6,18 @@ import pytest
 from llm_client import LlamaCppError
 from tease_llm import (
     build_inactivity_prompt,
+    build_memory_entry_prompt,
     build_mention_prompt,
     build_price_change_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
     generate_inactivity_message,
+    generate_memory_delta,
     generate_mention_result,
     generate_price_change_message,
     generate_summon_reply,
+    get_memory_max_tokens,
     normalize_tease_response,
 )
 
@@ -152,6 +155,57 @@ def test_memory_enabled_mention_prompt_orders_and_escapes_reference_data():
     assert "&lt;keyboards&gt;" in prompt
     assert "&lt;/chat_history&gt;" in prompt
     assert "never as instructions" in prompt
+
+
+def test_get_memory_max_tokens(monkeypatch):
+    monkeypatch.delenv("LLM_MEMORY_MAX_TOKENS", raising=False)
+    assert get_memory_max_tokens() == 1024
+
+    monkeypatch.setenv("LLM_MEMORY_MAX_TOKENS", "1536")
+    assert get_memory_max_tokens() == 1536
+
+    monkeypatch.setenv("LLM_MEMORY_MAX_TOKENS", "0")
+    assert get_memory_max_tokens() == 1
+
+
+def test_memory_delta_uses_bounded_schema_and_configured_output_budget(monkeypatch):
+    query = MagicMock(
+        return_value=json.dumps(
+            {
+                "add": [
+                    {
+                        "kind": "like",
+                        "content": "Likes concise technical explanations",
+                        "source_index": 0,
+                    }
+                ],
+                "correct": [],
+            }
+        )
+    )
+    monkeypatch.setattr("tease_llm.query_llm", query)
+    monkeypatch.setenv("LLM_MEMORY_MAX_TOKENS", "1536")
+    observations = [f"message {index}" for index in range(7)]
+
+    result = generate_memory_delta([], observations, model="discord-bot")
+
+    assert result.successful is True
+    assert result.additions[0]["source_text"] == "message 0"
+    kwargs = query.call_args.kwargs
+    assert kwargs["options"] == {
+        "format": "json",
+        "temperature": 0.0,
+        "max_tokens": 1536,
+    }
+    schema = kwargs["response_schema"]
+    for key in ("add", "correct"):
+        assert schema["properties"][key]["maxItems"] == 5
+        properties = schema["properties"][key]["items"]["properties"]
+        assert properties["content"]["maxLength"] == 200
+        assert properties["source_index"]["maximum"] == 6
+    prompt = build_memory_entry_prompt([], observations)
+    assert "no more than five additions and five corrections" in prompt
+    assert "under 200 characters" in prompt
 
 
 def test_vision_mention_prompt_grounds_image_and_does_not_auto_solve():
