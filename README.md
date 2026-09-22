@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, persistent per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -60,6 +60,7 @@ API_TOKEN=YOUR_API_TOKEN_HERE
 LLAMA_CPP_BASE_URL=http://127.0.0.1:8080
 LLAMA_CPP_DEFAULT_MODEL=discord-bot
 LLAMA_CPP_ALLOWED_MODELS=discord-bot
+LLM_MEMORY_ENABLED=0
 ```
 
 | Variable | Required | Notes |
@@ -79,9 +80,10 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. |
-| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
-| `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
-| `LLM_MEMORY_MAX_TOKENS` | No (bot) | Maximum output tokens for one memory extraction. Default: `1024`; minimum: `1`. |
+| `LLM_MEMORY_ENABLED` | No (bot) | Memory mode selected at startup. Only `1` enables automatic channel capture and synthesis. `0`, a missing value, or an invalid value uses manual memory through `/memory-add`, `/memory-show`, and `/memory-erase`. Restart the bot after changing it. |
+| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Automatic mode only. Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
+| `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Automatic mode only. Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
+| `LLM_MEMORY_MAX_TOKENS` | No (bot) | Automatic mode only. Maximum output tokens for one memory extraction. Default: `1024`; minimum: `1`. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -367,12 +369,14 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
 | `/llm-set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
-| `/llm-memory <activate\|deactivate\|status>` | Manage persistent user memory in the current channel. Requires **Manage Server** permission; memory defaults to disabled. |
-| `/llm-memory-purge <confirmation>` | Delete all saved memory for users in this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
-| `/memory-show` | Privately show synthesized facts, impressions, likes, dislikes, and topic notes for the current server or DM. |
-| `/memory-forget` | Erase synthesized entries and pending observations here without opting out. |
-| `/memory-opt-out` | Stop memory and erase all of your memory data in the current server or DM. |
-| `/memory-opt-in` | Re-enable memory for you; required before memory can operate in DMs. |
+| `/llm-memory <activate\|deactivate\|status>` | Automatic mode (`LLM_MEMORY_ENABLED=1`) only. Manage memory capture in the current channel; requires **Manage Server**. |
+| `/llm-memory-purge <confirmation>` | Automatic mode only. Delete all saved memory for this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
+| `/memory-add <type> <text>` | Manual mode only. Save up to 200 characters as Likes, Dislikes, Facts, Interests, Opinions, or Other in the current server or DM. |
+| `/memory-show` | Privately show your complete saved memories, grouped by type, in the current server or DM. Available in both modes. |
+| `/memory-erase [text]` | Manual mode only. Paste complete stored text to erase its matches, ignoring case and repeated whitespace; omit `text` to erase everything here. |
+| `/memory-forget` | Automatic mode only. Erase synthesized entries and pending observations here without opting out. |
+| `/memory-opt-out` | Automatic mode only. Stop memory and erase all of your memory data in the current server or DM. |
+| `/memory-opt-in` | Automatic mode only. Re-enable memory for you; required before automatic memory can operate in DMs. |
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
 | `@bot` + image | Inspects the first directly attached PNG/JPEG. With a caption it answers that request; without one it gives a concise description. |
@@ -427,8 +431,25 @@ prompts or response text. `/llm-feedback-summary` marks a model/prompt
 combination ready to compare only after ten ratings; it never changes a model
 or prompt automatically.
 
-Persistent memory stores cycle syntheses as individual facts, impressions,
-likes, dislikes, and topic notes with stable IDs. Only an explicit newer
+`LLM_MEMORY_ENABLED` selects one of two modes when the Discord process starts.
+Only the exact value `1` enables automatic memory; `0`, a missing value, or an
+invalid value selects manual memory. Restart the bot to change modes. Stored
+entries are retained across mode changes, and the API/dashboard remain
+available in both modes.
+
+In manual mode, `/memory-add` stores one user-authored memory categorized as
+Likes, Dislikes, Facts, Interests, Opinions, or Other. `/memory-show` groups
+the complete stored text by type, and `/memory-erase` deletes matching pasted
+text or everything in the current scope when its argument is omitted. Matching
+ignores case and repeated whitespace. Server memory is available in every
+channel of that server; DMs use a separate scope. Previously synthesized
+entries remain visible and are still supplied to mention prompts. Manual mode
+does not capture messages, load pending observations for processing, or start
+the synthesis scheduler.
+
+In automatic mode, persistent memory stores cycle syntheses as individual
+facts, impressions, likes, dislikes, topics, interests, opinions, and other
+durable notes with stable IDs. Only an explicit newer
 statement can correct a cited row. Exact duplicates are ignored, unrelated
 rows are retained, and storage is not cut down to the prompt size. Existing
 compact profiles migrate automatically on startup.
@@ -549,6 +570,8 @@ and does not authenticate a Discord user.
 The bot refreshes memory channel and preference caches periodically and checks
 pending observation ownership before applying an in-flight memory update. API-side
 privacy changes therefore take effect without restarting the Discord process.
+Channel and preference controls govern automatic mode; the API remains available
+in manual mode for inspecting, deleting, or preconfiguring retained data.
 
 ### Wishlist
 
@@ -630,6 +653,6 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
-| `user_memory.py` | `UserMemoryFeature` | Channel-controlled facts, topic notes, transcripts, and pending observations |
+| `user_memory.py` | `UserMemoryFeature` | Automatic channel synthesis or manual per-user memory, selected by `LLM_MEMORY_ENABLED` |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `help_feature.py` | `HelpFeature` | `/help` |

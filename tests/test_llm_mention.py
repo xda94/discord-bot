@@ -85,6 +85,18 @@ def _handling_feature(*, processing=False, queue_size=0):
     return feature
 
 
+def test_start_tasks_skips_memory_scheduler_in_manual_mode():
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(automatic_enabled=False)
+    feature._memory_scheduler_task = None
+    feature._ensure_worker = MagicMock()
+
+    asyncio.run(feature.start_tasks())
+
+    feature._ensure_worker.assert_called_once_with()
+    assert feature._memory_scheduler_task is None
+
+
 @pytest.mark.parametrize("summon_only", [False, True])
 @pytest.mark.parametrize("label", ["", "Robeeque: "])
 def test_mention_reply_tags_requester_and_preserves_feedback(summon_only, label):

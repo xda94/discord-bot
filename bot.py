@@ -33,7 +33,7 @@ from features.scraping import ScrapingFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
-from features.user_memory import UserMemoryFeature
+from features.user_memory import UserMemoryFeature, is_automatic_memory_enabled
 
 from llm_client import LlamaCppError, get_default_model
 
@@ -92,7 +92,12 @@ flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
-user_memory = UserMemoryFeature(client, tree)
+AUTOMATIC_MEMORY_ENABLED = is_automatic_memory_enabled()
+user_memory = UserMemoryFeature(
+    client,
+    tree,
+    automatic_enabled=AUTOMATIC_MEMORY_ENABLED,
+)
 llm_mention = LLMMentionFeature(
     client,
     tree,
@@ -101,17 +106,22 @@ llm_mention = LLMMentionFeature(
     memory=user_memory,
 )
 context_reactions = ContextReactionFeature(llm_mention)
-help_feature = HelpFeature(client, tree)
+help_feature = HelpFeature(
+    client,
+    tree,
+    automatic_memory_enabled=AUTOMATIC_MEMORY_ENABLED,
+)
+logger.info(
+    "LLM memory mode=%s",
+    "automatic" if AUTOMATIC_MEMORY_ENABLED else "manual",
+)
 
 # Mentions stop dispatch first. Keywords keep priority over occasional reactions;
 # a sampled reaction then suppresses the random tease for that message.
 MESSAGE_HANDLERS = (
-    inactivity,
-    user_memory,
-    llm_mention,
-    keywords,
-    context_reactions,
-    teases,
+    (inactivity, user_memory, llm_mention, keywords, context_reactions, teases)
+    if AUTOMATIC_MEMORY_ENABLED
+    else (inactivity, llm_mention, keywords, context_reactions, teases)
 )
 
 # Features that own background tasks needing to be kicked off in on_ready.

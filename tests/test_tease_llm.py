@@ -201,6 +201,16 @@ def test_memory_delta_uses_bounded_schema_and_configured_output_budget(monkeypat
     for key in ("add", "correct"):
         assert schema["properties"][key]["maxItems"] == 5
         properties = schema["properties"][key]["items"]["properties"]
+        assert set(properties["kind"]["enum"]) == {
+            "fact",
+            "impression",
+            "like",
+            "dislike",
+            "topic",
+            "interest",
+            "opinion",
+            "other",
+        }
         assert properties["content"]["maxLength"] == 200
         assert properties["source_index"]["maximum"] == 6
     prompt = build_memory_entry_prompt([], observations)

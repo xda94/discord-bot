@@ -12,6 +12,17 @@ from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("database")
 
+LLM_MEMORY_ENTRY_KINDS = (
+    "fact",
+    "impression",
+    "like",
+    "dislike",
+    "topic",
+    "interest",
+    "opinion",
+    "other",
+)
+
 # Configurable so the DB can live outside the code checkout — typical
 # layouts on the host:
 #   - In-repo (default):     ./responses.db                     (gitignored)
@@ -278,7 +289,10 @@ def init_db():
                     scope_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
                     kind TEXT NOT NULL CHECK (
-                        kind IN ('fact', 'impression', 'like', 'dislike', 'topic')
+                        kind IN (
+                            'fact', 'impression', 'like', 'dislike', 'topic',
+                            'interest', 'opinion', 'other'
+                        )
                     ),
                     content TEXT NOT NULL,
                     normalized_content TEXT NOT NULL,
@@ -294,7 +308,10 @@ def init_db():
                 "AND name = 'llm_memory_entries'"
             )
             memory_entries_definition = (c.fetchone() or ("",))[0] or ""
-            if "'impression'" not in memory_entries_definition:
+            if any(
+                f"'{kind}'" not in memory_entries_definition
+                for kind in LLM_MEMORY_ENTRY_KINDS
+            ):
                 # SQLite cannot widen a CHECK constraint in place. Rebuild the
                 # table once while preserving stable IDs and timestamps.
                 c.execute(
@@ -1043,6 +1060,67 @@ def get_llm_memory_entries(scope_id, user_id):
             "Failed to read memory entries for scope %s user %s", scope_id, user_id
         )
         return []
+
+
+def add_manual_llm_memory_entry(scope_id, user_id, content, *, kind="fact"):
+    """Add one categorized user-authored memory.
+
+    Return True when inserted, False when the normalized entry already exists,
+    and None when the database write fails.
+    """
+    content = " ".join(str(content).split())
+    if not content or kind not in LLM_MEMORY_ENTRY_KINDS:
+        return False
+    normalized = content.casefold()
+    source_reference = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+    try:
+        now = time.time()
+        with _connect(commit=True) as c:
+            c.execute(
+                "INSERT OR IGNORE INTO llm_memory_entries "
+                "(scope_id, user_id, kind, content, normalized_content, "
+                "source_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    scope_id,
+                    user_id,
+                    kind,
+                    content,
+                    normalized,
+                    source_reference,
+                    now,
+                    now,
+                ),
+            )
+            return c.rowcount == 1
+    except Exception:
+        logger.exception(
+            "Failed to add manual memory entry for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return None
+
+
+def delete_llm_memory_entries_by_text(scope_id, user_id, content):
+    """Delete owned entries matching normalized full text and return the count."""
+    normalized = " ".join(str(content).split()).casefold()
+    if not normalized:
+        return 0
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "DELETE FROM llm_memory_entries WHERE scope_id = ? AND user_id = ? "
+                "AND normalized_content = ?",
+                (scope_id, user_id, normalized),
+            )
+            return c.rowcount
+    except Exception:
+        logger.exception(
+            "Failed to delete memory entries by text for scope %s user %s",
+            scope_id,
+            user_id,
+        )
+        return None
 
 
 def add_llm_memory_transcript(

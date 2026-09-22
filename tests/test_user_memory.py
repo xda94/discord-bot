@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
+import pytest
 from discord import app_commands
 
 import db
@@ -10,13 +11,16 @@ from features.user_memory import (
     SYNTHESIS_CHUNK_MAX_CHARS,
     SYNTHESIS_CHUNK_MAX_MESSAGES,
     UserMemoryFeature,
+    is_automatic_memory_enabled,
 )
 
 
-def _build_feature():
+def _build_feature(*, automatic_enabled=True):
     client = discord.Client(intents=discord.Intents.none())
     tree = app_commands.CommandTree(client)
-    return client, tree, UserMemoryFeature(client, tree)
+    return client, tree, UserMemoryFeature(
+        client, tree, automatic_enabled=automatic_enabled
+    )
 
 
 def _message(*, user_id=7, guild_id=100, channel_id=10, content="hello"):
@@ -508,4 +512,141 @@ def test_memory_show_chunks_larger_profile_privately(tmp_db):
     assert "".join(chunks) == f"**What I remember about you**\n{profile}"
     assert first.kwargs["ephemeral"] is True
     assert all(call.kwargs["ephemeral"] is True for call in followups)
+    asyncio.run(client.close())
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, False),
+        ("0", False),
+        ("1", True),
+        (" 1 ", False),
+        ("true", False),
+        ("2", False),
+    ],
+)
+def test_automatic_memory_mode_from_environment(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("LLM_MEMORY_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("LLM_MEMORY_ENABLED", value)
+    assert is_automatic_memory_enabled() is expected
+
+
+def test_memory_modes_register_their_own_commands(tmp_db):
+    automatic_client, automatic_tree, _ = _build_feature()
+    manual_client, manual_tree, _ = _build_feature(automatic_enabled=False)
+
+    automatic_names = {command.name for command in automatic_tree.get_commands()}
+    manual_names = {command.name for command in manual_tree.get_commands()}
+
+    assert automatic_names == {
+        "llm-memory",
+        "llm-memory-purge",
+        "memory-show",
+        "memory-forget",
+        "memory-opt-out",
+        "memory-opt-in",
+    }
+    assert manual_names == {"memory-add", "memory-show", "memory-erase"}
+    asyncio.run(automatic_client.close())
+    asyncio.run(manual_client.close())
+
+
+def test_manual_memory_add_show_context_and_text_erase(tmp_db):
+    client, tree, feature = _build_feature(automatic_enabled=False)
+    interaction = MagicMock()
+    interaction.guild_id = 100
+    interaction.user.id = 7
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    add = tree.get_command("memory-add")
+    type_option = next(
+        parameter for parameter in add.parameters if parameter.name == "memory_type"
+    )
+    assert type_option.display_name == "type"
+    assert {choice.value for choice in type_option.choices} == {
+        "like",
+        "dislike",
+        "fact",
+        "interest",
+        "opinion",
+        "other",
+    }
+    asyncio.run(add.callback(interaction, "like", "  Likes   Green TEA  "))
+    asyncio.run(add.callback(interaction, "like", "likes green tea"))
+
+    rows = db.get_llm_memory_entries(100, 7)
+    assert len(rows) == 1
+    assert rows[0][1:3] == ("like", "Likes Green TEA")
+    assert db.get_llm_memory_preference(100, 7) is True
+    assert "already remember" in interaction.response.send_message.await_args.args[0]
+
+    message = _message(channel_id=999, content="What tea do I like?")
+    context = feature.context_for(message)
+    assert context.enabled is True
+    assert "Likes Green TEA" in context.profile
+    assert context.batch is None
+
+    asyncio.run(feature.handle_message(message))
+    assert db.get_llm_memory_observations(100, 7) == []
+
+    interaction.response.send_message.reset_mock()
+    asyncio.run(tree.get_command("memory-show").callback(interaction))
+    shown = interaction.response.send_message.await_args.args[0]
+    assert "**Likes**" in shown
+    assert "Likes Green TEA" in shown
+    assert "#" not in shown
+
+    assert db.apply_llm_memory_delta(
+        100,
+        7,
+        (
+            {
+                "kind": "opinion",
+                "content": "LIKES GREEN TEA",
+                "source_text": "source",
+            },
+        ),
+        (),
+        (),
+    )
+    db.add_manual_llm_memory_entry(100, 8, "Likes Green TEA")
+    db.add_manual_llm_memory_entry(200, 7, "Likes Green TEA")
+    interaction.response.send_message.reset_mock()
+    asyncio.run(
+        tree.get_command("memory-erase").callback(
+            interaction, " likes    GREEN tea "
+        )
+    )
+    assert db.get_llm_memory_entries(100, 7) == []
+    assert len(db.get_llm_memory_entries(100, 8)) == 1
+    assert len(db.get_llm_memory_entries(200, 7)) == 1
+    assert "Erased **2**" in interaction.response.send_message.await_args.args[0]
+    asyncio.run(client.close())
+
+
+def test_manual_memory_limits_and_erase_all(tmp_db):
+    client, tree, _ = _build_feature(automatic_enabled=False)
+    interaction = MagicMock()
+    interaction.guild_id = None
+    interaction.user.id = 7
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    asyncio.run(
+        tree.get_command("memory-add").callback(interaction, "fact", "x" * 201)
+    )
+    assert db.get_llm_memory_entries(0, 7) == []
+    assert "at most 200" in interaction.response.send_message.await_args.args[0]
+
+    db.add_manual_llm_memory_entry(0, 7, "DM fact")
+    db.add_llm_memory_observation(0, 7, None, 99, "dormant observation")
+    interaction.response.send_message.reset_mock()
+    asyncio.run(tree.get_command("memory-erase").callback(interaction))
+    assert db.get_llm_memory_entries(0, 7) == []
+    assert db.get_llm_memory_observations(0, 7) == []
+    assert "were erased" in interaction.response.send_message.await_args.args[0]
     asyncio.run(client.close())

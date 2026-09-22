@@ -11,6 +11,19 @@ logger = logging.getLogger("discord_bot")
 # formatting overhead.
 DISCORD_MESSAGE_LIMIT = 1900
 
+MANUAL_MEMORY_HELP_TEXT = (
+    "**/memory-add** `<type>` `<text>`\n"
+    "Save up to 200 characters for yourself as Likes, Dislikes, Facts, Interests, "
+    "Opinions, or Other. Server memories are available in every channel of that "
+    "server.\n\n"
+    "**/memory-show**\n"
+    "Privately show the complete memories saved about you here, grouped by type.\n\n"
+    "**/memory-erase** `[text]`\n"
+    "Paste the complete stored text to erase matching memories, or omit `text` "
+    "to erase all of your memory in this server or DM. Matching ignores case "
+    "and repeated whitespace.\n\n"
+)
+
 
 def _chunk_text(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     """Split `text` into chunks <= `limit` chars, breaking on paragraph
@@ -143,7 +156,8 @@ HELP_TEXT = (
     "for this server. Channel settings and individual opt-outs remain unchanged.\n\n"
     "**/memory-show**\n"
     "Privately show the saved memory synthesis for you in this server or DM, including "
-    "facts, impressions, likes, dislikes, and topics. Raw chat is deleted after synthesis.\n\n"
+    "facts, impressions, preferences, interests, opinions, and topics. Raw chat is "
+    "deleted after synthesis.\n\n"
     "**/memory-forget**\n"
     "Erase all saved memory and pending observations here without opting out.\n\n"
     "**/memory-opt-out** / **/memory-opt-in**\n"
@@ -169,12 +183,34 @@ HELP_TEXT = (
 )
 
 
+def build_help_text(automatic_memory_enabled: bool) -> str:
+    if automatic_memory_enabled:
+        return HELP_TEXT
+
+    memory_start = HELP_TEXT.index("**/llm-memory**")
+    mention_start = HELP_TEXT.index("**@bot** (mention)")
+    text = HELP_TEXT[:memory_start] + MANUAL_MEMORY_HELP_TEXT + HELP_TEXT[mention_start:]
+    return text.replace(
+        "In memory-enabled channels, the same requester's synthesized facts, "
+        "impressions, preferences, and topics supplement live chat history.",
+        "The requester's manually saved memories and any existing synthesized "
+        "memories supplement live chat history throughout the current server or DM.",
+    )
+
+
 class HelpFeature:
     """The /help command."""
 
-    def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
+    def __init__(
+        self,
+        client: discord.Client,
+        tree: app_commands.CommandTree,
+        *,
+        automatic_memory_enabled: bool = True,
+    ):
         self.client = client
         self.tree = tree
+        self.help_text = build_help_text(automatic_memory_enabled)
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -183,7 +219,7 @@ class HelpFeature:
         )
         async def help_cmd(interaction: discord.Interaction):
             logger.info(f"Command /help called by {interaction.user}")
-            chunks = _chunk_text(HELP_TEXT)
+            chunks = _chunk_text(self.help_text)
             # First chunk satisfies Discord's initial interaction-response
             # contract; the rest go through follow-ups on the same token.
             await interaction.response.send_message(chunks[0], ephemeral=True)

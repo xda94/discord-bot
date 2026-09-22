@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 
 import discord
 from discord import app_commands
@@ -27,6 +29,20 @@ MEMORY_OBSERVATION_MIN_AGE_SECONDS = 10 * 60
 # scheduler no longer uses a daily age threshold.
 MEMORY_SYNTHESIS_INTERVAL_SECONDS = MEMORY_OBSERVATION_MIN_AGE_SECONDS
 MEMORY_CONFIG_CACHE_SECONDS = 30
+MANUAL_MEMORY_ENTRY_MAX_CHARS = 200
+MANUAL_MEMORY_TYPES = {
+    "like": "Likes",
+    "dislike": "Dislikes",
+    "fact": "Facts",
+    "interest": "Interests",
+    "opinion": "Opinions",
+    "other": "Other",
+}
+MEMORY_KIND_LABELS = {
+    **MANUAL_MEMORY_TYPES,
+    "impression": "Impressions",
+    "topic": "Topics",
+}
 
 
 @dataclass(frozen=True)
@@ -63,6 +79,20 @@ def _scope_id(guild_id: int | None) -> int:
     return guild_id if guild_id is not None else DM_SCOPE_ID
 
 
+def is_automatic_memory_enabled() -> bool:
+    """Return whether automatic capture and synthesis are enabled."""
+    raw_value = os.getenv("LLM_MEMORY_ENABLED")
+    if raw_value is None:
+        return False
+    if raw_value not in {"0", "1"}:
+        logger.warning(
+            "LLM_MEMORY_ENABLED must be 0 or 1; using manual memory mode for %r.",
+            raw_value,
+        )
+        return False
+    return raw_value == "1"
+
+
 async def _send_private(interaction: discord.Interaction, text: str) -> None:
     chunks = [
         text[index:index + PRIVATE_MESSAGE_CHUNK]
@@ -81,18 +111,26 @@ class UserMemoryFeature:
     messages are deleted atomically after each successful synthesis chunk.
     """
 
-    def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
+    def __init__(
+        self,
+        client: discord.Client,
+        tree: app_commands.CommandTree,
+        *,
+        automatic_enabled: bool = True,
+    ):
         self.client = client
         self.tree = tree
-        self._enabled_channels: set[tuple[int, int]] = set(
-            db.get_enabled_llm_memory_channels()
+        self.automatic_enabled = automatic_enabled
+        self._enabled_channels: set[tuple[int, int]] = (
+            set(db.get_enabled_llm_memory_channels()) if automatic_enabled else set()
         )
         self._enabled_channels_checked_at = time.monotonic()
         self._preference_cache: dict[tuple[int, int], bool | None] = {}
         self._preference_checked_at: dict[tuple[int, int], float] = {}
         self._buffers: dict[tuple[int, int], deque[MemoryObservation]] = {}
         self._generations: dict[tuple[int, int], int] = {}
-        self._load_pending_observations()
+        if automatic_enabled:
+            self._load_pending_observations()
         self._register_commands()
 
     def _load_pending_observations(self) -> None:
@@ -257,6 +295,8 @@ class UserMemoryFeature:
         )
 
     async def handle_message(self, message: discord.Message) -> bool:
+        if not self.automatic_enabled:
+            return False
         content = message.clean_content.strip()
         if not content:
             return False
@@ -304,6 +344,15 @@ class UserMemoryFeature:
         guild_id = message.guild.id if message.guild is not None else None
         channel_id = message.channel.id
         user_id = message.author.id
+        scope_id = _scope_id(guild_id)
+        if not self.automatic_enabled:
+            profile = self._selected_entry_text(
+                scope_id, user_id, getattr(message, "clean_content", "")
+            )
+            if not profile:
+                profile = db.get_llm_user_memory(scope_id, user_id) or ""
+            return MemoryContext(enabled=bool(profile), profile=profile)
+
         if not self._is_enabled(
             guild_id=guild_id,
             channel_id=channel_id,
@@ -311,7 +360,6 @@ class UserMemoryFeature:
         ):
             return MemoryContext(enabled=False)
 
-        scope_id = _scope_id(guild_id)
         key = (scope_id, user_id)
         self._sync_buffer(key)
         profile = self._selected_entry_text(
@@ -571,6 +619,8 @@ class UserMemoryFeature:
         for the next cycle. Active-cycle scans pass ``allow_new_cycles=False``
         so they cannot admit unrelated work before the next scheduled scan.
         """
+        if not self.automatic_enabled:
+            return []
         now = time.time() if now is None else now
         cutoff = now - MEMORY_OBSERVATION_MIN_AGE_SECONDS
         result = []
@@ -665,6 +715,8 @@ class UserMemoryFeature:
 
     def can_process_batch(self, batch: MemoryBatch) -> bool:
         """Reject a queued snapshot invalidated by privacy/config changes."""
+        if not self.automatic_enabled:
+            return False
         key = (batch.scope_id, batch.user_id)
         if self._generations.get(key, 0) != batch.generation:
             logger.info(
@@ -721,7 +773,158 @@ class UserMemoryFeature:
             and (permissions.manage_guild or permissions.administrator)
         )
 
+    def _register_manual_commands(self) -> None:
+        @self.tree.command(
+            name="memory-add",
+            description="Add something the bot should remember about you",
+        )
+        @app_commands.rename(memory_type="type")
+        @app_commands.describe(
+            memory_type="What kind of memory this is",
+            text="The complete memory to remember",
+        )
+        @app_commands.choices(
+            memory_type=[
+                app_commands.Choice(name=label, value=value)
+                for value, label in MANUAL_MEMORY_TYPES.items()
+            ]
+        )
+        async def memory_add(
+            interaction: discord.Interaction, memory_type: str, text: str
+        ):
+            content = " ".join(text.split())
+            if memory_type not in MANUAL_MEMORY_TYPES:
+                await interaction.response.send_message(
+                    "Choose one of the available memory types.", ephemeral=True
+                )
+                return
+            if not content:
+                await interaction.response.send_message(
+                    "Memory text cannot be empty.", ephemeral=True
+                )
+                return
+            if len(content) > MANUAL_MEMORY_ENTRY_MAX_CHARS:
+                await interaction.response.send_message(
+                    f"Memory text must be at most {MANUAL_MEMORY_ENTRY_MAX_CHARS} "
+                    "characters.",
+                    ephemeral=True,
+                )
+                return
+
+            scope_id = _scope_id(interaction.guild_id)
+            user_id = interaction.user.id
+            if not db.set_llm_memory_preference(scope_id, user_id, True):
+                await interaction.response.send_message(
+                    "Could not enable memory for you. Please try again.",
+                    ephemeral=True,
+                )
+                return
+            self._preference_cache[(scope_id, user_id)] = True
+            self._preference_checked_at[(scope_id, user_id)] = time.monotonic()
+
+            inserted = db.add_manual_llm_memory_entry(
+                scope_id,
+                user_id,
+                content,
+                kind=memory_type,
+            )
+            if inserted is None:
+                await interaction.response.send_message(
+                    "Could not save that memory. Please try again.", ephemeral=True
+                )
+            elif inserted is False:
+                await interaction.response.send_message(
+                    "I already remember that about you here.", ephemeral=True
+                )
+            else:
+                label = MANUAL_MEMORY_TYPES[memory_type]
+                await interaction.response.send_message(
+                    f"🧠 Saved under **{label}**: **{content}**",
+                    ephemeral=True,
+                )
+
+        @self.tree.command(
+            name="memory-show",
+            description="Privately show what the bot remembers about you",
+        )
+        async def memory_show(interaction: discord.Interaction):
+            scope_id = _scope_id(interaction.guild_id)
+            entries = db.get_llm_memory_entries(scope_id, interaction.user.id)
+            profile = db.get_llm_user_memory(scope_id, interaction.user.id)
+            if not entries and not profile:
+                await _send_private(
+                    interaction, "The bot does not remember anything about you here yet."
+                )
+                return
+
+            sections = ["**What I remember about you**"]
+            if entries:
+                grouped: dict[str, list[str]] = {}
+                for _entry_id, kind, content, _source, _created, _updated in entries:
+                    grouped.setdefault(kind, []).append(content)
+                for kind in MEMORY_KIND_LABELS:
+                    memories = grouped.get(kind)
+                    if memories:
+                        sections.append(
+                            f"**{MEMORY_KIND_LABELS[kind]}**\n"
+                            + "\n".join(f"- {content}" for content in memories)
+                        )
+            if profile:
+                sections.append(f"**Legacy profile**\n{profile}")
+            await _send_private(interaction, "\n".join(sections))
+
+        @self.tree.command(
+            name="memory-erase",
+            description="Erase one pasted memory, or all of your memory here",
+        )
+        @app_commands.describe(
+            text="Paste the complete memory text, or omit this to erase everything"
+        )
+        async def memory_erase(
+            interaction: discord.Interaction, text: Optional[str] = None
+        ):
+            scope_id = _scope_id(interaction.guild_id)
+            user_id = interaction.user.id
+            if text is not None:
+                removed = db.delete_llm_memory_entries_by_text(
+                    scope_id, user_id, text
+                )
+                if removed is None:
+                    await interaction.response.send_message(
+                        "Could not erase that memory. Please try again.",
+                        ephemeral=True,
+                    )
+                elif removed == 0:
+                    await interaction.response.send_message(
+                        "I could not find that exact memory about you here.",
+                        ephemeral=True,
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"Erased **{removed}** matching memory entr"
+                        f"{'y' if removed == 1 else 'ies'}.",
+                        ephemeral=True,
+                    )
+                return
+
+            self._invalidate_key((scope_id, user_id), clear=True)
+            removed = db.delete_all_llm_user_memory(scope_id, user_id)
+            if removed is None:
+                await interaction.response.send_message(
+                    "Could not erase all of your memory. Please try again.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                "Your saved memory and pending observations were erased here.",
+                ephemeral=True,
+            )
+
     def _register_commands(self) -> None:
+        if not self.automatic_enabled:
+            self._register_manual_commands()
+            return
+
         @self.tree.command(
             name="llm-memory",
             description="Configure persistent LLM memory for this channel",
@@ -775,7 +978,8 @@ class UserMemoryFeature:
                     "🧠 **Persistent bot memory is now enabled in this channel.**\n"
                     "Once this channel has 50 captured messages that are at least "
                     "10 minutes old, the bot synthesizes them into facts, "
-                    "impressions, likes, dislikes, and topic notes for each member. "
+                    "impressions, preferences, interests, opinions, and topic notes "
+                    "for each member. "
                     "The source chat is then deleted and only the synthesis is used "
                     "when that same member mentions it. Use `/memory-show`, "
                     "`/memory-forget`, or `/memory-opt-out` for personal control."

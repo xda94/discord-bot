@@ -494,6 +494,11 @@ class LLMMentionFeature:
 
     async def start_tasks(self) -> None:
         self._ensure_worker()
+        if self.memory is None or not getattr(
+            self.memory, "automatic_enabled", True
+        ):
+            logger.info("Memory scheduler disabled mode=manual")
+            return
         if self._memory_scheduler_task is None or self._memory_scheduler_task.done():
             self._memory_scheduler_task = asyncio.create_task(
                 self._memory_scheduler_loop()
