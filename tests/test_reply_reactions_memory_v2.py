@@ -386,7 +386,10 @@ def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch
     assert result.successful is True
     assert '"source_index": 0, "content": "First observation"' in captured["prompt"]
     assert '"source_index": 1, "content": "Second observation"' in captured["prompt"]
-    assert "fact, impression, like, dislike, or topic" in captured["prompt"]
+    assert (
+        "fact, impression, like, dislike, topic, interest, opinion, or other"
+        in captured["prompt"]
+    )
     for key in ("add", "correct"):
         properties = captured["schema"]["properties"][key]["items"]["properties"]
         source_index = properties["source_index"]
@@ -398,6 +401,9 @@ def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch
             "like",
             "dislike",
             "topic",
+            "interest",
+            "opinion",
+            "other",
         ]
 
 
