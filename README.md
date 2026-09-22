@@ -79,8 +79,9 @@ LLAMA_CPP_ALLOWED_MODELS=discord-bot
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. |
-| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between scans that may start new memory cycles. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
-| `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Rest between chunks or retries while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
+| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
+| `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
+| `LLM_MEMORY_MAX_TOKENS` | No (bot) | Maximum output tokens for one memory extraction. Default: `1024`; minimum: `1`. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -398,7 +399,8 @@ detect textual repetition; they do not judge the correctness of an answer or
 recognize every semantic paraphrase.
 
 Every inference request has an output-token limit: 384 by default, 96 for
-short social replies, 32 for reactions, and 768 for memory extraction.
+short social replies, 32 for reactions, and 1,024 by default for memory
+extraction. Configure the latter with `LLM_MEMORY_MAX_TOKENS`.
 The HTTP timeout limits the client's wait; it is not a server CPU limit.
 Token-limit-truncated responses are treated as failures so incomplete memory
 extractions cannot acknowledge and delete their source messages.
@@ -441,14 +443,18 @@ cycle drains one chunk at a time after the rest configured by
 `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS`, also five minutes by default.
 After a successful chunk, the entries are saved and that chunk's source
 messages are deleted in the same transaction. Failed synthesis retains the
-chunk for retry so messages are not silently lost. Each scan admits at most one
+chunk for retry so messages are not silently lost. Consecutive failures retry
+after twice the active-chunk rest, then double up to the consolidation interval;
+a successful commit or a job skipped before inference resets this process-local
+backoff. Each scan admits at most one
 chunk of up to 10 messages / 3,000 source characters with up to 2,000
 characters of retrieved entries. These are input-character budgets, not exact
 token counts; JSON, escaping, instructions, and the model's chat template add
-overhead. Remaining cycle observations are grouped by author, and the oldest
+overhead. One extraction may return at most five additions and five corrections,
+each limited to 200 characters. Remaining cycle observations are grouped by author, and the oldest
 remaining author group is selected first. Scans skip the database entirely
-while the worker is busy and wait one configured active-chunk rest after
-memory work finishes (including failures) before admitting another chunk. The
+while the worker is busy. Successful memory work waits one active-chunk rest;
+failed work follows the backoff above before another chunk is admitted. The
 bot does not persist assistant replies or a raw conversation transcript. At
 prompt time, relevant synthesized entries are ranked by word overlap and
 recency and share the reference budget with live channel context. Memory

@@ -67,6 +67,20 @@ def get_memory_active_chunk_rest_seconds() -> float:
     )
 
 
+def get_memory_failure_backoff_seconds(consecutive_failures: int) -> float:
+    """Return the post-completion delay for consecutive memory failures."""
+    active_rest = get_memory_active_chunk_rest_seconds()
+    if consecutive_failures <= 0:
+        return active_rest
+    cap = max(active_rest, get_memory_consolidation_interval_seconds())
+    delay = active_rest
+    for _ in range(consecutive_failures):
+        delay = min(cap, delay * 2)
+        if delay >= cap:
+            break
+    return delay
+
+
 def get_model_choices() -> list[app_commands.Choice[str]]:
     return [
         app_commands.Choice(name=model, value=model)
@@ -354,6 +368,7 @@ class LLMMentionFeature:
         self._memory_scheduler_task: asyncio.Task | None = None
         self._memory_pending: set[tuple[int, int]] = set()
         self._memory_last_finished: float | None = None
+        self._memory_consecutive_failures = 0
         self._reaction_pending_channels: set[int] = set()
         self._reaction_last_attempt: dict[int, float] = {}
         self._register_commands()
@@ -388,6 +403,7 @@ class LLMMentionFeature:
             if channel_id is None:
                 channel_id = getattr(getattr(job, "channel", None), "id", None)
             outcome = "completed"
+            memory_succeeded: bool | None = None
             logger.info(
                 "LLM job started sequence=%s priority=%s type=%s model=%s "
                 "user_id=%s scope_id=%s channel_id=%s queue_remaining=%d",
@@ -405,11 +421,17 @@ class LLMMentionFeature:
                 if isinstance(job, AskJob):
                     await self._process_job(job)
                 elif isinstance(job, MemoryJob):
-                    await self._process_memory_job(job)
+                    memory_succeeded = await self._process_memory_job(job)
+                    if memory_succeeded is False:
+                        outcome = "failed"
+                    elif memory_succeeded is None:
+                        outcome = "skipped"
                 else:
                     await self._process_reaction_job(job)
             except Exception:
                 outcome = "failed"
+                if isinstance(job, MemoryJob):
+                    memory_succeeded = False
                 logger.exception(
                     "Unhandled error processing LLM job sequence=%s type=%s",
                     sequence,
@@ -430,6 +452,14 @@ class LLMMentionFeature:
                     self._user_last_ask[job.user.id] = time.time()
                 elif isinstance(job, MemoryJob):
                     self._memory_last_finished = time.monotonic()
+                    if memory_succeeded is False:
+                        self._memory_consecutive_failures = (
+                            getattr(self, "_memory_consecutive_failures", 0) + 1
+                        )
+                    else:
+                        # Successful commits and jobs skipped before inference
+                        # both clear stale failure backoff.
+                        self._memory_consecutive_failures = 0
                     self._memory_pending.discard(
                         (job.batch.scope_id, job.batch.user_id)
                     )
@@ -483,18 +513,26 @@ class LLMMentionFeature:
             now = time.monotonic()
             cycle_interval = get_memory_consolidation_interval_seconds()
             active_chunk_rest = get_memory_active_chunk_rest_seconds()
+            consecutive_failures = getattr(
+                self, "_memory_consecutive_failures", 0
+            )
+            required_rest = get_memory_failure_backoff_seconds(
+                consecutive_failures
+            )
             allow_new_cycles = now >= next_cycle_scan_at
             if (
                 self._memory_last_finished is not None
-                and now - self._memory_last_finished < active_chunk_rest
+                and now - self._memory_last_finished < required_rest
             ):
                 logger.info(
-                    "Memory scan skipped reason=rest-interval remaining=%.1fs",
-                    active_chunk_rest - (now - self._memory_last_finished),
+                    "Memory scan skipped reason=%s failures=%d remaining=%.1fs",
+                    "failure-backoff" if consecutive_failures else "rest-interval",
+                    consecutive_failures,
+                    required_rest - (now - self._memory_last_finished),
                 )
                 wait_seconds = max(
                     0.0,
-                    self._memory_last_finished + active_chunk_rest - now,
+                    self._memory_last_finished + required_rest - now,
                 )
                 continue
             if self.memory is None:
@@ -716,10 +754,10 @@ class LLMMentionFeature:
         # Persistent memory is synthesized only by the background scheduler. A
         # mention reply must not trigger early extraction or persist raw chat.
 
-    async def _process_memory_job(self, job: MemoryJob) -> None:
+    async def _process_memory_job(self, job: MemoryJob) -> bool | None:
         if self.memory is None:
             logger.info("Memory job stopped reason=feature-unavailable")
-            return
+            return None
         chunks = (
             self.memory.synthesis_chunks(job.batch)
             if hasattr(self.memory, "synthesis_chunks")
@@ -731,7 +769,7 @@ class LLMMentionFeature:
                 job.batch.scope_id,
                 job.batch.user_id,
             )
-            return
+            return None
         # A cycle author group may contain several chunks. Process only one per
         # scheduler pass so background work cannot pin the CPU continuously.
         batch = chunks[0]
@@ -742,7 +780,7 @@ class LLMMentionFeature:
                 batch.scope_id,
                 batch.user_id,
             )
-            return
+            return None
         entries = self.memory.entries_for_batch(batch)
         logger.info(
             "Memory synthesis prepared scope_id=%s user_id=%s chunks=%d "
@@ -784,7 +822,7 @@ class LLMMentionFeature:
                 batch.user_id,
                 len(batch.observations),
             )
-            return
+            return False
         if not self.memory.can_process_batch(batch):
             logger.info(
                 "Memory synthesis discarded reason=batch-invalid-after-inference "
@@ -794,7 +832,7 @@ class LLMMentionFeature:
                 len(result.additions),
                 len(result.corrections),
             )
-            return
+            return None
         committed = self.memory.commit_delta(
             batch, result.additions, result.corrections
         )
@@ -822,6 +860,7 @@ class LLMMentionFeature:
             len(result.corrections),
             len(batch.observations),
         )
+        return committed
 
     async def _process_reaction_job(self, job: ReactionJob) -> None:
         content = getattr(job.message, "clean_content", "").strip()

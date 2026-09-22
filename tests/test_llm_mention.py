@@ -25,6 +25,7 @@ from features.llm_mention import (
     get_ask_cooldown_seconds,
     get_memory_active_chunk_rest_seconds,
     get_memory_consolidation_interval_seconds,
+    get_memory_failure_backoff_seconds,
     get_selected_model,
     select_image_attachment,
     split_discord_messages,
@@ -161,6 +162,20 @@ def test_get_memory_active_chunk_rest_seconds(monkeypatch):
     assert get_memory_active_chunk_rest_seconds() == 1.0
 
 
+def test_memory_failure_backoff_doubles_and_caps_at_cycle_interval(monkeypatch):
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "18000")
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "900")
+
+    assert [get_memory_failure_backoff_seconds(count) for count in range(6)] == [
+        900.0,
+        1800.0,
+        3600.0,
+        7200.0,
+        14400.0,
+        18000.0,
+    ]
+
+
 def test_memory_scheduler_uses_cycle_interval_then_active_chunk_rest(monkeypatch):
     class SchedulerStopped(Exception):
         pass
@@ -201,7 +216,7 @@ def test_memory_scheduler_uses_cycle_interval_then_active_chunk_rest(monkeypatch
     ]
 
 
-def test_memory_scheduler_retries_retained_batch_after_active_rest(monkeypatch):
+def test_memory_scheduler_drains_retained_batch_after_active_rest(monkeypatch):
     class SchedulerStopped(Exception):
         pass
 
@@ -240,6 +255,38 @@ def test_memory_scheduler_retries_retained_batch_after_active_rest(monkeypatch):
         {"allow_new_cycles": True},
         {"allow_new_cycles": False},
     ]
+
+
+def test_memory_scheduler_waits_for_failure_backoff(monkeypatch):
+    class SchedulerStopped(Exception):
+        pass
+
+    clock = [0.0]
+    sleeps = []
+
+    async def fake_sleep(delay):
+        if len(sleeps) >= 2:
+            raise SchedulerStopped
+        sleeps.append(delay)
+        clock[0] += delay
+
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(eligible_batches=MagicMock(return_value=[]))
+    feature._model_busy = MagicMock(return_value=False)
+    feature._memory_last_finished = 0.0
+    feature._memory_consecutive_failures = 1
+    monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "18000")
+    monkeypatch.setenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "900")
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("features.llm_mention.time.monotonic", lambda: clock[0])
+
+    with pytest.raises(SchedulerStopped):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    assert sleeps == [900.0, 900.0]
+    feature.memory.eligible_batches.assert_called_once_with(
+        allow_new_cycles=False
+    )
 
 
 def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
@@ -374,7 +421,28 @@ def test_failed_memory_worker_releases_slot_and_starts_rest_interval(tmp_db):
             assert not feature._model_busy()
             assert not feature._memory_pending
             assert feature._memory_last_finished is not None
+            assert feature._memory_consecutive_failures == 1
             assert not feature._worker_task.done()
+        finally:
+            feature._worker_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await feature._worker_task
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_successful_memory_worker_resets_failure_backoff(tmp_db):
+    async def scenario():
+        client = discord.Client(intents=discord.Intents.none())
+        feature = LLMMentionFeature(client, app_commands.CommandTree(client), bot_id=99)
+        feature._memory_consecutive_failures = 3
+        batch = MemoryBatch(100, 7, 100, 10, 0, 1, ("hello",))
+        feature._process_memory_job = AsyncMock(return_value=True)
+        try:
+            assert await feature._enqueue_memory(batch, "discord-bot")
+            await asyncio.wait_for(feature._queue.join(), timeout=1)
+            assert feature._memory_consecutive_failures == 0
         finally:
             feature._worker_task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -630,8 +698,11 @@ def test_failed_memory_consolidation_does_not_commit(monkeypatch):
         ),
     )
 
-    asyncio.run(feature._process_memory_job(MemoryJob(batch, "discord-bot")))
+    succeeded = asyncio.run(
+        feature._process_memory_job(MemoryJob(batch, "discord-bot"))
+    )
 
+    assert succeeded is False
     feature.memory.commit_delta.assert_not_called()
 
 
