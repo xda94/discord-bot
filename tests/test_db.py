@@ -21,7 +21,7 @@ GUILD_A = 111
 GUILD_B = 222
 
 
-def test_memory_entry_schema_migrates_to_synthesis_categories(tmp_path, monkeypatch):
+def test_memory_entry_schema_migrates_to_all_memory_categories(tmp_path, monkeypatch):
     database = tmp_path / "legacy-memory.db"
     monkeypatch.setattr(db, "DB_FILE", str(database))
     with sqlite3.connect(database) as connection:
@@ -50,10 +50,17 @@ def test_memory_entry_schema_migrates_to_synthesis_categories(tmp_path, monkeypa
     assert db.apply_llm_memory_delta(
         100,
         9,
-        ({"kind": "impression", "content": "Seems methodical", "source_text": "source"},),
+        (
+            {
+                "kind": "opinion",
+                "content": "Prefers open standards",
+                "source_text": "source",
+            },
+        ),
         (),
         (),
     )
+    assert db.get_llm_memory_entries(100, 9)[0][1] == "opinion"
 
 
 # ---------------------------------------------------------------------------
