@@ -14,8 +14,10 @@ Covers the surfaces most likely to silently regress on future refactors:
 """
 
 import sqlite3
+from datetime import date
 
 import db
+import pytest
 
 GUILD_A = 111
 GUILD_B = 222
@@ -86,6 +88,89 @@ def test_responses_are_isolated_per_guild(tmp_db):
 
     assert db.get_all_responses(GUILD_A) == {"ping": ["guild-a"]}
     assert db.get_all_responses(GUILD_B) == {"ping": ["guild-b"]}
+
+
+# ---------------------------------------------------------------------------
+# Birthday persistence
+# ---------------------------------------------------------------------------
+
+def test_birthdays_table_is_created_and_init_is_repeatable(tmp_db):
+    with db._connect() as c:
+        c.execute("PRAGMA table_info(birthdays)")
+        columns = [row[1] for row in c.fetchall()]
+    assert columns == [
+        "user_id", "channel_id", "guild_id", "month", "day",
+        "revision", "last_sent_year",
+    ]
+
+    db.init_db()
+    assert db.get_birthday(1) is None
+
+
+def test_birthday_crud_replacement_preserves_marker_and_destination(tmp_db):
+    db.set_birthday(1, 10, 20, 12, 25)
+    first = db.get_birthday(1)
+    assert first[:4] == (10, 20, 12, 25)
+    assert len(first[4]) == 32
+    assert first[5] is None
+
+    assert db.mark_birthday_sent(1, first[4], 2026)
+    db.set_birthday(1, 11, 21, 1, 2)
+    second = db.get_birthday(1)
+    assert second[:4] == (11, 21, 1, 2)
+    assert second[4] != first[4]
+    assert second[5] == 2026
+
+
+def test_birthdays_are_isolated_and_dm_guild_is_null(tmp_db):
+    db.set_birthday(1, 10, 20, 12, 25)
+    db.set_birthday(2, 11, None, 12, 25)
+
+    assert db.get_birthday(1)[1] == 20
+    assert db.get_birthday(2)[1] is None
+    assert db.delete_birthday(1) is True
+    assert db.delete_birthday(1) is False
+    assert db.get_birthday(2) is not None
+
+
+@pytest.mark.parametrize("month,day", [(0, 1), (13, 1), (4, 31), (2, 30)])
+def test_set_birthday_rejects_invalid_calendar_dates(tmp_db, month, day):
+    with pytest.raises(ValueError):
+        db.set_birthday(1, 10, 20, month, day)
+
+
+def test_due_birthdays_are_ordered_and_marker_aware(tmp_db):
+    db.set_birthday(20, 10, 20, 12, 25)
+    db.set_birthday(10, 11, 21, 12, 25)
+    db.set_birthday(30, 12, 22, 2, 29)
+    first = db.get_birthday(20)
+    assert db.mark_birthday_sent(20, first[4], 2026)
+
+    due = db.get_due_birthdays(date(2026, 12, 25))
+    assert [row[0] for row in due] == [10]
+    assert db.get_due_birthdays(date(2026, 2, 28)) == []
+    assert [row[0] for row in db.get_due_birthdays(date(2028, 2, 29))] == [30]
+    assert [row[0] for row in db.get_due_birthdays(date(2029, 2, 28))] == []
+
+
+def test_mark_birthday_sent_is_revision_conditional_and_monotonic(tmp_db):
+    db.set_birthday(1, 10, 20, 12, 25)
+    old = db.get_birthday(1)
+    assert db.mark_birthday_sent(1, old[4], 2026)
+    assert not db.mark_birthday_sent(1, old[4], 2026)
+    assert not db.mark_birthday_sent(1, "wrong", 2027)
+    assert db.get_birthday(1)[5] == 2026
+
+    db.set_birthday(1, 11, 21, 1, 2)
+    new = db.get_birthday(1)
+    assert not db.mark_birthday_sent(1, old[4], 2027)
+    assert db.get_birthday(1)[5] == 2026
+    assert db.delete_birthday(1)
+    db.set_birthday(1, 12, 22, 3, 4)
+    recreated = db.get_birthday(1)
+    assert recreated[5] is None
+    assert not db.mark_birthday_sent(1, new[4], 2027)
+    assert db.get_birthday(1)[5] is None
 
 
 def test_remove_response_returns_false_when_missing(tmp_db):

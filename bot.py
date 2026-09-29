@@ -20,6 +20,7 @@ logger = setup_logger("discord_bot", "bot.log")
 import db
 from analytics import AnalyticsCommandTree, record_message_mention, refresh_command_catalog
 from features.azi_se_spala import AziSeSpalaFeature
+from features.birthdays import BirthdaysFeature
 from features.llm_mention import ContextReactionFeature, LLMMentionFeature
 from features.help_feature import HelpFeature
 from features.flights import FlightTrackerFeature
@@ -87,6 +88,7 @@ teases = TeasesFeature(client, tree)
 inactivity = InactivityFeature(client, tree)
 reminders = RemindersFeature(client, tree)
 jokes = JokesFeature(client, tree)
+birthdays = BirthdaysFeature(client, tree)
 wishlist = WishlistFeature(client, tree)
 flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
@@ -130,6 +132,7 @@ BACKGROUND_FEATURES = (
     inactivity,
     reminders,
     jokes,
+    birthdays,
     wishlist,
     flights,
     llm_mention,

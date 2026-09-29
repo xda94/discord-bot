@@ -50,6 +50,17 @@ def init_db():
                 )
             """)
             c.execute("""
+                CREATE TABLE IF NOT EXISTS birthdays (
+                    user_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    guild_id INTEGER,
+                    month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+                    day INTEGER NOT NULL CHECK (day BETWEEN 1 AND 31),
+                    revision TEXT NOT NULL,
+                    last_sent_year INTEGER
+                )
+            """)
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS keyword_usage (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     keyword TEXT NOT NULL,
@@ -534,4 +545,3 @@ def init_db():
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")
-

@@ -5,6 +5,13 @@ from db.analytics import (
     record_analytics_activity,
     refresh_analytics_command_catalog,
 )
+from db.birthdays import (
+    delete_birthday,
+    get_birthday,
+    get_due_birthdays,
+    mark_birthday_sent,
+    set_birthday,
+)
 from db.bot_data import (
     _invalidate_responses_cache,
     add_joke,
@@ -107,4 +114,3 @@ from db.wishlist import (
     update_scraped_item_status,
     update_scraped_item_target_state,
 )
-
