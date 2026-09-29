@@ -132,6 +132,10 @@ def test_birthdays_are_isolated_and_dm_guild_is_null(tmp_db):
     assert db.delete_birthday(1) is False
     assert db.get_birthday(2) is not None
 
+    rows = db.get_all_birthdays()
+    assert [row[0] for row in rows] == [2]
+    assert rows[0][1:3] == (11, None)
+
 
 @pytest.mark.parametrize("month,day", [(0, 1), (13, 1), (4, 31), (2, 30)])
 def test_set_birthday_rejects_invalid_calendar_dates(tmp_db, month, day):

@@ -31,6 +31,16 @@
     if (!Number.isFinite(timestamp)) throw new Error("Choose a valid date and time.");
     return timestamp / 1000;
   };
+  const birthdayParts = (value) => {
+    const match = String(value || "").match(/^\s*(\d{1,2})[.\-/](\d{1,2})\s*$/);
+    if (!match) throw new Error("Use a birthday such as 25.12, 25-12, or 25/12.");
+    const day = Number(match[1]); const month = Number(match[2]);
+    const candidate = new Date(Date.UTC(2000, month - 1, day));
+    if (candidate.getUTCMonth() !== month - 1 || candidate.getUTCDate() !== day) {
+      throw new Error("Enter a real calendar date.");
+    }
+    return { month, day };
+  };
   const formatDate = (seconds, withTime = true) => {
     if (seconds === null || seconds === undefined || seconds === "") return "Never";
     const date = new Date(Number(seconds) * 1000);
@@ -161,13 +171,13 @@
   async function loadOverview() {
     loadStats();
     const ticket = version("overview");
-    const requests = [api("/reminders/all"), api("/jokes"), api("/wishlist/all")];
+    const requests = [api("/reminders/all"), api("/birthdays"), api("/jokes"), api("/wishlist/all")];
     if (state.guildId) requests.push(api(`/keywords/get?${query({ guild_id: state.guildId })}`)); else requests.push(Promise.resolve({}));
     const results = await Promise.allSettled(requests);
     if (!ticket.current()) return;
     const values = results.map((result) => result.status === "fulfilled" ? result.value : null);
-    const keywordCount = values[3] ? Object.values(values[3]).reduce((sum, items) => sum + items.length, 0) : "—";
-    const counts = [keywordCount, values[0]?.length ?? "—", values[1]?.length ?? "—", values[2]?.length ?? "—"];
+    const keywordCount = values[4] ? Object.values(values[4]).reduce((sum, items) => sum + items.length, 0) : "—";
+    const counts = [keywordCount, values[0]?.length ?? "—", values[1]?.length ?? "—", values[2]?.length ?? "—", values[3]?.length ?? "—"];
     $$("#record-counts strong").forEach((node, index) => { node.textContent = counts[index]; });
     if (state.guildId) {
       const params = { guild_id: state.guildId, limit: "6" };
@@ -207,6 +217,20 @@
     try {
       const rows = await api("/reminders/all"); if (!ticket.current()) return;
       target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>When</th><th>Recipient</th><th>Message</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(formatDate(row.remind_at))}</td><td>User ${escapeHtml(row.user_id)}<span class="cell-muted">Channel ${escapeHtml(row.channel_id)}</span></td><td>${escapeHtml(row.message)}</td><td class="actions"><button class="button danger ghost small" data-action="delete-reminder" data-id="${row.id}">Delete</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No reminders are waiting.</div>';
+    } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+  }
+
+  async function loadBirthdays() {
+    const target = $("#birthdays-list"); const ticket = version("birthdays");
+    target.innerHTML = '<div class="empty">Loading birthdays…</div>';
+    try {
+      const rows = await api("/birthdays"); if (!ticket.current()) return;
+      const selected = state.userId ? rows.find((row) => row.user_id === state.userId) : null;
+      const form = $("#birthday-form");
+      $("[name='date']", form).value = selected ? `${String(selected.day).padStart(2, "0")}.${String(selected.month).padStart(2, "0")}` : "";
+      $("[name='channel_id']", form).value = selected?.channel_id || "";
+      $("[name='guild_id']", form).value = selected ? (selected.guild_id || "") : state.guildId;
+      target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>User</th><th>Birthday</th><th>Destination</th><th>Last sent</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.user_id)}</td><td>${String(row.day).padStart(2, "0")}.${String(row.month).padStart(2, "0")}</td><td>Channel ${escapeHtml(row.channel_id)}<span class="cell-muted">${row.guild_id ? `Server ${escapeHtml(row.guild_id)}` : "Direct message"}</span></td><td>${escapeHtml(row.last_sent_year || "Never")}</td><td class="actions"><button class="button danger ghost small" data-action="delete-birthday" data-user-id="${escapeHtml(row.user_id)}">Delete</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No birthdays are saved.</div>';
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
 
@@ -416,7 +440,7 @@
     }
   }
 
-  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
+  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, birthdays: loadBirthdays, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
   function navigate(page) {
     if (!loaders[page]) return;
     state.page = page;
@@ -446,6 +470,7 @@
   function bindForms() {
     $("#keyword-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/keywords/add", { method: "POST", body: JSON.stringify({ guild_id: requireGuild(), keyword: data.get("keyword"), response: data.get("response") }) }); event.currentTarget.reset(); await loadKeywords(); }, "Keyword response added."); });
     $("#reminder-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/reminders/add", { method: "POST", body: JSON.stringify({ user_id: requireUser(), channel_id: idValue(data.get("channel_id"), "Channel ID"), remind_at: unixSeconds(data.get("when")), message: data.get("message") }) }); event.currentTarget.reset(); await loadReminders(); }, "Reminder scheduled."); });
+    $("#birthday-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { const birthday = birthdayParts(data.get("date")); const rawGuild = String(data.get("guild_id") || "").trim(); await api(`/birthdays/${requireUser()}`, { method: "PUT", body: JSON.stringify({ channel_id: idValue(data.get("channel_id"), "Channel ID"), guild_id: rawGuild ? idValue(rawGuild, "Server ID") : null, ...birthday }) }); await loadBirthdays(); }, "Birthday saved."); });
     $("#joke-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/jokes", { method: "POST", body: JSON.stringify({ text: data.get("text") }) }); event.currentTarget.reset(); await loadJokes(); }, "Joke added."); });
     $("#joke-schedule-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api(`/jokes/guilds/${requireGuild()}`, { method: "PUT", body: JSON.stringify({ channel_id: idValue(data.get("channel_id"), "Channel ID"), send_time: data.get("send_time") }) }); await loadJokes(); }, "Joke schedule saved."); });
     $("#wishlist-add-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/wishlist/add", { method: "POST", body: JSON.stringify({ user_id: requireUser(), url: data.get("url") }) }); event.currentTarget.reset(); await loadWishlist(); }, "Product added to the wishlist."); });
@@ -462,6 +487,7 @@
       if (action === "logout") { state.token = ""; sessionStorage.removeItem("bot-dashboard-token"); showLogin(); return; }
       if (action === "load-keywords") return loadKeywords();
       if (action === "load-reminders") return loadReminders();
+      if (action === "load-birthdays") return loadBirthdays();
       if (action === "load-wishlist") return loadWishlist();
       if (action === "load-flights") return loadFlights();
       if (action === "load-memory") return loadMemory();
@@ -474,6 +500,7 @@
         await api("/keywords/delete", { method: "DELETE", body: JSON.stringify(payload) }); toast(action.endsWith("response") ? "Keyword response removed." : "Keyword deleted."); return loadKeywords();
       }
       if (action === "delete-reminder") { if (!confirm("Delete this reminder?")) return; await api(`/reminders/delete/${button.dataset.id}`, { method: "DELETE" }); toast("Reminder deleted."); return loadReminders(); }
+      if (action === "delete-selected-birthday" || action === "delete-birthday") { const user = action === "delete-selected-birthday" ? requireUser() : idValue(button.dataset.userId, "User ID"); if (!confirm(`Delete the saved birthday for user ${user}?`)) return; await api(`/birthdays/${user}`, { method: "DELETE" }); toast("Birthday deleted."); return loadBirthdays(); }
       if (action === "delete-joke") { if (!confirm("Delete this joke from the global pool?")) return; await api(`/jokes/${button.dataset.id}`, { method: "DELETE" }); toast("Joke deleted."); return loadJokes(); }
       if (action === "edit-joke") { const text = prompt("Edit joke text", button.dataset.text); if (text === null) return; if (!text.trim()) throw new Error("Joke text cannot be empty."); await api(`/jokes/${button.dataset.id}`, { method: "PUT", body: JSON.stringify({ text: text.trim() }) }); toast("Joke updated."); return loadJokes(); }
       if (action === "reset-jokes") { if (!confirm("Reset sent history for every server? The joke pool stays intact.")) return; await api("/jokes/reset", { method: "POST", body: "{}" }); return toast("Sent history reset."); }

@@ -2,6 +2,7 @@
 
 import logging
 import platform
+import sqlite3
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -11,12 +12,13 @@ from flask import Blueprint, jsonify, render_template, request
 
 from db import (
     add_joke, add_reminder, add_response, clear_guild_joke_config,
-    delete_joke, delete_reminder, get_all_guild_joke_configs, get_all_jokes,
-    get_all_reminders, get_all_responses, get_analytics_summary,
+    delete_birthday, delete_joke, delete_reminder, get_all_birthdays,
+    get_all_guild_joke_configs, get_all_jokes, get_all_reminders,
+    get_all_responses, get_analytics_summary,
     get_guild_joke_config, get_joke_by_id, get_setting, get_top_keywords,
     get_top_keywords_by_user, is_guild_inactivity_enabled, remove_response,
     reset_all_guild_joke_sent, set_guild_inactivity_enabled,
-    set_guild_joke_config, set_setting, update_joke,
+    set_birthday, set_guild_joke_config, set_setting, update_joke,
 )
 from system_metrics import get_temperature_celsius
 from web.auth import require_analytics_token, require_token
@@ -288,6 +290,77 @@ def api_get_all_reminders():
         logger.exception("Error in /reminders/all")
         return jsonify({"error": "Internal server error"}), 500
 
+
+# --- Birthday Routes ---
+
+def _serialize_birthday(row):
+    return {
+        "user_id": row[0],
+        "channel_id": row[1],
+        "guild_id": row[2],
+        "month": row[3],
+        "day": row[4],
+        "last_sent_year": row[6],
+    }
+
+
+@blueprint.route("/birthdays", methods=["GET"])
+@require_token
+def api_get_birthdays():
+    try:
+        return jsonify([_serialize_birthday(row) for row in get_all_birthdays()])
+    except sqlite3.Error:
+        logger.exception("Error in GET /birthdays")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+@blueprint.route("/birthdays/<int:user_id>", methods=["PUT"])
+@require_token
+def api_set_birthday(user_id):
+    data = request.get_json(silent=True)
+    if not data or any(key not in data for key in ("channel_id", "month", "day")):
+        return jsonify({"error": "Missing channel_id, month, or day"}), 400
+
+    try:
+        user_id = _discord_id(user_id, "user_id")
+        channel_id = _discord_id(data["channel_id"], "channel_id")
+        raw_guild_id = data.get("guild_id")
+        guild_id = (
+            None
+            if raw_guild_id in (None, "")
+            else _discord_id(raw_guild_id, "guild_id")
+        )
+        month = data["month"]
+        day = data["day"]
+        if (
+            not isinstance(month, int)
+            or isinstance(month, bool)
+            or not isinstance(day, int)
+            or isinstance(day, bool)
+        ):
+            raise ValueError("month and day must be integers")
+        set_birthday(user_id, channel_id, guild_id, month, day)
+    except (OverflowError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.Error:
+        logger.exception("Could not save birthday through API for user=%s", user_id)
+        return jsonify({"error": "Could not save birthday"}), 500
+
+    return jsonify({"status": "saved", "user_id": user_id})
+
+
+@blueprint.route("/birthdays/<int:user_id>", methods=["DELETE"])
+@require_token
+def api_delete_birthday(user_id):
+    try:
+        removed = delete_birthday(user_id)
+    except sqlite3.Error:
+        logger.exception("Could not delete birthday through API for user=%s", user_id)
+        return jsonify({"error": "Could not delete birthday"}), 500
+    if not removed:
+        return jsonify({"error": "Birthday not found"}), 404
+    return jsonify({"status": "deleted", "user_id": user_id})
+
 # --- Joke Routes ---
 
 @blueprint.route("/jokes", methods=["GET"])
@@ -490,4 +563,3 @@ def api_set_setting(key):
     set_setting(key, data["value"])
     logger.info(f"Setting '{key}' updated via API from {request.remote_addr}")
     return jsonify({"status": "updated", "key": key, "value": data["value"]})
-

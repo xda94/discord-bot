@@ -32,6 +32,7 @@
       <button class="nav-item active" data-page="overview"><span>⌂</span>Overview</button>
       <button class="nav-item" data-page="keywords"><span>#</span>Keywords</button>
       <button class="nav-item" data-page="reminders"><span>◷</span>Reminders</button>
+      <button class="nav-item" data-page="birthdays"><span>🎂</span>Birthdays</button>
       <button class="nav-item" data-page="jokes"><span>☺</span>Jokes</button>
       <button class="nav-item" data-page="wishlist"><span>♡</span>Wishlist</button>
       <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
@@ -66,7 +67,7 @@
           <article class="metric"><span>Host uptime</span><strong data-metric="uptime">—</strong><small data-detail="timezone">Mini PC local time</small></article>
         </div>
         <div class="summary-grid">
-          <article class="panel"><div class="panel-title"><div><p class="eyebrow">SAVED DATA</p><h3>Records</h3></div></div><div class="count-grid" id="record-counts"><div><strong>—</strong><span>Keywords</span></div><div><strong>—</strong><span>Reminders</span></div><div><strong>—</strong><span>Jokes</span></div><div><strong>—</strong><span>Wishlist</span></div></div></article>
+          <article class="panel"><div class="panel-title"><div><p class="eyebrow">SAVED DATA</p><h3>Records</h3></div></div><div class="count-grid" id="record-counts"><div><strong>—</strong><span>Keywords</span></div><div><strong>—</strong><span>Reminders</span></div><div><strong>—</strong><span>Birthdays</span></div><div><strong>—</strong><span>Jokes</span></div><div><strong>—</strong><span>Wishlist</span></div></div></article>
           <article class="panel"><div class="panel-title"><div><p class="eyebrow">SELECTED SERVER</p><h3>Top keywords</h3></div><span class="scope-pill">server</span></div><div id="overview-keywords" class="empty">Enter a server ID above.</div></article>
           <article class="panel"><div class="panel-title"><div><p class="eyebrow">RATED REPLIES</p><h3>LLM feedback</h3></div><span class="scope-pill">server</span></div><div id="overview-feedback" class="empty">Enter a server ID above.</div></article>
         </div>
@@ -86,6 +87,14 @@
         <div class="two-column narrow-first">
           <article class="panel"><h3>Create reminder</h3><form id="reminder-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+"></label><label>When<input name="when" type="datetime-local" required></label><label>Message<textarea name="message" required maxlength="1900"></textarea></label><button class="button primary">Schedule</button></form></article>
           <article class="panel table-panel"><div class="panel-title"><h3>Pending reminders</h3><span class="scope-pill global">global</span></div><div id="reminders-list" class="empty">Loading reminders…</div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-birthdays" data-title="Birthdays">
+        <div class="page-heading"><div><p class="eyebrow">USER-SCOPED · ANNUAL</p><h2>Birthday greetings</h2><p>First delivery attempt is at 00:01 in the mini PC's local timezone; failures retry every 30 minutes that day.</p></div><button class="button secondary" data-action="load-birthdays">Refresh</button></div>
+        <div class="two-column narrow-first">
+          <article class="panel"><div class="panel-title"><div><h3>Save birthday</h3><p>Edits the selected user above.</p></div><span class="scope-pill">user</span></div><form id="birthday-form" class="form-stack"><label>Birthday<input name="date" required placeholder="25.12" inputmode="numeric"></label><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+" placeholder="Discord channel or DM ID"></label><label>Server ID <small class="cell-muted">Leave blank for a DM destination.</small><input name="guild_id" inputmode="numeric" pattern="[0-9]+" placeholder="Optional Discord server ID"></label><div class="button-row"><button class="button primary">Save birthday</button><button type="button" class="button danger ghost" data-action="delete-selected-birthday">Remove</button></div></form></article>
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Saved birthdays</h3><p>One registration per Discord user.</p></div><span class="scope-pill global">global</span></div><div id="birthdays-list" class="empty">Loading birthdays…</div></article>
         </div>
       </section>
 

@@ -31,6 +31,7 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b'id="login-form"' in page.data
     assert b"page-wishlist" in page.data
     assert b"page-memory" in page.data
+    assert b"page-birthdays" in page.data
     assert stylesheet.status_code == 200
     assert b"@media (max-width: 780px)" in stylesheet.data
     assert script.status_code == 200
@@ -52,6 +53,8 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b".keyword-response-text" in stylesheet.data
     assert b"/memory/channels" in script.data
     assert b"/memory/users/" in script.data
+    assert b'api("/birthdays")' in script.data
+    assert b"birthdayParts" in script.data
 
 
 def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
@@ -61,6 +64,7 @@ def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
     assert client.get("/system/stats").status_code == 401
     assert client.get("/wishlist/history?user_id=1&url=https://example.com").status_code == 401
     assert client.get("/memory/channels?guild_id=1").status_code == 401
+    assert client.get("/birthdays").status_code == 401
     assert client.get("/system/stats", headers={"Authorization": "Bearer private-token"}).status_code == 200
 
 
