@@ -95,6 +95,7 @@ from db.memory import (
     set_llm_user_memory,
 )
 from db.schema import init_db
+from db.sponsors import get_sponsor_tiers, save_sponsor_tier
 from db.wishlist import (
     add_price_history,
     add_scraped_item,

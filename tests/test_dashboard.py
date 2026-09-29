@@ -32,6 +32,8 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"page-wishlist" in page.data
     assert b"page-memory" in page.data
     assert b"page-birthdays" in page.data
+    assert b"sponsor-tier-form" in page.data
+    assert b"sponsor-tiers-list" in page.data
     assert stylesheet.status_code == 200
     assert b"@media (max-width: 780px)" in stylesheet.data
     assert script.status_code == 200
@@ -55,6 +57,8 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"/memory/users/" in script.data
     assert b'api("/birthdays")' in script.data
     assert b"birthdayParts" in script.data
+    assert b"/sponsors/tiers" in script.data
+    assert b"formatChancePercent" in script.data
 
 
 def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
