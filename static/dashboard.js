@@ -8,6 +8,7 @@
     userId: localStorage.getItem("bot-dashboard-user") || "",
     wishlist: [],
     flights: [],
+    sponsorTiers: [],
     selectedWishlist: null,
     selectedFlight: null,
     ranges: { wishlist: 30, flight: 90 },
@@ -63,6 +64,10 @@
   };
   const formatPrice = (value, currency = "") => value === null || value === undefined
     ? "—" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(currency)}`.trim();
+  const formatChancePercent = (value) => {
+    const percent = Number(value) * 100;
+    return Number.isFinite(percent) ? percent.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "—";
+  };
   const hostname = (value) => { try { return new URL(value).hostname; } catch (_error) { return value; } };
 
   function version(key) {
@@ -146,6 +151,24 @@
   function renderFeedback(target, groups) {
     if (!groups?.length) { target.innerHTML = '<div class="empty">No rated replies for this server yet.</div>'; return; }
     target.innerHTML = `<table class="data-table"><thead><tr><th>Group</th><th>Ratings</th><th>Approval</th><th>Compare</th></tr></thead><tbody>${groups.map((group) => `<tr><td>${escapeHtml(group.category)}<span class="cell-muted">${escapeHtml(group.model)} · ${escapeHtml(group.prompt_version)}</span></td><td>${group.ratings}<span class="cell-muted">${group.up} up · ${group.down} down</span></td><td>${group.approval_percent}%</td><td><span class="tag ${group.ready_to_compare ? "good" : ""}">${group.ready_to_compare ? "ready" : `${10 - group.ratings} needed`}</span></td></tr>`).join("")}</tbody></table>`;
+  }
+
+  function renderSponsorTiers(rows) {
+    const target = $("#sponsor-tiers-list");
+    state.sponsorTiers = rows || [];
+    target.innerHTML = rows?.length ? `<table class="data-table"><thead><tr><th>Name</th><th>Annual price</th><th>Chance</th><th></th></tr></thead><tbody>${rows.map((tier) => `<tr><td>${escapeHtml(tier.name)}<span class="cell-muted">${escapeHtml(tier.id)}</span></td><td>${escapeHtml(tier.price_per_year)} lei / year</td><td>${escapeHtml(formatChancePercent(tier.chance))}%</td><td class="actions"><button class="button secondary small" data-action="edit-sponsor-tier" data-tier-id="${escapeHtml(tier.id)}">Edit</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No sponsor tiers are configured.</div>';
+  }
+
+  async function loadSponsorTiers() {
+    const ticket = version("sponsor-tiers");
+    const target = $("#sponsor-tiers-list");
+    try {
+      const rows = await api("/sponsors/tiers");
+      if (!ticket.current()) return;
+      renderSponsorTiers(rows);
+    } catch (error) {
+      if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+    }
   }
 
   async function loadStats() {
@@ -363,6 +386,7 @@
 
   async function loadSettings() {
     const ticket = version("settings");
+    const tiers = loadSponsorTiers();
     try {
       const model = await api("/llm/mention-model"); if (!ticket.current()) return;
       $("#model-select").innerHTML = model.allowed_models.map((name) => `<option ${name === model.model ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
@@ -375,6 +399,7 @@
         $("#settings-feedback").innerHTML = '<div class="empty">Enter a server ID to load feedback.</div>';
       }
     } catch (error) { if (ticket.current()) toast(error.message, "error"); }
+    await tiers;
   }
 
   function renderAnalyticsCommands() {
@@ -478,6 +503,18 @@
     $("#flight-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/flights/trackers", { method: "POST", body: JSON.stringify({ user_id: requireUser(), origin: data.get("origin"), destination: data.get("destination"), start_date: data.get("start_date"), end_date: data.get("end_date"), adults: Number(data.get("adults")), currency: data.get("currency") }) }); event.currentTarget.reset(); await loadFlights(); }, "Flight tracker added."); });
     $("#model-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/llm/mention-model", { method: "PUT", body: JSON.stringify({ model: data.get("model") }) }); await loadSettings(); }, "Mention model updated."); });
     $("#setting-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api(`/settings/${encodeURIComponent(data.get("key"))}`, { method: "PUT", body: JSON.stringify({ value: data.get("value") }) }); }, "Setting saved."); });
+    $("#sponsor-tier-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => {
+      const percent = Number(data.get("chance_percent"));
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100) throw new Error("Chance must be between 0 and 100 percent.");
+      const tierId = String(data.get("tier_id") || "").trim();
+      const payload = { name: data.get("name"), price_per_year: data.get("price_per_year"), chance: percent / 100 };
+      await api(tierId ? `/sponsors/tiers/${encodeURIComponent(tierId)}` : "/sponsors/tiers", { method: tierId ? "PUT" : "POST", body: JSON.stringify(payload) });
+      event.currentTarget.reset();
+      $("#sponsor-tier-form-title").textContent = "Create tier";
+      $("#sponsor-tier-form button[type='submit']").textContent = "Create tier";
+      $("[data-action='new-sponsor-tier']").hidden = true;
+      await loadSponsorTiers();
+    }, "Sponsor tier saved."); });
   }
 
   async function handleAction(button) {
@@ -492,6 +529,28 @@
       if (action === "load-flights") return loadFlights();
       if (action === "load-memory") return loadMemory();
       if (action === "load-settings") return loadSettings();
+      if (action === "new-sponsor-tier") {
+        const form = $("#sponsor-tier-form");
+        form.reset();
+        $("#sponsor-tier-form-title").textContent = "Create tier";
+        $("#sponsor-tier-form button[type='submit']").textContent = "Create tier";
+        button.hidden = true;
+        return;
+      }
+      if (action === "edit-sponsor-tier") {
+        const tier = state.sponsorTiers.find((entry) => entry.id === button.dataset.tierId);
+        if (!tier) throw new Error("That sponsor tier is no longer loaded. Refresh the settings page.");
+        const form = $("#sponsor-tier-form");
+        $("[name='tier_id']", form).value = tier.id;
+        $("[name='name']", form).value = tier.name;
+        $("[name='price_per_year']", form).value = tier.price_per_year;
+        $("[name='chance_percent']", form).value = formatChancePercent(tier.chance);
+        $("#sponsor-tier-form-title").textContent = "Edit tier";
+        $("#sponsor-tier-form button[type='submit']").textContent = "Update tier";
+        $("[data-action='new-sponsor-tier']").hidden = false;
+        $("[name='name']", form).focus();
+        return;
+      }
       if (action === "load-analytics") return loadAnalytics();
       if (action === "delete-keyword-response" || action === "delete-keyword") {
         if (!confirm(action.endsWith("response") ? "Delete this response?" : "Delete every response for this keyword?")) return;

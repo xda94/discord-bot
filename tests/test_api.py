@@ -152,3 +152,38 @@ def test_flight_tracker_requires_preconfigured_credentials(client):
         "user_id": 7,
         "trackers": [],
     }
+
+
+def test_sponsor_tier_routes_create_update_and_guard_generic_setting(client):
+    listed = client.get("/sponsors/tiers")
+    assert listed.status_code == 200
+    assert [tier["id"] for tier in listed.get_json()] == [
+        "standard", "entuziast", "premium", "ultra"
+    ]
+
+    created = client.post(
+        "/sponsors/tiers",
+        json={"name": "Community", "price_per_year": "12.50", "chance": 0.125},
+    )
+    assert created.status_code == 201
+    tier = created.get_json()
+    assert tier["price_per_year"] == "12.50"
+    assert tier["chance"] == 0.125
+
+    updated = client.put(
+        f"/sponsors/tiers/{tier['id']}",
+        json={"name": "Community Plus", "price_per_year": "0", "chance": 1},
+    )
+    assert updated.status_code == 200
+    assert updated.get_json()["id"] == tier["id"]
+    assert updated.get_json()["name"] == "Community Plus"
+
+    duplicate = client.post(
+        "/sponsors/tiers",
+        json={"name": " sponsor   standard ", "price_per_year": "1", "chance": 0},
+    )
+    assert duplicate.status_code == 409
+    assert client.post("/sponsors/tiers", json={"name": "missing"}).status_code == 400
+    assert client.put(
+        "/settings/sponsor_tiers", json={"value": "do not replace typed data"}
+    ).status_code == 400

@@ -71,6 +71,7 @@ LLM_MEMORY_ENABLED=0
 | `HOST` | Yes (API) | Bind address. Use `0.0.0.0` for LAN/Tailscale or **Docker** (published ports). Use `127.0.0.1` only if the API should be local to the host (e.g. PM2, no remote access). |
 | `PORT` | Yes (API) | e.g. `9999`. |
 | `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
+| `SPONSOR_PASSWORD` | No (bot) | Password required by the `/sponsor-set` and `/sponsor-set-tiers` Discord modals. Dashboard tier writes use `API_TOKEN` instead. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
 | `LOG_LEVEL` | No | Logging verbosity for console and rotating files. Default: `INFO`; use `DEBUG` to include per-observation memory capture metadata. |
 | `LLAMA_CPP_BASE_URL` | No (bot) | `llama-server` base URL. Default: `http://127.0.0.1:8080`. Docker defaults to `http://host.docker.internal:8080`. A URL ending in `/v1` is also accepted. |
@@ -213,7 +214,7 @@ With a venv, point `--interpreter` at `./venv/bin/python3`.
 | `pm2 restart discord-api` | Restart API only |
 | `pm2 restart all` | Restart both |
 
-After `git pull`, restart both if either the `db` package schema or slash commands changed. The bot syncs slash commands on `on_ready`.
+After `git pull`, restart both if either the `db` package schema or slash commands changed. The bot syncs slash commands on `on_ready`; the first deployment containing `/sponsor-set-tiers` therefore needs the normal bot restart/startup sync. Later tier edits are persisted immediately and need neither a bot restart nor another command sync.
 
 ---
 
@@ -239,7 +240,12 @@ keywords, reminders, birthdays, jokes, wishlist items, flight trackers, and bot 
 It also manages persistent LLM memory channels and user controls, and shows
 saved keyword/LLM/price analytics plus live mini PC CPU, temperature, memory,
 disk, and uptime metrics. Server and user IDs select records; they are not an
-authentication mechanism.
+authentication mechanism. Under Bot settings it also manages the global sponsor
+tier catalog: create or edit tier name, annual price in lei, and append chance
+as a percent (fractional percentages are supported). Editing a tier immediately
+changes the plan display, active-tier probability, and status text without
+renewing the active sponsorship or changing its expiry. The dashboard never
+asks for the Discord sponsor password; its tier routes use the bearer token.
 
 The HTML and static assets remain loadable so the login screen can open. All
 dashboard data and mutations use the existing bearer-protected REST routes.
@@ -310,8 +316,20 @@ On first boot after upgrading from single-guild jokes, the bot migrates the old 
 | Command | Description |
 |---|---|
 | `/sponsor-set [user] [plan]` | Password modal; optional plan tier and custom message (top tier). |
+| `/sponsor-set-tiers [plan]` | Password modal to create a tier or edit the selected tier's name, annual price in lei, and chance percent. |
 | `/sponsor-plans` | Plans, prices, append chance on keyword replies. |
 | `/sponsor-who` | Current sponsor and time until 1-year expiry. |
+
+Sponsor configuration is global across every server served by the bot. The
+catalog starts with the four built-in IDs (`standard`, `entuziast`, `premium`,
+and `ultra`) and is stored in the shared SQLite `settings.sponsor_tiers` JSON
+setting as versioned default overrides plus custom tiers. Custom tier IDs are
+stable after creation. Existing active sponsorships retain their persisted
+tier ID, start time, warning flag, and duration; an unknown active ID uses the
+standard tier's probability/display fallback. Only the stable `ultra` ID grants
+the existing custom-message suffix, even if its display name is edited. The
+Discord modal accepts chance as 0–100 percent; the API and database contract
+use a 0–1 probability.
 
 ### Wishlist (price tracking)
 
@@ -519,6 +537,21 @@ IDs such as reminder, joke, item, and tracker IDs remain numeric.
 | `GET` | `/` | Local dashboard HTML; CSS and JavaScript are served below `/static/` |
 | `GET` | `/system/stats` | CPU, temperature in Celsius, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
 
+### Sponsor tiers
+
+| Method | Path | Body / notes |
+|---|---|---|
+| `GET` | `/sponsors/tiers` | Effective global catalog with `{ "id", "name", "price_per_year", "chance" }`; `chance` is a 0–1 probability and `price_per_year` is a decimal string in lei. |
+| `POST` | `/sponsors/tiers` | Create a tier from exactly `{ "name", "price_per_year", "chance" }`; returns the saved stable ID with HTTP 201. |
+| `PUT` | `/sponsors/tiers/<tier_id>` | Replace the three editable fields of an existing tier; returns HTTP 200. Unknown IDs return 404; duplicate normalized names return 409; malformed values return 400. |
+
+These typed routes are bearer-protected whenever `API_TOKEN` is configured.
+`PUT /settings/sponsor_tiers` is intentionally rejected so a generic setting
+write cannot bypass tier validation. `GET /settings/sponsor_tiers` remains
+available for diagnosis. A corrupt catalog or SQLite failure returns an
+explicit server error rather than silently presenting or saving built-in
+defaults.
+
 The API manages stored data and configuration. It does not post to Discord,
 emulate Discord interactions, or run shell commands. `POST /wishlist/add` and
 `POST /wishlist/refresh` fetch product pages to update saved tracking data;
@@ -653,9 +686,11 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `bot.py` | Discord client, feature wiring, `on_message` / `on_ready` |
 | `api.py` | Small Flask process entry point; application and routes live in `web/` |
 | `templates/dashboard.html`, `static/dashboard.*` | Build-free local administration dashboard |
+| `sponsor_tiers.py` | Shared sponsor-tier validation, versioned catalog codec, decimal/percent formatting |
 | `wishlist/` | Scraping, refresh persistence, currency conversion, alerts, and chart rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
 | `db/` | SQLite connection, schema/migrations, and domain query modules |
+| `db/sponsors.py` | Atomic sponsor-tier catalog reads/writes using the global settings table |
 | `llm/` | llama.cpp client, response generation, memory extraction/store, and single-slot worker |
 | `web/` | Flask application factory, authentication/helpers, and four route blueprints |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` location and `LOG_LEVEL` verbosity |
@@ -672,7 +707,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `inactivity.py` | `InactivityFeature` | Guild activity tracking, inactivity nudges |
 | `reminders.py` | `RemindersFeature` | `/remind`, delivery loop |
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
-| `sponsors.py` | `SponsorsFeature` | Sponsor tiers, modal, expiry |
+| `sponsors.py` | `SponsorsFeature` | Sponsor state, `/sponsor-set`, `/sponsor-set-tiers`, plan display, and expiry |
 | `wishlist.py` | `WishlistFeature` | `/wishlist-*` commands, scrape loop, and Discord notifications |
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |

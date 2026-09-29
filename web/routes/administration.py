@@ -16,11 +16,17 @@ from db import (
     get_all_guild_joke_configs, get_all_jokes, get_all_reminders,
     get_all_responses, get_analytics_summary,
     get_guild_joke_config, get_joke_by_id, get_setting, get_top_keywords,
-    get_top_keywords_by_user, is_guild_inactivity_enabled, remove_response,
+    get_sponsor_tiers, get_top_keywords_by_user, is_guild_inactivity_enabled, remove_response,
     reset_all_guild_joke_sent, set_guild_inactivity_enabled,
-    set_birthday, set_guild_joke_config, set_setting, update_joke,
+    save_sponsor_tier, set_birthday, set_guild_joke_config, set_setting, update_joke,
 )
 from system_metrics import get_temperature_celsius
+from sponsor_tiers import (
+    DuplicateTierNameError,
+    TierCatalogError,
+    TierValidationError,
+    UnknownTierError,
+)
 from web.auth import require_analytics_token, require_token
 from web.helpers import discord_id as _discord_id
 
@@ -544,6 +550,80 @@ def api_set_guild_inactivity(guild_id):
 
 # --- Persistent LLM memory administration ----------------------------------
 
+_SPONSOR_TIER_FIELDS = frozenset(("name", "price_per_year", "chance"))
+
+
+def _serialize_sponsor_tier(tier):
+    return {
+        "id": tier["id"],
+        "name": tier["name"],
+        "price_per_year": tier["price_per_year"],
+        "chance": tier["chance"],
+    }
+
+
+def _sponsor_tier_payload():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise TierValidationError("JSON object required")
+    if set(data) != _SPONSOR_TIER_FIELDS:
+        missing = _SPONSOR_TIER_FIELDS - set(data)
+        extra = set(data) - _SPONSOR_TIER_FIELDS
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(sorted(missing)))
+        if extra:
+            details.append("unsupported " + ", ".join(sorted(extra)))
+        raise TierValidationError("; ".join(details))
+    if isinstance(data["chance"], bool) or not isinstance(data["chance"], (int, float)):
+        raise TierValidationError("chance must be a numeric probability from 0 to 1")
+    return data
+
+
+def _tier_error_response(exc):
+    if isinstance(exc, DuplicateTierNameError):
+        return jsonify({"error": str(exc)}), 409
+    if isinstance(exc, UnknownTierError):
+        return jsonify({"error": str(exc)}), 404
+    if isinstance(exc, (TierCatalogError, sqlite3.Error)):
+        logger.exception("Sponsor tier configuration/storage failure")
+        return jsonify({"error": "Sponsor tier configuration could not be loaded or saved"}), 500
+    if isinstance(exc, (TierValidationError, ValueError)):
+        return jsonify({"error": str(exc)}), 400
+    logger.exception("Unexpected sponsor tier failure")
+    return jsonify({"error": "Sponsor tier configuration could not be loaded or saved"}), 500
+
+
+@blueprint.route("/sponsors/tiers", methods=["GET"])
+@require_token
+def api_get_sponsor_tiers():
+    try:
+        return jsonify([_serialize_sponsor_tier(tier) for tier in get_sponsor_tiers().values()])
+    except Exception as exc:
+        return _tier_error_response(exc)
+
+
+@blueprint.route("/sponsors/tiers", methods=["POST"])
+@require_token
+def api_create_sponsor_tier():
+    try:
+        data = _sponsor_tier_payload()
+        tier = save_sponsor_tier(None, data["name"], data["price_per_year"], data["chance"])
+        return jsonify(_serialize_sponsor_tier(tier)), 201
+    except Exception as exc:
+        return _tier_error_response(exc)
+
+
+@blueprint.route("/sponsors/tiers/<tier_id>", methods=["PUT"])
+@require_token
+def api_update_sponsor_tier(tier_id):
+    try:
+        data = _sponsor_tier_payload()
+        tier = save_sponsor_tier(tier_id, data["name"], data["price_per_year"], data["chance"])
+        return jsonify(_serialize_sponsor_tier(tier))
+    except Exception as exc:
+        return _tier_error_response(exc)
+
 @blueprint.route("/settings/<key>", methods=["GET"])
 @require_token
 def api_get_setting(key):
@@ -556,6 +636,8 @@ def api_get_setting(key):
 @blueprint.route("/settings/<key>", methods=["PUT"])
 @require_token
 def api_set_setting(key):
+    if key == "sponsor_tiers":
+        return jsonify({"error": "Use the typed /sponsors/tiers routes for sponsor tier changes"}), 400
     data = request.get_json()
     if not data or "value" not in data:
         return jsonify({"error": "Missing 'value' field"}), 400
