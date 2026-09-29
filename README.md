@@ -235,7 +235,7 @@ IP from a phone or computer on the same network and sign in with the same
 `API_TOKEN`. The token is stored only in that browser tab's session storage,
 sent as an `Authorization: Bearer` header, and removed on logout or an
 unauthorized response. The dashboard manages
-keywords, reminders, jokes, wishlist items, flight trackers, and bot settings.
+keywords, reminders, birthdays, jokes, wishlist items, flight trackers, and bot settings.
 It also manages persistent LLM memory channels and user controls, and shows
 saved keyword/LLM/price analytics plus live mini PC CPU, temperature, memory,
 disk, and uptime metrics. Server and user IDs select records; they are not an
@@ -543,6 +543,14 @@ and does not authenticate a Discord user.
 | `POST` | `/reminders/add` | `{ "user_id", "channel_id", "remind_at", "message" }` — `remind_at` Unix timestamp |
 | `DELETE` | `/reminders/delete/<id>` | |
 | `GET` | `/reminders/all` | Array of reminder objects |
+
+### Birthdays
+
+| Method | Path | Body / notes |
+|---|---|---|
+| `GET` | `/birthdays` | All saved birthday registrations and destinations |
+| `PUT` | `/birthdays/<user_id>` | `{ "channel_id", "guild_id"?, "month", "day" }`; omit or null `guild_id` for a DM destination |
+| `DELETE` | `/birthdays/<user_id>` | Delete the selected user's birthday registration |
 
 ### Jokes (pool)
 

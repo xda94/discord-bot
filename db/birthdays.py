@@ -49,6 +49,19 @@ def get_birthday(user_id: int):
         return c.fetchone()
 
 
+def get_all_birthdays():
+    """Return every birthday registration in calendar order."""
+    with _connect() as c:
+        c.execute(
+            """
+            SELECT user_id, channel_id, guild_id, month, day, revision, last_sent_year
+            FROM birthdays
+            ORDER BY month, day, user_id
+            """
+        )
+        return c.fetchall()
+
+
 def delete_birthday(user_id: int) -> bool:
     """Delete a user's registration and report whether it existed."""
     with _connect(commit=True) as c:

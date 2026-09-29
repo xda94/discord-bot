@@ -95,6 +95,46 @@ def test_inactivity_and_wishlist_preferences_are_configurable(client):
     assert body["restock_only"] is True
 
 
+def test_birthday_dashboard_api_crud_and_validation(client):
+    user_id = "1234567890123456789"
+    channel_id = "2234567890123456789"
+    guild_id = "3234567890123456789"
+    exact_headers = {"X-Discord-ID-Format": "string"}
+
+    saved = client.put(
+        f"/birthdays/{user_id}",
+        json={
+            "channel_id": channel_id,
+            "guild_id": guild_id,
+            "month": 12,
+            "day": 25,
+        },
+    )
+    assert saved.status_code == 200
+    assert client.get("/birthdays", headers=exact_headers).get_json() == [
+        {
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "guild_id": guild_id,
+            "month": 12,
+            "day": 25,
+            "last_sent_year": None,
+        }
+    ]
+
+    invalid = client.put(
+        f"/birthdays/{user_id}",
+        json={"channel_id": channel_id, "guild_id": None, "month": 4, "day": 31},
+    )
+    assert invalid.status_code == 400
+    assert client.get("/birthdays", headers=exact_headers).get_json()[0]["month"] == 12
+
+    deleted = client.delete(f"/birthdays/{user_id}")
+    assert deleted.status_code == 200
+    assert client.get("/birthdays").get_json() == []
+    assert client.delete(f"/birthdays/{user_id}").status_code == 404
+
+
 def test_flight_tracker_requires_preconfigured_credentials(client):
     response = client.post(
         "/flights/trackers",
