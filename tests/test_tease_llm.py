@@ -10,12 +10,14 @@ from llm.memory_extraction import (
     get_memory_max_tokens,
 )
 from llm.responses import (
+    build_birthday_prompt,
     build_inactivity_prompt,
     build_mention_prompt,
     build_price_change_prompt,
     build_summon_prompt,
     build_tease_prompt,
     enhance_tease,
+    generate_birthday_message,
     generate_inactivity_message,
     generate_mention_result,
     generate_price_change_message,
@@ -23,6 +25,57 @@ from llm.responses import (
     get_mention_max_tokens,
     normalize_tease_response,
 )
+
+
+def test_build_birthday_prompt_is_short_and_has_bounded_rules():
+    prompt = build_birthday_prompt()
+    assert "warm, playful English happy-birthday greeting" in prompt
+    assert "one or two short sentences" in prompt
+    assert "at most 35 words" in prompt
+    assert "addressing the recipient as you" in prompt
+    assert "Do not invent age or personal details" in prompt
+    assert "Do not include names, mentions, URLs, or labels" in prompt
+    assert "ready-to-send greeting without quotes" in prompt
+
+
+def test_generate_birthday_message_uses_llm_and_normalizes(monkeypatch):
+    query = MagicMock(return_value='  "Happy birthday! Have a lovely day."  ')
+    monkeypatch.setattr("llm.client.query_llm", query)
+
+    assert generate_birthday_message(model="birthday-model") == (
+        "Happy birthday! Have a lovely day."
+    )
+    query.assert_called_once()
+    assert query.call_args.kwargs == {
+        "model": "birthday-model",
+        "timeout": 45,
+        "options": {"temperature": 0.8, "max_tokens": 96},
+    }
+
+
+def test_generate_birthday_message_normalizes_empty_and_long_replies(monkeypatch):
+    query = MagicMock(return_value="   ")
+    monkeypatch.setattr("llm.client.query_llm", query)
+    assert generate_birthday_message() is None
+
+    query.return_value = "word " * 200
+    result = generate_birthday_message()
+    assert result is not None
+    assert len(result) <= 280
+
+
+def test_generate_birthday_message_returns_none_on_llm_error(monkeypatch):
+    monkeypatch.setattr(
+        "llm.client.query_llm",
+        MagicMock(side_effect=LlamaCppError("down")),
+    )
+    assert generate_birthday_message() is None
+
+
+def test_generate_birthday_message_is_not_disabled_by_tease_setting(monkeypatch):
+    monkeypatch.setattr("llm.responses.TEASE_LLM_ENABLED", False)
+    monkeypatch.setattr("llm.client.query_llm", lambda *args, **kwargs: "Birthday joy!")
+    assert generate_birthday_message() == "Birthday joy!"
 
 
 def test_build_tease_prompt_includes_mood_and_context():

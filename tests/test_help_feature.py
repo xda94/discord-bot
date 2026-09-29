@@ -1,4 +1,4 @@
-from features.help_feature import build_help_text
+from features.help_feature import _chunk_text, build_help_text
 
 
 def test_help_text_matches_automatic_memory_mode():
@@ -8,6 +8,10 @@ def test_help_text_matches_automatic_memory_mode():
     assert "**/memory-opt-out**" in text
     assert "**/memory-add**" not in text
     assert "**/memory-erase**" not in text
+    assert "**/set-birthday** `[date]`" in text
+    assert "Omit date to remove it." in text
+    assert "first attempt is at 00:01" in text
+    assert "failures retry every 30 minutes" in text
 
 
 def test_help_text_matches_manual_memory_mode():
@@ -19,3 +23,12 @@ def test_help_text_matches_manual_memory_mode():
     assert "**/llm-memory**" not in text
     assert "**/memory-opt-out**" not in text
     assert "manually saved memories" in text
+    assert "**/set-birthday** `[date]`" in text
+    assert "Omit date to remove it." in text
+    assert "first attempt is at 00:01" in text
+    assert "failures retry every 30 minutes" in text
+
+
+def test_help_text_chunks_stay_within_discord_limit_in_both_modes():
+    for automatic in (True, False):
+        assert all(len(chunk) <= 1900 for chunk in _chunk_text(build_help_text(automatic)))

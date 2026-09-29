@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, per-server daily jokes, sponsorship tags, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -254,6 +254,7 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 | Flight tracker | 5 h (configurable) | Checks the least-recently searched fixed-date tracker for each user, stores price history, and DMs on the first result or a lower price |
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
+| Birthday check | Daily at 00:01 | Sends one LLM-generated annual birthday greeting per saved user; failures retry every 30 minutes during the date |
 | Reminders | 10 s | Delivers due reminders |
 | Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm-inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
@@ -277,6 +278,19 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 | Command | Description |
 |---|---|
 | `/remind <when> <who> <what>` | Timed reminder — `when` like `30m`, `2h`, `1d`. |
+
+### Birthdays
+
+| Command | Description |
+|---|---|
+| `/set-birthday [date]` | Save your birthday as `DD.MM`, `DD-MM`, or `DD/MM` for an annual LLM-generated greeting in the channel where it is set. Omit `date` to delete it. |
+
+Each Discord user has one saved birthday across the bot. Saving it again updates
+the date and delivery destination, including a DM channel. Confirmations are
+private. The first attempt runs at 00:01 using the bot process's local date,
+with only the registered user mentioned. February 29 is celebrated only in leap
+years. Failed generation or delivery is retried every 30 minutes during that
+date, but a successful greeting is not repeated and no belated greeting is sent.
 
 ### Daily jokes (per server)
 

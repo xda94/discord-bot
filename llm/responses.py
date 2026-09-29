@@ -88,6 +88,13 @@ Choose the subject and wording. Return only the message, without quotes or label
 Task: {task}{bot_context}"""
 
 
+def build_birthday_prompt() -> str:
+    return """Write one warm, playful English happy-birthday greeting for a Discord user.
+Use one or two short sentences, at most 35 words, addressing the recipient as you.
+Do not invent age or personal details. Do not include names, mentions, URLs, or labels.
+Return only the ready-to-send greeting without quotes."""
+
+
 def build_price_change_prompt(
     product_name: str,
     old_price: float,
@@ -463,6 +470,21 @@ def generate_inactivity_message(
         return normalize_tease_response(raw) or None
     except LlamaCppError:
         logger.warning("Inactivity LLM generation failed")
+        return None
+
+
+def generate_birthday_message(*, model: str | None = None) -> str | None:
+    """Generate a short birthday greeting, or ``None`` when generation fails."""
+    try:
+        raw = client.query_llm(
+            build_birthday_prompt(),
+            model=model,
+            timeout=TEASE_LLAMA_CPP_TIMEOUT,
+            options={"temperature": 0.8, "max_tokens": 96},
+        )
+        return normalize_llm_reply(raw, max_chars=280) or None
+    except LlamaCppError:
+        logger.warning("Birthday LLM generation failed")
         return None
 
 
