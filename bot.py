@@ -20,8 +20,10 @@ logger = setup_logger("discord_bot", "bot.log")
 import db
 from analytics import AnalyticsCommandTree, record_message_mention, refresh_command_catalog
 from features.azi_se_spala import AziSeSpalaFeature
+from features.assistant_profiles import AssistantProfilesFeature
 from features.birthdays import BirthdaysFeature
 from features.llm_mention import ContextReactionFeature, LLMMentionFeature
+from features.natural_commands import NaturalCommandsFeature
 from features.help_feature import HelpFeature
 from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
@@ -91,6 +93,7 @@ jokes = JokesFeature(client, tree)
 birthdays = BirthdaysFeature(client, tree)
 wishlist = WishlistFeature(client, tree)
 flights = FlightTrackerFeature(client, tree)
+assistant_profiles = AssistantProfilesFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
@@ -107,6 +110,13 @@ llm_mention = LLMMentionFeature(
     feedback=llm_feedback,
     memory=user_memory,
 )
+natural_commands = NaturalCommandsFeature(
+    client,
+    bot_id=BOT_ID,
+    wishlist=wishlist,
+    flights=flights,
+    reminders=reminders,
+)
 context_reactions = ContextReactionFeature(llm_mention)
 help_feature = HelpFeature(
     client,
@@ -118,12 +128,13 @@ logger.info(
     "automatic" if AUTOMATIC_MEMORY_ENABLED else "manual",
 )
 
-# Mentions stop dispatch first. Keywords keep priority over occasional reactions;
-# a sampled reaction then suppresses the random tease for that message.
+# Bounded natural commands claim supported mentions before the general LLM.
+# Keywords keep priority over occasional reactions; a sampled reaction then
+# suppresses the random tease for that message.
 MESSAGE_HANDLERS = (
-    (inactivity, user_memory, llm_mention, keywords, context_reactions, teases)
+    (inactivity, user_memory, natural_commands, llm_mention, keywords, context_reactions, teases)
     if AUTOMATIC_MEMORY_ENABLED
-    else (inactivity, llm_mention, keywords, context_reactions, teases)
+    else (inactivity, natural_commands, llm_mention, keywords, context_reactions, teases)
 )
 
 # Features that own background tasks needing to be kicked off in on_ready.

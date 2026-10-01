@@ -5,6 +5,12 @@ from db.analytics import (
     record_analytics_activity,
     refresh_analytics_command_catalog,
 )
+from db.assistant_profiles import (
+    delete_assistant_profile,
+    get_assistant_profile,
+    reset_assistant_profile,
+    set_assistant_profile,
+)
 from db.birthdays import (
     delete_birthday,
     get_all_birthdays,

@@ -128,9 +128,12 @@ def add_reminder(user_id, channel_id, remind_at, message):
         with _connect(commit=True) as c:
             c.execute("INSERT INTO reminders (user_id, channel_id, remind_at, message) VALUES (?, ?, ?, ?)",
                       (user_id, channel_id, remind_at, message))
+            reminder_id = c.lastrowid
         logger.info(f"Scheduled reminder for user {user_id} at timestamp {remind_at}")
+        return reminder_id
     except Exception:
         logger.exception("Failed to add reminder")
+        return None
 
 
 def get_due_reminders():
@@ -602,4 +605,3 @@ def is_guild_inactivity_enabled(guild_id: int) -> bool:
         )
         # A database failure should not cause unsolicited messages.
         return False
-

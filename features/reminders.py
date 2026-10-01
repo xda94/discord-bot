@@ -34,6 +34,13 @@ class RemindersFeature:
         if not self._check.is_running():
             self._check.start()
 
+    @staticmethod
+    def create_reminder_at(
+        user_id: int, channel_id: int, remind_at: float, message: str
+    ) -> int | None:
+        """Shared persistence path for slash and confirmed natural reminders."""
+        return db.add_reminder(user_id, channel_id, remind_at, message)
+
     def _register_commands(self) -> None:
         @self.tree.command(name="remind", description="Set a reminder")
         @app_commands.describe(when="Time (e.g. 30m, 1h)", who="User to remind", what="The message")
@@ -51,7 +58,14 @@ class RemindersFeature:
                 return
 
             remind_at = time.time() + seconds
-            db.add_reminder(who.id, interaction.channel_id, remind_at, what)
+            reminder_id = self.create_reminder_at(
+                who.id, interaction.channel_id, remind_at, what
+            )
+            if reminder_id is None:
+                await interaction.response.send_message(
+                    "I couldn't save that reminder. Please try again.", ephemeral=True
+                )
+                return
             await interaction.response.send_message(
                 f"Got it! I'll remind {who.display_name} about '{what}' in {when}."
             )
