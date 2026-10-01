@@ -300,27 +300,39 @@ Language, tone, and answer detail are snapshotted when a text, vision, or empty
 summon mention is queued; an explicit language request in the current message
 wins over the saved language. A saved currency is used only when a supported
 wishlist/flight command omits currency. `compact` shortens scheduled wishlist
-and flight DMs. The saved timezone changes only natural-reminder confirmation
-display; existing feature date and schedule semantics remain unchanged.
+and flight DMs. Timezone remains a stored/displayed preference; immediate
+relative reminders do not need timezone conversion, and existing feature date
+and schedule semantics remain unchanged.
 
 When the bot is explicitly mentioned, it recognizes these complete English or
 Romanian phrases before falling through to the ordinary mention LLM:
 
-- `@bot track https://example.com/product` / `@bot urmărește <URL>`
-- Reply to a message containing exactly one URL with `@bot track this` or
-  `@bot urmărește asta`
-- `@bot show my flights` / `@bot arată-mi zborurile mele`
-- `@bot remind me in two hours to stretch` /
-  `@bot amintește-mi peste 2 ore să sun acasă`
+| Operation | English | Romanian |
+|---|---|---|
+| Track | `track <URL>` (or reply with `track this`) | `urmărește <URL>` (or reply with `urmărește asta`) |
+| Flights | `show my flights` | `arată-mi zborurile mele` |
+| Show wishlist | `show my wishlist [in EUR]` | `arată-mi wishlist-ul [în EUR]` |
+| Remove | `stop tracking <URL>` | `nu mai urmări <URL>` |
+| Target | `set target price for <URL> to 100 EUR` | `setează prețul țintă pentru <URL> la 100 EUR` |
+| Clear target | `clear target price for <URL>` | `șterge prețul țintă pentru <URL>` |
+| Restock only | `enable|disable restock only for <URL>` | `activează|dezactivează doar notificările de stoc pentru <URL>` |
+| Refresh | `refresh <URL>` / `refresh my wishlist` | `actualizează <URL>` / `actualizează wishlist-ul meu` |
+| Graph | `graph <URL> [in EUR] [for 30 days]` or `graph my wishlist [in EUR] [for 30 days]` | `grafic pentru <URL> [în EUR] [pentru 30 zile]` or `grafic pentru wishlist-ul meu [în EUR] [pentru 30 zile]` |
+| Compare | `compare my wishlist [for 30 days]` | `compară wishlist-ul meu [pentru 30 zile]` |
+| Reminder | `remind me in two hours to stretch` | `amintește-mi peste 2 ore să sun acasă` |
 
 Durations accept positive numbers and common number words with minute, hour,
-or day units. Recognized actions show exact proposal details in the channel and
-an in-memory requester-only Confirm/Cancel view for 120 seconds; flight lookup
-uses a requester-only **View my flights** button. No write occurs before
-confirmation, and execution results are ephemeral. Pending proposals disappear
-on bot restart. This is intentionally not a general-purpose agent: unsupported
-or loosely phrased prose falls through to the normal mention response, and
-ambiguous/missing URLs or reminder fields receive guidance.
+or day units; graph periods are whole days from 1 to 180. Every recognized
+command executes immediately. Successful mutations and private deliveries are
+acknowledged only with ✅ on the source message. Flight, wishlist, refresh, and
+graph results are sent only to the requester's DM with mentions and embeds
+suppressed; if DMs are blocked, the bot gives generic channel guidance and
+never posts the private result publicly. Wishlist actions always use the
+requester's own records, and refresh retains its five-minute per-item cooldown,
+sequential fetches, and saved-history-only graph behavior. Unsupported or
+loosely phrased prose falls through to the normal mention response, while
+ambiguous/missing fields receive generic usage guidance. This is intentionally
+not a general-purpose agent.
 
 ### Birthdays
 
@@ -759,7 +771,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `assistant_profiles.py` | `AssistantProfilesFeature` | Private global per-user preference commands |
-| `natural_commands.py` | `NaturalCommandsFeature`, `NaturalCommandConfirmView` | Mention-only proposals and requester confirmation |
+| `natural_commands.py` | `NaturalCommandsFeature` | Mention-only immediate actions and private requester delivery |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |

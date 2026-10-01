@@ -1,115 +1,27 @@
-"""Mention-only natural command proposals and requester confirmations."""
+"""Mention-only natural commands with immediate, privacy-preserving delivery."""
 
 from __future__ import annotations
 
-import asyncio
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import discord
 
-import db
-from assistant_profiles import effective_profile
 from features.flights import format_user_flight_trackers
 from mention_utils import extract_mention_text
 from natural_commands import (
+    ClearWishlistTargetAction,
+    DeleteWishlistAction,
     NaturalCommandError,
+    RefreshWishlistAction,
     ReminderAction,
     ShowFlightsAction,
+    ShowWishlistAction,
     TrackURLAction,
+    WishlistGraphAction,
+    WishlistRestockAction,
+    WishlistTargetAction,
     parse_natural_command,
 )
-
-
-class NaturalCommandConfirmView(discord.ui.View):
-    """One-shot requester-only confirmation kept only in process memory."""
-
-    def __init__(self, requester_id: int, execute, *, confirm_label: str = "Confirm"):
-        super().__init__(timeout=120)
-        self.requester_id = requester_id
-        self._execute = execute
-        # Python 3.9 binds Lock construction to the current event loop. Views
-        # normally originate inside Discord's loop, but lazy construction also
-        # keeps isolated tests and alternate callers safe.
-        self._lock = None
-        self.consumed = False
-        self.message = None
-
-        confirm = discord.ui.Button(label=confirm_label, style=discord.ButtonStyle.green)
-        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
-        confirm.callback = self._confirm
-        cancel.callback = self._cancel
-        self.add_item(confirm)
-        self.add_item(cancel)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.requester_id:
-            return True
-        await interaction.response.send_message(
-            "Only the person who requested this action can use these buttons.",
-            ephemeral=True,
-        )
-        return False
-
-    async def _consume(self, interaction: discord.Interaction) -> bool:
-        if self._lock is None:
-            self._lock = asyncio.Lock()
-        async with self._lock:
-            if self.consumed:
-                await interaction.response.send_message(
-                    "This proposal has already been handled.", ephemeral=True
-                )
-                return False
-            self.consumed = True
-            self.stop()
-            for item in self.children:
-                item.disabled = True
-            return True
-
-    async def _remove_buttons(self, interaction: discord.Interaction) -> None:
-        message = getattr(interaction, "message", None) or self.message
-        if message is not None:
-            try:
-                await message.edit(view=None)
-            except (discord.HTTPException, discord.NotFound):
-                pass
-
-    async def _confirm(self, interaction: discord.Interaction) -> None:
-        if not await self._consume(interaction):
-            return
-        await interaction.response.defer(ephemeral=True)
-        await self._remove_buttons(interaction)
-        try:
-            messages = await self._execute(interaction)
-        except Exception:
-            messages = ["The confirmed action failed unexpectedly. Nothing else was queued."]
-        if isinstance(messages, str):
-            messages = [messages]
-        for message in messages:
-            await interaction.followup.send(message, ephemeral=True, suppress_embeds=True)
-
-    async def _cancel(self, interaction: discord.Interaction) -> None:
-        if not await self._consume(interaction):
-            return
-        await interaction.response.defer(ephemeral=True)
-        await self._remove_buttons(interaction)
-        await interaction.followup.send("Cancelled. Nothing was changed.", ephemeral=True)
-
-    async def on_timeout(self) -> None:
-        if self._lock is None:
-            self._lock = asyncio.Lock()
-        async with self._lock:
-            if self.consumed:
-                return
-            self.consumed = True
-            for item in self.children:
-                item.disabled = True
-        if self.message is not None:
-            try:
-                await self.message.edit(view=None)
-            except (discord.HTTPException, discord.NotFound):
-                pass
 
 
 class NaturalCommandsFeature:
@@ -120,23 +32,39 @@ class NaturalCommandsFeature:
         self.flights = flights
         self.reminders = reminders
 
+    async def _acknowledge(self, message) -> None:
+        """Best-effort success reaction; never rerun the durable action."""
+        try:
+            await message.add_reaction("✅")
+        except Exception:
+            pass
+
+    async def _reply_error(self, message, text: str) -> None:
+        await message.reply(
+            text,
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+            suppress_embeds=True,
+        )
+
+    async def _send_private(self, message, chunks) -> bool:
+        """Send all result chunks to the author, never to the source channel."""
+        delivered = True
+        for chunk in chunks:
+            try:
+                await message.author.send(
+                    chunk,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                    suppress_embeds=True,
+                )
+            except Exception:
+                delivered = False
+        return delivered
+
     async def _track(self, user_id: int, url: str):
+        """Return the add status without exposing scraped item details."""
         result = await self.wishlist.add_item_for_user(user_id, url)
-        if result.status == "added":
-            price = self.wishlist.converter.format_with_conversions(
-                result.price, result.currency
-            )
-            stock = "unknown" if result.in_stock is None else (
-                "in stock" if result.in_stock else "out of stock"
-            )
-            return f"✅ Added **{result.title or result.url}**. Price: `{price}`; stock: `{stock}`."
-        return {
-            "exists": "That URL is already in your tracking list.",
-            "blocked": "The source blocked or timed out, so the URL was not added.",
-            "unsupported": "The page had no supported price or stock data, so the URL was not added.",
-            "database-error": "The page was read, but the database could not save it. Please try again.",
-            "invalid": "That is not a valid HTTP(S) URL.",
-        }.get(result.status, "The URL could not be added.")
+        return result.status
 
     async def handle_message(self, message: discord.Message) -> bool:
         text = extract_mention_text(message, self.bot_id)
@@ -153,55 +81,126 @@ class NaturalCommandsFeature:
         if parsed is None:
             return False
         if isinstance(parsed, NaturalCommandError):
-            await message.reply(
-                parsed.message,
-                mention_author=False,
-                allowed_mentions=discord.AllowedMentions.none(),
+            await self._reply_error(message, parsed.message)
+            return True
+
+        author_id = message.author.id
+        try:
+            if isinstance(parsed, ReminderAction):
+                remind_at = time.time() + parsed.seconds
+                reminder_id = self.reminders.create_reminder_at(
+                    author_id, message.channel.id, remind_at, parsed.text
+                )
+                if reminder_id is None:
+                    await self._reply_error(
+                        message, "I couldn't save that reminder. Please try again."
+                    )
+                    return True
+                await self._acknowledge(message)
+                return True
+
+            if isinstance(parsed, TrackURLAction):
+                status = await self._track(author_id, parsed.url)
+                if status == "added":
+                    await self._acknowledge(message)
+                else:
+                    errors = {
+                        "exists": "That URL is already in your tracking list.",
+                        "blocked": "The source blocked or timed out, so the URL was not added.",
+                        "unsupported": "The page had no supported price or stock data, so the URL was not added.",
+                        "database-error": "The page was read, but the database could not save it. Please try again.",
+                        "invalid": "That is not a valid HTTP(S) URL.",
+                    }
+                    await self._reply_error(message, errors.get(status, "The URL could not be added."))
+                return True
+
+            if isinstance(parsed, ShowFlightsAction):
+                delivered = await self._send_private(
+                    message, format_user_flight_trackers(author_id)
+                )
+                if delivered:
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(
+                        message,
+                        "I couldn't send the private result. Enable DMs or use the corresponding slash command.",
+                    )
+                return True
+
+            if isinstance(parsed, ShowWishlistAction):
+                chunks = self.wishlist.format_items_for_user(author_id, parsed.currency)
+                delivered = await self._send_private(message, chunks)
+                if delivered:
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(
+                        message,
+                        "I couldn't send the private result. Enable DMs or use the corresponding slash command.",
+                    )
+                return True
+
+            if isinstance(parsed, DeleteWishlistAction):
+                if self.wishlist.delete_item_for_user(author_id, parsed.url):
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(message, "That wishlist change could not be applied.")
+                return True
+
+            if isinstance(parsed, WishlistTargetAction):
+                if self.wishlist.set_target_for_user(
+                    author_id, parsed.url, parsed.price, parsed.currency
+                ):
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(message, "That wishlist change could not be applied.")
+                return True
+
+            if isinstance(parsed, ClearWishlistTargetAction):
+                if self.wishlist.clear_target_for_user(author_id, parsed.url):
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(message, "That wishlist change could not be applied.")
+                return True
+
+            if isinstance(parsed, WishlistRestockAction):
+                if self.wishlist.set_restock_only_for_user(
+                    author_id, parsed.url, parsed.enabled
+                ):
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(message, "That wishlist change could not be applied.")
+                return True
+
+            if isinstance(parsed, RefreshWishlistAction):
+                chunks = await self.wishlist.refresh_items_for_user(author_id, parsed.url)
+                delivered = await self._send_private(message, chunks)
+                if delivered:
+                    await self._acknowledge(message)
+                else:
+                    await self._reply_error(
+                        message,
+                        "The refresh was attempted, but I couldn't deliver its private result. Enable DMs or use the corresponding slash command.",
+                    )
+                return True
+
+            if isinstance(parsed, WishlistGraphAction):
+                await self.wishlist.send_graph_for_user(
+                    message.author,
+                    url=parsed.url,
+                    currency=parsed.currency,
+                    days=parsed.days,
+                    percentage=parsed.percentage,
+                )
+                await self._acknowledge(message)
+                return True
+
+        except Exception:
+            # A recognized command is consumed even when its helper or private
+            # transport fails, so the ordinary LLM cannot duplicate the action.
+            await self._reply_error(
+                message,
+                "I couldn't complete that action. Enable DMs or use the corresponding slash command.",
             )
             return True
 
-        profile = effective_profile(db.get_assistant_profile(message.author.id))
-        if isinstance(parsed, TrackURLAction):
-            proposal = f"Track this wishlist URL for **you**?\n`{parsed.url}`"
-
-            async def execute(_interaction):
-                return await self._track(message.author.id, parsed.url)
-
-            label = "Confirm"
-        elif isinstance(parsed, ShowFlightsAction):
-            proposal = "Privately show the flight trackers saved for **you**?"
-
-            async def execute(_interaction):
-                return format_user_flight_trackers(message.author.id)
-
-            label = "View my flights"
-        else:
-            remind_at = time.time() + parsed.seconds
-            local = datetime.fromtimestamp(remind_at, ZoneInfo(profile.timezone))
-            proposal = (
-                "Create this self-reminder?\n"
-                f"What: **{parsed.text}**\n"
-                f"When: `{local.strftime('%Y-%m-%d %H:%M %Z')}` "
-                f"(<t:{int(remind_at)}:F>, <t:{int(remind_at)}:R>)\n"
-                f"Timezone: `{profile.timezone}`"
-            )
-
-            async def execute(_interaction):
-                reminder_id = self.reminders.create_reminder_at(
-                    message.author.id, message.channel.id, remind_at, parsed.text
-                )
-                if reminder_id is None:
-                    return "The database could not save the reminder. Please try again."
-                return f"✅ Reminder **#{reminder_id}** created for <t:{int(remind_at)}:R>."
-
-            label = "Confirm"
-
-        view = NaturalCommandConfirmView(message.author.id, execute, confirm_label=label)
-        view.message = await message.reply(
-            proposal,
-            view=view,
-            mention_author=False,
-            allowed_mentions=discord.AllowedMentions.none(),
-            suppress_embeds=True,
-        )
         return True
