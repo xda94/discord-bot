@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,7 +15,7 @@ from discord.ext import tasks
 
 import db
 from analytics import record
-from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph
+from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph, send_graph_to_user
 from wishlist.charts import render_multi_price_history_png, render_price_history_png
 from llm.responses import generate_price_change_message
 
@@ -161,7 +162,7 @@ class WishlistFeature:
         @app_commands.describe(url="The URL to remove")
         async def scrape_item_delete(interaction: discord.Interaction, url: str):
             logger.info(f"Command /wishlist-item-delete called by {interaction.user} for {url}")
-            if db.delete_scraped_item(interaction.user.id, url):
+            if feature.delete_item_for_user(interaction.user.id, url):
                 await interaction.response.send_message("Link removed and data cleared.", ephemeral=True)
             else:
                 await interaction.response.send_message("Link not found in your list.", ephemeral=True)
@@ -182,14 +183,16 @@ class WishlistFeature:
             price: float,
             currency: app_commands.Choice[str],
         ):
-            if price <= 0:
+            try:
+                success = feature.set_target_for_user(
+                    interaction.user.id, url, price, currency.value
+                )
+            except ValueError:
                 await interaction.response.send_message(
                     "Target price must be greater than zero.", ephemeral=True
                 )
                 return
-            if db.set_scraped_item_target(
-                interaction.user.id, url, price, currency.value
-            ):
+            if success:
                 await interaction.response.send_message(
                     f"🎯 I will notify you once when this item reaches "
                     f"{price:.2f} {currency.value} or less.",
@@ -206,7 +209,7 @@ class WishlistFeature:
         )
         @app_commands.describe(url="The tracked item URL")
         async def wishlist_target_clear(interaction: discord.Interaction, url: str):
-            if db.set_scraped_item_target(interaction.user.id, url, None, None):
+            if feature.clear_target_for_user(interaction.user.id, url):
                 await interaction.response.send_message(
                     "Target-price alert removed.", ephemeral=True
                 )
@@ -226,7 +229,7 @@ class WishlistFeature:
         async def wishlist_restock_only(
             interaction: discord.Interaction, url: str, enabled: bool
         ):
-            if db.set_scraped_item_restock_only(interaction.user.id, url, enabled):
+            if feature.set_restock_only_for_user(interaction.user.id, url, enabled):
                 text = (
                     "Restock-only mode enabled. Price history still updates, "
                     "but only a back-in-stock notification will be sent."
@@ -247,90 +250,22 @@ class WishlistFeature:
         async def wishlist_refresh(
             interaction: discord.Interaction, url: Optional[str] = None
         ):
-            single_item = url is not None
-            if single_item:
-                item = db.get_scraped_item(interaction.user.id, url)
-                items = [item] if item is not None else []
+            # Preserve the slash command's immediate response for an empty
+            # selection; actual refresh work and cooldown reservation stay in
+            # the shared requester-scoped helper below.
+            if url is not None:
+                has_items = db.get_scraped_item(interaction.user.id, url) is not None
             else:
-                items = db.get_user_scraped_items_for_refresh(interaction.user.id)
-            if not items:
-                message = (
+                has_items = bool(db.get_user_scraped_items_for_refresh(interaction.user.id))
+            if not has_items:
+                await interaction.response.send_message(
                     "That URL is not in your tracking list."
-                    if single_item
-                    else "You are not tracking any items."
-                )
-                await interaction.response.send_message(
-                    message, ephemeral=True
-                )
-                return
-
-            now = time.monotonic()
-            eligible_items = []
-            cooldowns = []
-            for item in items:
-                key = (interaction.user.id, item[2])
-                previous = feature._manual_refresh_at.get(key)
-                remaining = (
-                    MANUAL_REFRESH_COOLDOWN_SECONDS - (now - previous)
-                    if previous is not None
-                    else 0.0
-                )
-                if remaining > 0:
-                    cooldowns.append(remaining)
-                    continue
-                feature._manual_refresh_at[key] = now
-                eligible_items.append(item)
-
-            if not eligible_items:
-                message = (
-                    "That item is still on cooldown."
-                    if single_item
-                    else "All your tracked items are still on cooldown."
-                )
-                await interaction.response.send_message(
-                    f"{message} Try again in up to {int(max(cooldowns)) + 1}s.",
+                    if url is not None else "You are not tracking any items.",
                     ephemeral=True,
                 )
                 return
-
             await interaction.response.defer(ephemeral=True)
-            results = []
-            for index, item in enumerate(eligible_items):
-                try:
-                    result = await feature._manual_refresh_item(item)
-                    # Keep a pathological product title or URL from making a
-                    # whole Discord follow-up exceed its 2,000-character cap.
-                    if len(result) > 1600:
-                        result = f"{result[:1597]}..."
-                    results.append(result)
-                except Exception:
-                    # A malformed row or unexpected scraper failure must not
-                    # prevent later owned items from being refreshed.
-                    logger.exception("Manual refresh failed for %s", item[2])
-                    results.append(f"Refresh failed unexpectedly: {_domain(item[2])}")
-                if index < len(eligible_items) - 1:
-                    await asyncio.sleep(feature.SCRAPE_LOOP_GAP_SECONDS)
-
-            header = (
-                "Refreshed the requested item."
-                if single_item
-                else f"Refreshed {len(eligible_items)} of {len(items)} tracked item(s)."
-            )
-            if cooldowns:
-                header += (
-                    f" Skipped {len(cooldowns)} item(s) still on cooldown "
-                    f"(up to {int(max(cooldowns)) + 1}s remaining)."
-                )
-            chunks = []
-            current = header
-            for result in results:
-                block = f"\n\n{result}"
-                if len(current) + len(block) > 1900:
-                    chunks.append(current)
-                    current = result
-                else:
-                    current += block
-            chunks.append(current)
+            chunks = await feature.refresh_items_for_user(interaction.user.id, url)
             for chunk in chunks:
                 await interaction.followup.send(
                     chunk, ephemeral=True, suppress_embeds=True
@@ -347,71 +282,14 @@ class WishlistFeature:
             interaction: discord.Interaction,
             currency: Optional[app_commands.Choice[str]] = None,
         ):
-            # `target_currency = None` → render each item in its own native
-            # (stored / TLD-derived) currency. When the user explicitly picks
-            # a currency from the dropdown, every row is converted into it.
-            target_currency = currency.value if currency else None
-            if target_currency is None:
-                target_currency = _profile_currency(interaction.user.id)
             logger.info(
                 f"Command /wishlist-show called by {interaction.user} "
-                f"(currency={target_currency or 'native'})"
+                f"(currency={currency.value if currency else 'native'})"
             )
             await interaction.response.defer(ephemeral=True)
-
-            items = db.get_user_scraped_items_with_settings(interaction.user.id)
-            if not items:
-                await interaction.followup.send("You are not tracking any items.", ephemeral=True)
-                return
-
-            blocks = []
-            for (
-                url, price, stock, title, item_currency, alert_price,
-                alert_currency, restock_only, last_checked_at, check_status,
-            ) in items:
-                if stock is None:
-                    status = "❓ Stock unknown"
-                elif stock:
-                    status = "✅ In stock"
-                else:
-                    status = "❌ Out of stock"
-                # Resolve currency the same way the scraper does: prefer the
-                # value persisted at scrape-time, fall back to a TLD guess.
-                source_currency = _effective_currency(item_currency, url)
-                price_display = feature._format_show_price(
-                    price, source_currency, target_currency
-                )
-                item_name = f"**{title}**" if title else f"🔗 {url}"
-                target = (
-                    f"🎯 Target: {alert_price:.2f} {alert_currency}"
-                    if alert_price is not None and alert_currency
-                    else "🎯 Target: none"
-                )
-                mode = " | 🔕 Restock-only" if restock_only else ""
-                freshness = feature._format_check_status(last_checked_at, check_status)
-                blocks.append(
-                    f"{item_name}\nSource: {_domain(url)} | URL: {url}\n"
-                    f"💰 Price: {price_display} | {status}{mode}\n"
-                    f"{target}\n{freshness}"
-                )
-
-            # Group items into chunks under Discord's 2000-char message limit.
-            header = (
-                f"**Your tracked items** (converted to **{target_currency}**):\n\n"
-                if target_currency
-                else "**Your tracked items** (shown in each item's native currency):\n\n"
+            chunks = feature.format_items_for_user(
+                interaction.user.id, currency.value if currency else None
             )
-            chunks = []
-            current = header
-            for block in blocks:
-                if len(current) + len(block) + 2 > 1900:
-                    chunks.append(current.strip())
-                    current = block + "\n\n"
-                else:
-                    current += block + "\n\n"
-            if current.strip():
-                chunks.append(current.strip())
-
             for chunk in chunks:
                 await interaction.followup.send(chunk, ephemeral=True, suppress_embeds=True)
 
@@ -430,12 +308,9 @@ class WishlistFeature:
             currency: Optional[app_commands.Choice[str]] = None,
             days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
         ):
-            item = db.get_scraped_item(interaction.user.id, url)
-            target_currency = (
-                currency.value if currency else
-                _profile_currency(interaction.user.id) or
-                (_effective_currency(item[6], url) if item else None)
-            ) or CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+            target_currency = feature.graph_currency_for_user(
+                interaction.user.id, url=url, currency=currency.value if currency else None
+            )
             await send_graph(
                 interaction, url=url, currency=target_currency, days=days,
                 percentage=False, converter=feature.converter,
@@ -458,11 +333,8 @@ class WishlistFeature:
             days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
             percentage: bool = False,
         ):
-            items = db.get_user_scraped_items(interaction.user.id)
-            target_currency = currency.value if currency else (
-                _profile_currency(interaction.user.id) or _majority_currency(
-                    (url, stored_currency) for url, _p, _s, _t, stored_currency in items
-                )
+            target_currency = feature.graph_currency_for_user(
+                interaction.user.id, currency=currency.value if currency else None
             )
             await send_graph(
                 interaction, url=None, currency=target_currency, days=days,
@@ -470,8 +342,206 @@ class WishlistFeature:
                 effective_currency=_effective_currency,
             )
 
+    def delete_item_for_user(self, user_id: int, url: str) -> bool:
+        """Delete one requester-owned item and its saved history."""
+        return bool(db.delete_scraped_item(user_id, url))
+
+    @staticmethod
+    def _validate_target(price: float, currency: str) -> tuple[float, str]:
+        try:
+            normalized_price = float(price)
+        except (TypeError, ValueError):
+            raise ValueError("Target price must be greater than zero.")
+        normalized_currency = str(currency or "").upper()
+        if (
+            not math.isfinite(normalized_price)
+            or normalized_price <= 0
+            or normalized_currency not in CurrencyConverter.SUPPORTED_DISPLAY_CURRENCIES
+        ):
+            raise ValueError("Target price must be greater than zero.")
+        return normalized_price, normalized_currency
+
+    def set_target_for_user(
+        self, user_id: int, url: str, price: float, currency: str
+    ) -> bool:
+        normalized_price, normalized_currency = self._validate_target(price, currency)
+        return bool(
+            db.set_scraped_item_target(
+                user_id, url, normalized_price, normalized_currency
+            )
+        )
+
+    def clear_target_for_user(self, user_id: int, url: str) -> bool:
+        return bool(db.set_scraped_item_target(user_id, url, None, None))
+
+    def set_restock_only_for_user(self, user_id: int, url: str, enabled: bool) -> bool:
+        return bool(db.set_scraped_item_restock_only(user_id, url, bool(enabled)))
+
+    def format_items_for_user(self, user_id: int, currency: str | None = None) -> list[str]:
+        """Return private, requester-scoped wishlist display chunks."""
+        target_currency = currency or _profile_currency(user_id)
+        items = db.get_user_scraped_items_with_settings(user_id)
+        if not items:
+            return ["You are not tracking any items."]
+
+        blocks = []
+        for (
+            url, price, stock, title, item_currency, alert_price,
+            alert_currency, restock_only, last_checked_at, check_status,
+        ) in items:
+            if stock is None:
+                status = "❓ Stock unknown"
+            elif stock:
+                status = "✅ In stock"
+            else:
+                status = "❌ Out of stock"
+            source_currency = _effective_currency(item_currency, url)
+            price_display = self._format_show_price(
+                price, source_currency, target_currency
+            )
+            item_name = f"**{title}**" if title else f"🔗 {url}"
+            target = (
+                f"🎯 Target: {alert_price:.2f} {alert_currency}"
+                if alert_price is not None and alert_currency
+                else "🎯 Target: none"
+            )
+            mode = " | 🔕 Restock-only" if restock_only else ""
+            freshness = self._format_check_status(last_checked_at, check_status)
+            blocks.append(
+                f"{item_name}\nSource: {_domain(url)} | URL: {url}\n"
+                f"💰 Price: {price_display} | {status}{mode}\n"
+                f"{target}\n{freshness}"
+            )
+
+        header = (
+            f"**Your tracked items** (converted to **{target_currency}**):\n\n"
+            if target_currency
+            else "**Your tracked items** (shown in each item's native currency):\n\n"
+        )
+        chunks = []
+        current = header
+        for block in blocks:
+            if len(current) + len(block) + 2 > 1900:
+                chunks.append(current.strip())
+                current = block + "\n\n"
+            else:
+                current += block + "\n\n"
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks
+
+    async def refresh_items_for_user(
+        self, user_id: int, url: str | None = None
+    ) -> list[str]:
+        """Refresh owned items, reserving each cooldown before scraping."""
+        single_item = url is not None
+        if single_item:
+            item = db.get_scraped_item(user_id, url)
+            items = [item] if item is not None else []
+        else:
+            items = db.get_user_scraped_items_for_refresh(user_id)
+        if not items:
+            return [
+                "That URL is not in your tracking list."
+                if single_item else "You are not tracking any items."
+            ]
+
+        now = time.monotonic()
+        eligible_items = []
+        cooldowns = []
+        for item in items:
+            key = (user_id, item[2])
+            previous = self._manual_refresh_at.get(key)
+            remaining = (
+                MANUAL_REFRESH_COOLDOWN_SECONDS - (now - previous)
+                if previous is not None else 0.0
+            )
+            if remaining > 0:
+                cooldowns.append(remaining)
+                continue
+            # Reserve before the first await so concurrent callers cannot
+            # launch duplicate scrapes for the same item.
+            self._manual_refresh_at[key] = now
+            eligible_items.append(item)
+
+        if not eligible_items:
+            message = (
+                "That item is still on cooldown."
+                if single_item else "All your tracked items are still on cooldown."
+            )
+            return [f"{message} Try again in up to {int(max(cooldowns)) + 1}s."]
+
+        results = []
+        for index, item in enumerate(eligible_items):
+            try:
+                result = await self._manual_refresh_item(item)
+                if len(result) > 1600:
+                    result = f"{result[:1597]}..."
+                results.append(result)
+            except Exception:
+                logger.exception("Manual refresh failed for %s", item[2])
+                results.append(f"Refresh failed unexpectedly: {_domain(item[2])}")
+            if index < len(eligible_items) - 1:
+                await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
+
+        header = (
+            "Refreshed the requested item."
+            if single_item
+            else f"Refreshed {len(eligible_items)} of {len(items)} tracked item(s)."
+        )
+        if cooldowns:
+            header += (
+                f" Skipped {len(cooldowns)} item(s) still on cooldown "
+                f"(up to {int(max(cooldowns)) + 1}s remaining)."
+            )
+        chunks = []
+        current = header
+        for result in results:
+            block = f"\n\n{result}"
+            if len(current) + len(block) > 1900:
+                chunks.append(current)
+                current = result
+            else:
+                current += block
+        chunks.append(current)
+        return chunks
+
+    def graph_currency_for_user(
+        self, user_id: int, *, url: str | None = None, currency: str | None = None
+    ) -> str:
+        """Resolve explicit/profile/native-or-majority graph currency."""
+        if currency:
+            return currency.upper()
+        profile_currency = _profile_currency(user_id)
+        if profile_currency:
+            return profile_currency
+        if url is not None:
+            item = db.get_scraped_item(user_id, url)
+            return (
+                _effective_currency(item[6], url)
+                if item else CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+            ) or CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
+        items = db.get_user_scraped_items(user_id)
+        return _majority_currency(
+            (item_url, stored_currency)
+            for item_url, _price, _stock, _title, stored_currency in items
+        )
+
+    async def send_graph_for_user(
+        self, user, *, url: str | None = None, currency: str | None = None,
+        days: int = GRAPH_MAX_DAYS, percentage: bool = False,
+    ) -> None:
+        target_currency = self.graph_currency_for_user(
+            user.id, url=url, currency=currency
+        )
+        await send_graph_to_user(
+            user, url=url, currency=target_currency, days=days,
+            percentage=percentage, converter=self.converter,
+            effective_currency=_effective_currency,
+        )
+
     async def add_item_for_user(self, user_id: int, url: str) -> WishlistAddResult:
-        """Shared wishlist execution path for slash and confirmed natural commands."""
+        """Shared wishlist execution path for slash and natural commands."""
         if not _is_valid_http_url(url):
             return WishlistAddResult("invalid", url)
         result = await asyncio.to_thread(self.scraper.fetch, url)
