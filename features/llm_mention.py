@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 
 import db
+from assistant_profiles import AssistantProfile, DEFAULT_PROFILE, effective_profile
 from analytics import record, record_for
 from features.llm_feedback import LLMFeedbackFeature
 from features.user_memory import UserMemoryFeature
@@ -319,6 +320,7 @@ class AskJob:
     prompt_version: str = MENTION_PROMPT_VERSION
     replied_message: str = ""
     bot_names: tuple[str, ...] = ()
+    assistant_profile: AssistantProfile = DEFAULT_PROFILE
 
 
 @dataclass
@@ -650,6 +652,7 @@ class LLMMentionFeature:
                     generate_summon_reply,
                     job.user.display_name,
                     model=job.model,
+                    assistant_profile=job.assistant_profile,
                 )
                 result = MentionResult(reply) if reply else None
             else:
@@ -663,6 +666,7 @@ class LLMMentionFeature:
                     "replied_message": job.replied_message,
                     "requester_id": job.user.id,
                     "reply_names": (getattr(job.user, "name", ""), *job.bot_names),
+                    "assistant_profile": job.assistant_profile,
                 }
                 result = await asyncio.to_thread(
                     generate_mention_result,
@@ -947,6 +951,7 @@ class LLMMentionFeature:
         )
 
         model = get_selected_model()
+        assistant_profile = effective_profile(db.get_assistant_profile(user_id))
 
         limit = get_llm_context_messages()
         context_messages = []
@@ -1040,6 +1045,7 @@ class LLMMentionFeature:
             image_mime=image_mime,
             replied_message=replied_message,
             bot_names=tuple(bot_names),
+            assistant_profile=assistant_profile,
             prompt_version=(
                 SUMMON_PROMPT_VERSION
                 if summon_only

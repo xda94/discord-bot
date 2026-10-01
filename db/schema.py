@@ -110,6 +110,21 @@ def init_db():
                 )
             """)
             c.execute("""
+                CREATE TABLE IF NOT EXISTS assistant_profiles (
+                    user_id INTEGER PRIMARY KEY,
+                    language TEXT NOT NULL DEFAULT 'auto'
+                        CHECK (language IN ('auto', 'en', 'ro')),
+                    tone TEXT NOT NULL DEFAULT 'default'
+                        CHECK (tone IN ('default', 'friendly', 'formal', 'playful')),
+                    currency TEXT CHECK (currency IN ('RON', 'DKK', 'EUR', 'USD', 'GBP')),
+                    timezone TEXT NOT NULL DEFAULT 'UTC',
+                    notification_style TEXT NOT NULL DEFAULT 'standard'
+                        CHECK (notification_style IN ('standard', 'compact')),
+                    llm_behavior TEXT NOT NULL DEFAULT 'balanced'
+                        CHECK (llm_behavior IN ('balanced', 'concise', 'detailed'))
+                )
+            """)
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS scraped_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,

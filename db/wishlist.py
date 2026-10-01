@@ -29,7 +29,9 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
         return None
     except Exception:
         logger.exception(f"Failed to add scrape item: {url}")
-        return None
+        # False is an explicit database failure; None means the unique row
+        # already existed. Callers can now report those cases accurately.
+        return False
 
 def delete_scraped_item(user_id, url):
     try:
@@ -328,4 +330,3 @@ def get_price_history(user_id, url):
     except Exception:
         logger.exception(f"Failed to fetch price history for {url}")
         return []
-

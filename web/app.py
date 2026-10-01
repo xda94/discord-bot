@@ -58,4 +58,3 @@ def create_app(config: dict | None = None) -> Flask:
     app.register_blueprint(wishlist)
     app.register_blueprint(flights)
     return app
-

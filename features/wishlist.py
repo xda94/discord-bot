@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
@@ -60,6 +61,21 @@ CURRENCY_CHOICES = [
     for currency in CurrencyConverter.SUPPORTED_DISPLAY_CURRENCIES
 ]
 
+
+@dataclass(frozen=True)
+class WishlistAddResult:
+    status: str
+    url: str
+    title: str | None = None
+    price: float | None = None
+    currency: str | None = None
+    in_stock: bool | None = None
+
+
+def _profile_currency(user_id: int) -> str | None:
+    stored = db.get_assistant_profile(user_id)
+    return stored.get("currency") if stored else None
+
 # ---------------------------------------------------------------------------
 # Feature wiring
 # ---------------------------------------------------------------------------
@@ -92,52 +108,42 @@ class WishlistFeature:
             logger.info(f"Command /wishlist-item called by {interaction.user} for {url}")
             await interaction.response.defer(ephemeral=True)
 
-            # Reject obvious nonsense before we burn a network round-trip.
-            if not _is_valid_http_url(url):
+            result = await feature.add_item_for_user(interaction.user.id, url)
+            if result.status == "invalid":
                 await interaction.followup.send(
-                    "❌ That doesn't look like a valid HTTP(S) URL. "
-                    "Expected something like `https://example.com/product/123`.",
+                    "❌ That doesn't look like a valid HTTP(S) URL. Expected something like "
+                    "`https://example.com/product/123`.",
                     ephemeral=True,
                 )
                 return
-
-            # `fetch` does a synchronous HTTP round-trip (up to 15s timeout)
-            # plus HTML parsing. Run it in a worker thread so the bot's event
-            # loop is free to handle other commands/messages while we wait.
-            result = await asyncio.to_thread(feature.scraper.fetch, url)
-
-            if result.failure == FAILURE_BLOCKED:
+            if result.status == "blocked":
                 await interaction.followup.send(
                     f"❌ The domain `{_domain(url)}` is blocking the scraper "
-                    f"(TLS/Cloudflare anti-bot protection or the page took too long to respond). "
-                    f"The link was **not** added.",
+                    "(TLS/Cloudflare anti-bot protection or the page took too long to respond). "
+                    "The link was **not** added.",
                     ephemeral=True,
                     suppress_embeds=True,
                 )
                 return
-
-            if result.failure == FAILURE_UNSUPPORTED:
+            if result.status == "unsupported":
                 await interaction.followup.send(
                     "❌ Reached the page, but couldn't find any price/stock data in the "
                     "supported formats (JSON-LD, meta tags, plain text). It's most likely "
                     "a JavaScript-rendered page. The link was **not** added.",
-                    ephemeral=True,
-                    suppress_embeds=True,
+                    ephemeral=True, suppress_embeds=True,
                 )
                 return
-
-            item_id = db.add_scraped_item(
-                interaction.user.id, url,
-                result.title, result.price, result.in_stock, result.currency,
-            )
-            if not item_id:
+            if result.status == "exists":
                 await interaction.followup.send(
                     "This link is already in your tracking list.", ephemeral=True
                 )
                 return
-
-            if result.price is not None:
-                db.add_price_history(item_id, result.price)
+            if result.status == "database-error":
+                await interaction.followup.send(
+                    "❌ The page was read, but the database could not save it. Please try again.",
+                    ephemeral=True,
+                )
+                return
             price_str = feature.converter.format_with_conversions(result.price, result.currency)
             stock_label = (
                 "Unknown" if result.in_stock is None
@@ -345,6 +351,8 @@ class WishlistFeature:
             # (stored / TLD-derived) currency. When the user explicitly picks
             # a currency from the dropdown, every row is converted into it.
             target_currency = currency.value if currency else None
+            if target_currency is None:
+                target_currency = _profile_currency(interaction.user.id)
             logger.info(
                 f"Command /wishlist-show called by {interaction.user} "
                 f"(currency={target_currency or 'native'})"
@@ -425,7 +433,8 @@ class WishlistFeature:
             item = db.get_scraped_item(interaction.user.id, url)
             target_currency = (
                 currency.value if currency else
-                _effective_currency(item[6], url) if item else None
+                _profile_currency(interaction.user.id) or
+                (_effective_currency(item[6], url) if item else None)
             ) or CurrencyConverter.DEFAULT_DISPLAY_CURRENCY
             await send_graph(
                 interaction, url=url, currency=target_currency, days=days,
@@ -450,14 +459,38 @@ class WishlistFeature:
             percentage: bool = False,
         ):
             items = db.get_user_scraped_items(interaction.user.id)
-            target_currency = currency.value if currency else _majority_currency(
-                (url, stored_currency) for url, _p, _s, _t, stored_currency in items
+            target_currency = currency.value if currency else (
+                _profile_currency(interaction.user.id) or _majority_currency(
+                    (url, stored_currency) for url, _p, _s, _t, stored_currency in items
+                )
             )
             await send_graph(
                 interaction, url=None, currency=target_currency, days=days,
                 percentage=percentage, converter=feature.converter,
                 effective_currency=_effective_currency,
             )
+
+    async def add_item_for_user(self, user_id: int, url: str) -> WishlistAddResult:
+        """Shared wishlist execution path for slash and confirmed natural commands."""
+        if not _is_valid_http_url(url):
+            return WishlistAddResult("invalid", url)
+        result = await asyncio.to_thread(self.scraper.fetch, url)
+        if result.failure == FAILURE_BLOCKED:
+            return WishlistAddResult("blocked", url)
+        if result.failure == FAILURE_UNSUPPORTED:
+            return WishlistAddResult("unsupported", url)
+        item_id = db.add_scraped_item(
+            user_id, url, result.title, result.price, result.in_stock, result.currency
+        )
+        if item_id is None:
+            return WishlistAddResult("exists", url)
+        if item_id is False:
+            return WishlistAddResult("database-error", url)
+        if result.price is not None:
+            db.add_price_history(item_id, result.price)
+        return WishlistAddResult(
+            "added", url, result.title, result.price, result.currency, result.in_stock
+        )
 
     def _format_show_price(
         self,
@@ -698,6 +731,14 @@ class WishlistFeature:
             try:
                 user = await self.client.fetch_user(user_id)
                 if user:
+                    stored_profile = db.get_assistant_profile(user_id)
+                    profile_currency = (
+                        stored_profile.get("currency") if stored_profile else None
+                    )
+                    compact = bool(
+                        stored_profile
+                        and stored_profile.get("notification_style") == "compact"
+                    )
                     disp_name = result.title or old_title or url
                     msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
                     if back_in_stock:
@@ -708,8 +749,16 @@ class WishlistFeature:
                         # right unit instead of as a bare number.
                         old_src = _effective_currency(old_currency, url)
                         new_src = _effective_currency(result.currency, url)
-                        old_str = self.converter.format_with_conversions(old_price, old_src)
-                        new_str = self.converter.format_with_conversions(result.price, new_src)
+                        old_str = (
+                            self.converter.format_in_currency(old_price, old_src, profile_currency)
+                            if profile_currency else
+                            self.converter.format_with_conversions(old_price, old_src)
+                        )
+                        new_str = (
+                            self.converter.format_in_currency(result.price, new_src, profile_currency)
+                            if profile_currency else
+                            self.converter.format_with_conversions(result.price, new_src)
+                        )
                         msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                         try:
                             llm_msg = await asyncio.to_thread(
@@ -739,6 +788,17 @@ class WishlistFeature:
                             f"{converted_target_price:.2f} {target_currency} "
                             f"(target: {target_price:.2f} {target_currency}).\n"
                         )
+                    if compact:
+                        parts = []
+                        if back_in_stock:
+                            parts.append("back in stock")
+                        if price_changed:
+                            parts.append(f"{old_str} → {new_str}")
+                        if decision.alert_kind:
+                            parts.append(decision.alert_kind.replace("low", "buy window").replace("high", "maybe wait"))
+                        if target_alert:
+                            parts.append("target reached")
+                        msg = f"🔔 **{disp_name}**: {', '.join(parts)}. {url}"
                     await user.send(msg, suppress_embeds=True)
                     await record("scheduled", "wishlist-notification", scope_type="dm")
                     logger.info(

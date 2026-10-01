@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, bounded natural-language commands, global per-user assistant profiles, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -285,6 +285,43 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 |---|---|
 | `/remind <when> <who> <what>` | Timed reminder — `when` like `30m`, `2h`, `1d`. |
 
+### Assistant profile and natural commands
+
+| Command | Description |
+|---|---|
+| `/assistant-profile` | Privately show your global assistant preferences. Reading defaults does not create a database row. |
+| `/assistant-profile-set [language] [tone] [currency] [timezone] [notification-style] [llm-behavior]` | Privately update only the supplied fields. Currency can be unset; timezone must be an IANA name such as `Europe/Bucharest`. |
+| `/assistant-profile-reset` | Delete your stored profile and return to defaults. |
+
+Profile defaults are language `auto`, tone `default`, no currency override,
+timezone `UTC`, notification style `standard`, and LLM behavior `balanced`.
+Profiles are global per Discord user and independent from conversational memory.
+Language, tone, and answer detail are snapshotted when a text, vision, or empty
+summon mention is queued; an explicit language request in the current message
+wins over the saved language. A saved currency is used only when a supported
+wishlist/flight command omits currency. `compact` shortens scheduled wishlist
+and flight DMs. The saved timezone changes only natural-reminder confirmation
+display; existing feature date and schedule semantics remain unchanged.
+
+When the bot is explicitly mentioned, it recognizes these complete English or
+Romanian phrases before falling through to the ordinary mention LLM:
+
+- `@bot track https://example.com/product` / `@bot urmărește <URL>`
+- Reply to a message containing exactly one URL with `@bot track this` or
+  `@bot urmărește asta`
+- `@bot show my flights` / `@bot arată-mi zborurile mele`
+- `@bot remind me in two hours to stretch` /
+  `@bot amintește-mi peste 2 ore să sun acasă`
+
+Durations accept positive numbers and common number words with minute, hour,
+or day units. Recognized actions show exact proposal details in the channel and
+an in-memory requester-only Confirm/Cancel view for 120 seconds; flight lookup
+uses a requester-only **View my flights** button. No write occurs before
+confirmation, and execution results are ephemeral. Pending proposals disappear
+on bot restart. This is intentionally not a general-purpose agent: unsupported
+or loosely phrased prose falls through to the normal mention response, and
+ambiguous/missing URLs or reminder fields receive guidance.
+
 ### Birthdays
 
 | Command | Description |
@@ -341,9 +378,9 @@ use a 0–1 probability.
 | `/wishlist-target-clear <url>` | Remove one target-price alert. |
 | `/wishlist-restock-only <url> <enabled>` | Suppress price/target DMs for this item while continuing to track it; only back-in-stock changes notify. |
 | `/wishlist-refresh [url]` | With a URL, fetch only that tracked item; omit it to refresh your entire wishlist. Reports source, freshness, stock, price, and target progress. Five-minute cooldown per item; cooling items are skipped during an all-item refresh. |
-| `/wishlist-show [currency]` | List your items. Default: each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
-| `/wishlist-graph <url> [currency] [days]` | PNG price history for one URL. Any whole-number period from 1–180 days; default 180. |
-| `/wishlist-graph-all [currency] [days] [percentage]` | Combined graph; default currency = majority across your list. Set `percentage:true` to compare changes from each product's first observation in the selected period. |
+| `/wishlist-show [currency]` | List your items. Default: saved profile currency when set, otherwise each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
+| `/wishlist-graph <url> [currency] [days]` | PNG price history for one URL. Omitted currency uses the saved profile currency, then the item's native currency. Any whole-number period from 1–180 days; default 180. |
+| `/wishlist-graph-all [currency] [days] [percentage]` | Combined graph; omitted currency uses the saved profile currency, then the majority across your list. Set `percentage:true` to compare changes from each product's first observation in the selected period. |
 
 Graph replies have **7 / 30 / 90 days** buttons and a **Custom days** dialog
 (1–180). For example, `/wishlist-graph-all days:45 percentage:true` compares
@@ -382,7 +419,7 @@ list reports the source domain and the outcome/time of its latest check.
 
 | Command | Description |
 |---|---|
-| `/flight-tracker-add <origin> <destination> <start-date> <end-date> [adults] [currency]` | Save a fixed-date round-trip watch and run its first search immediately. On first use, opens the private SerpApi login modal. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
+| `/flight-tracker-add <origin> <destination> <start-date> <end-date> [adults] [currency]` | Save a fixed-date round-trip watch and run its first search immediately. Omitted currency uses the saved profile currency, then EUR. On first use, opens the private SerpApi login modal. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
 | `/flight-tracker-show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
 | `/flight-tracker-delete <tracker-id>` | Delete only your own tracker and its price history. |
 | `/flight-tracker-login` | Validate and set/replace your own SerpApi API Key. |
@@ -536,7 +573,6 @@ IDs such as reminder, joke, item, and tracker IDs remain numeric.
 |---|---|---|
 | `GET` | `/` | Local dashboard HTML; CSS and JavaScript are served below `/static/` |
 | `GET` | `/system/stats` | CPU, temperature in Celsius, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
-
 ### Sponsor tiers
 
 | Method | Path | Body / notes |
@@ -673,6 +709,15 @@ python -m pytest
 
 Coverage highlights: the `db` package (CRUD, migrations, cascades, memory, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, row-level user memory, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
 
+Natural-command/profile verification on 2026-10-01 used `.venv` Python 3.9.6.
+The affected targeted set passed `245 passed, 1 warning`. The single requested
+complete-suite run reported `535 passed, 1 failed, 1 warning`; its only failure
+was eager `asyncio.Lock` construction after an earlier test cleared the
+main-thread event loop. The lock was made lazy, then the focused
+profile/natural-command/naming/help regression set passed `23 passed, 1
+warning`. The complete suite was not run a second time. The warning is the
+existing urllib3/LibreSSL compatibility warning.
+
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
 ---
@@ -689,6 +734,8 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `sponsor_tiers.py` | Shared sponsor-tier validation, versioned catalog codec, decimal/percent formatting |
 | `wishlist/` | Scraping, refresh persistence, currency conversion, alerts, and chart rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
+| `assistant_profiles.py` | Discord-free assistant-profile validation, defaults, and prompt guidance |
+| `natural_commands.py` | Discord-free bounded English/Romanian command parser |
 | `db/` | SQLite connection, schema/migrations, and domain query modules |
 | `db/sponsors.py` | Atomic sponsor-tier catalog reads/writes using the global settings table |
 | `llm/` | llama.cpp client, response generation, memory extraction/store, and single-slot worker |
@@ -711,6 +758,8 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `wishlist.py` | `WishlistFeature` | `/wishlist-*` commands, scrape loop, and Discord notifications |
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
+| `assistant_profiles.py` | `AssistantProfilesFeature` | Private global per-user preference commands |
+| `natural_commands.py` | `NaturalCommandsFeature`, `NaturalCommandConfirmView` | Mention-only proposals and requester confirmation |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |

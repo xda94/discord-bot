@@ -40,6 +40,12 @@ FLIGHT_CURRENCY_CHOICES = [
 ]
 
 
+def _profile_currency(user_id: int) -> str | None:
+    stored = db.get_assistant_profile(user_id)
+    currency = stored.get("currency") if stored else None
+    return currency if currency in SUPPORTED_CURRENCIES else None
+
+
 def validate_tracker_input(
     origin: str,
     destination: str,
@@ -112,6 +118,25 @@ def _format_tracker(tracker: dict) -> str:
         f"{schedule} | Adults: `{tracker['adults']}`\n"
         f"{price}\n{status}"
     )
+
+
+def format_user_flight_trackers(user_id: int) -> list[str]:
+    """Shared requester-scoped rendering for slash and natural commands."""
+    trackers = db.get_user_flight_trackers(user_id)
+    if not trackers:
+        return ["You are not tracking any flights."]
+    blocks = [_format_tracker(tracker) for tracker in trackers]
+    chunks = []
+    current = "**Your flight trackers**\n\n"
+    for block in blocks:
+        if len(current) + len(block) + 2 > 1900:
+            chunks.append(current.rstrip())
+            current = block + "\n\n"
+        else:
+            current += block + "\n\n"
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks
 
 
 def _select_trackers_for_pass(trackers: list[dict]) -> list[dict]:
@@ -242,7 +267,9 @@ class FlightTrackerFeature:
             adults: int = 1,
             currency: Optional[app_commands.Choice[str]] = None,
         ):
-            currency_value = currency.value if currency else "EUR"
+            currency_value = currency.value if currency else (
+                _profile_currency(interaction.user.id) or "EUR"
+            )
             try:
                 values = validate_tracker_input(
                     origin, destination, start_date, end_date,
@@ -267,25 +294,7 @@ class FlightTrackerFeature:
             name="flight-tracker-show", description="Show your saved flight trackers"
         )
         async def flight_show(interaction: discord.Interaction):
-            trackers = db.get_user_flight_trackers(interaction.user.id)
-            if not trackers:
-                await interaction.response.send_message(
-                    "You are not tracking any flights.", ephemeral=True
-                )
-                return
-
-            blocks = [_format_tracker(tracker) for tracker in trackers]
-            chunks = []
-            current = "**Your flight trackers**\n\n"
-            for block in blocks:
-                if len(current) + len(block) + 2 > 1900:
-                    chunks.append(current.rstrip())
-                    current = block + "\n\n"
-                else:
-                    current += block + "\n\n"
-            if current.strip():
-                chunks.append(current.rstrip())
-
+            chunks = format_user_flight_trackers(interaction.user.id)
             await interaction.response.send_message(chunks[0], ephemeral=True)
             for chunk in chunks[1:]:
                 await interaction.followup.send(chunk, ephemeral=True)
@@ -465,10 +474,18 @@ class FlightTrackerFeature:
                 label = "First price found" if old_price is None else (
                     f"Price dropped from {old_price:.2f} {tracker['currency']}"
                 )
-                await user.send(
+                stored_profile = db.get_assistant_profile(tracker["user_id"])
+                compact = bool(
+                    stored_profile and stored_profile.get("notification_style") == "compact"
+                )
+                message = (
+                    f"✈️ **#{tracker['id']} {tracker['origin']} -> {tracker['destination']}** "
+                    f"{offer.total_price:.2f} {offer.currency} ({offer.departure_date} -> {offer.return_date})"
+                    if compact else
                     f"Flight tracker **#{tracker['id']}**: **{tracker['origin']} -> "
                     f"{tracker['destination']}**\n{label}.\n{_format_offer(offer)}"
                 )
+                await user.send(message)
                 await record("scheduled", "flight-notification", scope_type="dm")
         except Exception as exc:
             logger.error(
