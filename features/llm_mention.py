@@ -31,6 +31,7 @@ from mention_utils import (
 from llm.memory_extraction import generate_memory_delta
 from llm.responses import (
     MentionResult,
+    format_chat_line,
     generate_mention_result,
     generate_ordinary_reaction,
     generate_summon_reply,
@@ -111,13 +112,15 @@ def get_selected_model() -> str:
 
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
-MENTION_PROMPT_VERSION = "mention-v10-direct"
-MEMORY_MENTION_PROMPT_VERSION = "mention-v10-direct-memory"
-VISION_MENTION_PROMPT_VERSION = "mention-v10-direct-vision"
-VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v10-direct-vision-memory"
-SUMMON_PROMPT_VERSION = "summon-v2"
+MENTION_PROMPT_VERSION = "mention-v11-identity"
+MEMORY_MENTION_PROMPT_VERSION = "mention-v11-identity-memory"
+VISION_MENTION_PROMPT_VERSION = "mention-v11-identity-vision"
+VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v11-identity-vision-memory"
+SUMMON_PROMPT_VERSION = "summon-v3"
 REFERENCE_CONTEXT_CHAR_BUDGET = 6000
 VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
+MAX_MENTIONED_MEMORIES = 2
+MENTIONED_MEMORY_CHAR_BUDGET = 1000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 IMAGE_DESCRIPTION_REQUEST = (
@@ -265,6 +268,19 @@ def budget_reference_context(
     return memory, history
 
 
+def trim_profile(profile: str, max_chars: int) -> str:
+    """Keep whole entries, most relevant first, within an escaped-size budget."""
+    kept = []
+    used = 0
+    for line in profile.splitlines():
+        cost = len(html.escape(line, quote=False)) + 1
+        if used + cost > max_chars:
+            break
+        kept.append(line)
+        used += cost
+    return "\n".join(kept)
+
+
 def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
     """Split `text` into messages that fit Discord's 2000-character limit."""
     if not text and not first_prefix:
@@ -321,6 +337,7 @@ class AskJob:
     replied_message: str = ""
     bot_names: tuple[str, ...] = ()
     assistant_profile: AssistantProfile = DEFAULT_PROFILE
+    mentioned_memories: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -646,6 +663,7 @@ class LLMMentionFeature:
                 )
                 return
 
+        bot_name = job.bot_names[0] if job.bot_names else ""
         try:
             if job.summon_only:
                 reply = await asyncio.to_thread(
@@ -653,6 +671,8 @@ class LLMMentionFeature:
                     job.user.display_name,
                     model=job.model,
                     assistant_profile=job.assistant_profile,
+                    bot_name=bot_name,
+                    recent_messages=job.context_messages,
                 )
                 result = MentionResult(reply) if reply else None
             else:
@@ -667,6 +687,8 @@ class LLMMentionFeature:
                     "requester_id": job.user.id,
                     "reply_names": (getattr(job.user, "name", ""), *job.bot_names),
                     "assistant_profile": job.assistant_profile,
+                    "bot_name": bot_name,
+                    "mentioned_memories": job.mentioned_memories,
                 }
                 result = await asyncio.to_thread(
                     generate_mention_result,
@@ -910,6 +932,37 @@ class LLMMentionFeature:
             )
         return None
 
+    def _mentioned_memories(
+        self, message: discord.Message, requester_id: int
+    ) -> tuple[tuple[str, str], ...]:
+        """Saved profiles of other people @mentioned in the same server."""
+        profile_for = getattr(self.memory, "profile_for", None)
+        guild = getattr(message, "guild", None)
+        if profile_for is None or guild is None:
+            return ()
+        others = []
+        for user in getattr(message, "mentions", []):
+            if (
+                user.id in (self.bot_id, requester_id)
+                or getattr(user, "bot", False)
+                or any(user.id == other.id for other in others)
+            ):
+                continue
+            others.append(user)
+        memories = []
+        for user in others[:MAX_MENTIONED_MEMORIES]:
+            profile = profile_for(
+                guild_id=guild.id,
+                channel_id=message.channel.id,
+                user_id=user.id,
+                query=message.clean_content,
+            )
+            if profile:
+                memories.append(
+                    (user.display_name, trim_profile(profile, MENTIONED_MEMORY_CHAR_BUDGET))
+                )
+        return tuple(memories)
+
     async def _enqueue_job(self, job: AskJob) -> bool:
         self._user_pending.add(job.user.id)
         admitted = await self._put_job(0, job)
@@ -918,7 +971,7 @@ class LLMMentionFeature:
         return admitted
 
     async def handle_message(self, message: discord.Message) -> bool:
-        text = extract_mention_text(message, self.bot_id)
+        text = extract_mention_text(message, self.bot_id, keep_self_mentions=True)
         if text is None:
             return False
 
@@ -953,6 +1006,23 @@ class LLMMentionFeature:
         model = get_selected_model()
         assistant_profile = effective_profile(db.get_assistant_profile(user_id))
 
+        bot_names = []
+        client = getattr(self, "client", None)
+        live_display_name = (
+            resolve_bot_display_name(message.guild, client) if client is not None else ""
+        )
+        if live_display_name:
+            bot_names.append(live_display_name)
+        client_user = getattr(client, "user", None)
+        for value in (
+            getattr(client_user, "display_name", ""),
+            getattr(client_user, "name", ""),
+            getattr(getattr(message.guild, "me", None), "name", ""),
+        ):
+            if value and value not in bot_names:
+                bot_names.append(value)
+
+        bot_name = bot_names[0] if bot_names else ""
         limit = get_llm_context_messages()
         context_messages = []
         if limit > 0:
@@ -960,7 +1030,12 @@ class LLMMentionFeature:
                 limit=limit, before=message
             ):
                 context_messages.append(
-                    f"{past_msg.author.display_name}: {past_msg.clean_content}"
+                    format_chat_line(
+                        past_msg.author.display_name,
+                        past_msg.clean_content,
+                        is_bot=past_msg.author.id == self.bot_id,
+                        bot_name=bot_name,
+                    )
                 )
             context_messages.reverse()
 
@@ -984,6 +1059,9 @@ class LLMMentionFeature:
         # the newest live messages win when the shared history budget is tight.
         context_messages = memory_history + context_messages
 
+        mentioned_memories = (
+            () if summon_only else self._mentioned_memories(message, user_id)
+        )
         user_memory, context_messages = budget_reference_context(
             user_memory,
             context_messages,
@@ -991,17 +1069,23 @@ class LLMMentionFeature:
                 VISION_REFERENCE_CONTEXT_CHAR_BUDGET
                 if has_image
                 else REFERENCE_CONTEXT_CHAR_BUDGET
+            )
+            - sum(
+                len(html.escape(profile, quote=False))
+                for _, profile in mentioned_memories
             ),
         )
         logger.info(
             "Mention context prepared user_id=%s memory_enabled=%s memory_chars=%d "
-            "history_messages=%d history_chars=%d pending_observations=%d",
+            "history_messages=%d history_chars=%d pending_observations=%d "
+            "mentioned_memories=%d",
             user_id,
             memory_enabled,
             len(user_memory),
             len(context_messages),
             sum(map(len, context_messages)),
             len(memory_batch.observations) if memory_batch is not None else 0,
+            len(mentioned_memories),
         )
 
         replied_message = ""
@@ -1010,25 +1094,12 @@ class LLMMentionFeature:
         if isinstance(resolved, discord.Message):
             replied_content = resolved.clean_content.strip()
             if replied_content:
-                replied_message = (
-                    f"{resolved.author.display_name}: {replied_content}"
+                replied_message = format_chat_line(
+                    resolved.author.display_name,
+                    replied_content,
+                    is_bot=resolved.author.id == self.bot_id,
+                    bot_name=bot_name,
                 )
-
-        bot_names = []
-        client = getattr(self, "client", None)
-        live_display_name = (
-            resolve_bot_display_name(message.guild, client) if client is not None else ""
-        )
-        if live_display_name:
-            bot_names.append(live_display_name)
-        client_user = getattr(client, "user", None)
-        for value in (
-            getattr(client_user, "display_name", ""),
-            getattr(client_user, "name", ""),
-            getattr(getattr(message.guild, "me", None), "name", ""),
-        ):
-            if value and value not in bot_names:
-                bot_names.append(value)
 
         job = AskJob(
             user=message.author,
@@ -1046,6 +1117,7 @@ class LLMMentionFeature:
             replied_message=replied_message,
             bot_names=tuple(bot_names),
             assistant_profile=assistant_profile,
+            mentioned_memories=mentioned_memories,
             prompt_version=(
                 SUMMON_PROMPT_VERSION
                 if summon_only

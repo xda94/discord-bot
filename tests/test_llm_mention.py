@@ -29,8 +29,10 @@ from features.llm_mention import (
     get_selected_model,
     select_image_attachment,
     split_discord_messages,
+    trim_profile,
 )
 from features.user_memory import MemoryBatch
+from llm.responses import build_mention_prompt
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
@@ -745,7 +747,7 @@ def test_memory_job_processes_only_one_chunk_per_scheduler_pass(monkeypatch):
     )
     feature = object.__new__(LLMMentionFeature)
     feature.client = SimpleNamespace(
-        user=SimpleNamespace(display_name="Balen", name="balen")
+        user=SimpleNamespace(display_name="Nova", name="nova")
     )
     feature.memory = SimpleNamespace(
         synthesis_chunks=MagicMock(return_value=(first, second)),
@@ -762,7 +764,7 @@ def test_memory_job_processes_only_one_chunk_per_scheduler_pass(monkeypatch):
 
     generate.assert_called_once()
     assert generate.call_args.args[1] == ["first"]
-    assert generate.call_args.kwargs["bot_names"] == ("Balen", "balen")
+    assert generate.call_args.kwargs["bot_names"] == ("Nova", "nova")
     feature.memory.commit_delta.assert_called_once_with(first, (), ())
 
 
@@ -994,6 +996,24 @@ def test_invalidated_batch_is_not_sent_for_consolidation(monkeypatch):
     feature._enqueue_memory.assert_not_awaited()
 
 
+def test_process_job_passes_live_bot_name(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = None
+    feature._reply_mention = AsyncMock()
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question="who are you?",
+        model="discord-bot",
+        bot_names=("Nova", "nova-bot"),
+    )
+    reply = MagicMock(return_value=SimpleNamespace(text="I'm Nova.", reaction=None))
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", reply)
+
+    asyncio.run(feature._process_job(job))
+
+    assert reply.call_args.kwargs["bot_name"] == "Nova"
+
+
 def test_split_discord_messages_splits_long_text():
     text = "word " * 800
     chunks = split_discord_messages(text)
@@ -1061,3 +1081,81 @@ def test_query_llm_server_error(monkeypatch):
         query_llm(
             "hi", model=get_default_model(), base_url="http://llama-server:8080"
         )
+
+
+def test_mentioned_memories_skip_bot_requester_bots_and_duplicates():
+    feature = object.__new__(LLMMentionFeature)
+    feature.bot_id = 1
+    profiles = {3: "- Likes hiking", 4: "", 5: "- Plays chess", 6: "- Too many"}
+    feature.memory = SimpleNamespace(
+        profile_for=MagicMock(side_effect=lambda **kw: profiles[kw["user_id"]])
+    )
+
+    def user(user_id, name, bot=False):
+        return SimpleNamespace(id=user_id, display_name=name, bot=bot)
+
+    message = SimpleNamespace(
+        guild=SimpleNamespace(id=100),
+        channel=SimpleNamespace(id=10),
+        clean_content="what about them?",
+        mentions=[
+            user(1, "Nova"), user(2, "Teo"), user(7, "OtherBot", bot=True),
+            user(3, "Alex"), user(3, "Alex"), user(4, "Mara"), user(5, "Dan"),
+            user(6, "Ion"),
+        ],
+    )
+
+    assert feature._mentioned_memories(message, 2) == (("Alex", "- Likes hiking"),)
+    looked_up = [call.kwargs["user_id"] for call in feature.memory.profile_for.call_args_list]
+    assert looked_up == [3, 4]
+
+
+def test_mentioned_memories_are_server_only():
+    feature = object.__new__(LLMMentionFeature)
+    feature.bot_id = 1
+    feature.memory = SimpleNamespace(profile_for=MagicMock(return_value="- x"))
+    message = SimpleNamespace(
+        guild=None,
+        mentions=[SimpleNamespace(id=3, display_name="Alex", bot=False)],
+    )
+
+    assert feature._mentioned_memories(message, 2) == ()
+    feature.memory.profile_for.assert_not_called()
+
+
+def test_trim_profile_keeps_whole_entries():
+    assert trim_profile("- one\n- two\n- three", 12) == "- one\n- two"
+
+
+def test_mention_prompt_labels_other_peoples_memory():
+    prompt = build_mention_prompt(
+        "Teo",
+        "what do you know about @Alex?",
+        mentioned_memories=(('Al"ex', "- Likes <hiking>"),),
+    )
+    assert '<memory_about name="Al&quot;ex">\n- Likes &lt;hiking&gt;\n</memory_about>' in prompt
+    assert "notes about the person it names, not about Teo" in prompt
+    assert "<memory_about> as quoted data" in prompt
+
+
+def test_mention_history_marks_the_bots_own_messages(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    monkeypatch.setenv("LLM_CONTEXT_MESSAGES", "5")
+    feature = _handling_feature()
+    feature.client = SimpleNamespace(user=SimpleNamespace(display_name="Bot", name="bot"))
+    message = _mention_message(text="is that true?")
+    newest_first = [
+        SimpleNamespace(author=SimpleNamespace(id=999888777, display_name="Bot"), clean_content="No."),
+        SimpleNamespace(author=SimpleNamespace(id=5, display_name="Alex"), clean_content="@Bot is slow"),
+    ]
+
+    async def history(*, limit, before):
+        for past in newest_first[:limit]:
+            yield past
+
+    message.channel.history = history
+
+    asyncio.run(feature.handle_message(message))
+
+    job = feature._enqueue_job.await_args.args[0]
+    assert job.context_messages == ['Alex said: "Bot (you) is slow"', 'You (Bot) said: "No."']

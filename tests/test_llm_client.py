@@ -97,6 +97,7 @@ def test_query_llm_sends_chat_completion_options(monkeypatch):
         "messages": [{"role": "user", "content": "hello"}],
         "stream": False,
         "max_tokens": 384,
+        "chat_template_kwargs": {"enable_thinking": False},
         "temperature": 0.8,
     }
     assert mock_post.call_args.args[0] == "http://localhost:8080/v1/chat/completions"
@@ -381,3 +382,16 @@ def test_query_llm_rejects_invalid_response(monkeypatch):
 
     with pytest.raises(LlamaCppError, match="invalid chat-completion"):
         query_llm("hello")
+
+
+def test_query_llm_enables_thinking_only_when_asked(monkeypatch):
+    response = MagicMock(ok=True)
+    response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", post)
+
+    query_llm("hello")
+    assert post.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+    query_llm("hello", thinking=True)
+    assert post.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": True}
