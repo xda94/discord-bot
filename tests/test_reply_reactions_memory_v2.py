@@ -42,19 +42,19 @@ def _message(content="hello", *, user_id=7, guild_id=100, channel_id=10):
 
 
 def test_reply_label_cleanup_handles_real_prefix_and_preserves_natural_name():
-    names = ("Robeeque", "Balen")
+    names = ("Robeeque", "Nova")
     assert strip_leading_reply_labels(
-        "@Robeeque Balen: Sigur, iată motivele.", requester_id=123, names=names
+        "@Robeeque Nova: Sigur, iată motivele.", requester_id=123, names=names
     ) == "Sigur, iată motivele."
     assert strip_leading_reply_labels(
-        "**@Robeeque Balen:** Sigur.", requester_id=123, names=names
+        "**@Robeeque Nova:** Sigur.", requester_id=123, names=names
     ) == "Sigur."
     assert strip_leading_reply_labels(
-        "<@123> <@123> Balen: Salut.", requester_id=123, names=names
+        "<@123> <@123> Nova: Salut.", requester_id=123, names=names
     ) == "Salut."
     assert strip_leading_reply_labels(
-        "Balen is relevant to this answer.", requester_id=123, names=names
-    ) == "Balen is relevant to this answer."
+        "Nova is relevant to this answer.", requester_id=123, names=names
+    ) == "Nova is relevant to this answer."
 
 
 def test_reply_sender_adds_only_one_requester_mention_with_bot_label():
@@ -66,10 +66,10 @@ def test_reply_sender_adds_only_one_requester_mention_with_bot_label():
         question="hello",
         model="discord-bot",
         reply_to=original,
-        bot_names=("Balen",),
+        bot_names=("Nova",),
     )
 
-    asyncio.run(feature._reply_mention(job, "@Robeeque Balen: Salut!"))
+    asyncio.run(feature._reply_mention(job, "@Robeeque Nova: Salut!"))
 
     assert original.reply.await_args.args == ("<@123> Salut!",)
 
@@ -83,10 +83,10 @@ def test_worker_sends_only_corrected_answer_after_labeled_short_echo(monkeypatch
         question="Esti okay?",
         model="discord-bot",
         reply_to=original,
-        bot_names=("Balen",),
+        bot_names=("Nova",),
     )
     query = MagicMock(side_effect=[
-        json.dumps({"text": "<@123> Balen: Ești okay?", "reaction": "👍"}),
+        json.dumps({"text": "<@123> Nova: Ești okay?", "reaction": "👍"}),
         json.dumps({"text": "Da, sunt bine. Tu cum ești?", "reaction": None}),
     ])
     monkeypatch.setattr("llm.client.query_llm", query)
@@ -416,7 +416,7 @@ def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
         captured["prompt"] = prompt
         return (
             '{"add":['
-            '{"kind":"fact","content":"Balen prefers a manual razor",'
+            '{"kind":"fact","content":"Nova prefers a manual razor",'
             '"source_index":0},'
             '{"kind":"fact","content":"The user likes tea",'
             '"source_index":1},'
@@ -430,7 +430,7 @@ def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
         [],
         ["I use a razor", "I like tea", "I prefer a manual razor"],
         model="discord-bot",
-        bot_names=("Balen",),
+        bot_names=("Nova",),
     )
 
     assert result.successful is True
@@ -438,7 +438,7 @@ def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
         "Prefers a manual razor"
     ]
     assert "subject-neutral" in captured["prompt"]
-    assert "Balen" in captured["prompt"]
+    assert "Nova" in captured["prompt"]
     assert "never to the memory owner" in captured["prompt"]
 
 

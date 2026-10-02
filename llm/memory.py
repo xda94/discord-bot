@@ -350,6 +350,31 @@ class MemoryStore:
             )
         return MemoryContext(enabled=True, profile=profile, batch=batch)
 
+    def profile_for(
+        self,
+        *,
+        guild_id: int | None,
+        channel_id: int,
+        user_id: int,
+        query: str,
+    ) -> str:
+        """Read another server member's saved profile, honoring their opt-out."""
+        if guild_id is None:
+            return ""
+        scope_id = _scope_id(guild_id)
+        if self.automatic_enabled:
+            if not self._is_enabled(
+                guild_id=guild_id, channel_id=channel_id, user_id=user_id
+            ):
+                return ""
+        elif self._preference(scope_id, user_id) is False:
+            return ""
+        return (
+            self._selected_entry_text(scope_id, user_id, query)
+            or db.get_llm_user_memory(scope_id, user_id)
+            or ""
+        )
+
     def commit_delta(self, batch: MemoryBatch, additions, corrections) -> bool:
         """Atomically apply row changes and acknowledge their source observations."""
         if not self.can_process_batch(batch):

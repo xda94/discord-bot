@@ -650,3 +650,37 @@ def test_manual_memory_limits_and_erase_all(tmp_db):
     assert db.get_llm_memory_observations(0, 7) == []
     assert "were erased" in interaction.response.send_message.await_args.args[0]
     asyncio.run(client.close())
+
+
+def test_profile_for_reads_other_members_and_honors_opt_out(tmp_db):
+    db.set_llm_memory_channel_enabled(100, 10, True)
+    db.add_manual_llm_memory_entry(100, 8, "Likes hiking")
+    db.add_manual_llm_memory_entry(100, 9, "Plays chess")
+    db.set_llm_memory_preference(100, 9, False)
+    client, _, feature = _build_feature()
+
+    def profile(user_id, *, guild_id=100, channel_id=10):
+        return feature.store.profile_for(
+            guild_id=guild_id, channel_id=channel_id, user_id=user_id, query=""
+        )
+
+    assert "Likes hiking" in profile(8)
+    assert profile(9) == ""
+    assert profile(8, channel_id=11) == ""
+    assert profile(8, guild_id=None) == ""
+    asyncio.run(client.close())
+
+
+def test_profile_for_manual_mode_skips_only_opted_out_members(tmp_db):
+    db.add_manual_llm_memory_entry(100, 8, "Likes hiking")
+    db.add_manual_llm_memory_entry(100, 9, "Plays chess")
+    db.set_llm_memory_preference(100, 9, False)
+    client, _, feature = _build_feature(automatic_enabled=False)
+
+    assert "Likes hiking" in feature.store.profile_for(
+        guild_id=100, channel_id=10, user_id=8, query=""
+    )
+    assert feature.store.profile_for(
+        guild_id=100, channel_id=10, user_id=9, query=""
+    ) == ""
+    asyncio.run(client.close())

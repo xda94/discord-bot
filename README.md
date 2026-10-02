@@ -81,8 +81,9 @@ LLM_MEMORY_ENABLED=0
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
-| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. |
-| `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. Set it to around `10` so the bot can answer questions about recent messages and pick up the channel's language for very short questions. |
+| `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. With `LLM_MENTION_THINKING=1` this budget also covers the hidden reasoning, so leave room for llama-server's `--reasoning-budget`. |
+| `LLM_MENTION_THINKING` | No (bot) | `1` lets thinking models reason before @mention replies; every other request (teases, reactions, summons, birthdays, memory) always disables thinking. Requires a bounded `--reasoning-budget` on llama-server. Improves answers about chat history at the cost of slower replies. Default: off. |
 | `LLM_MEMORY_ENABLED` | No (bot) | Memory mode selected at startup. Only `1` enables automatic channel capture and synthesis. `0`, a missing value, or an invalid value uses manual memory through `/memory-add`, `/memory-show`, and `/memory-erase`. Restart the bot after changing it. |
 | `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Automatic mode only. Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
 | `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Automatic mode only. Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
@@ -105,7 +106,7 @@ Start llama.cpp before the bot. The alias must match
 
 ```bash
 llama-server \
-  -hf ggml-org/gemma-3-4b-it-GGUF:Q4_K_M \
+  -hf unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL \
   --no-mmproj-offload \
   --alias discord-bot \
   --host 127.0.0.1 \
@@ -119,6 +120,15 @@ llama-server \
 On a four-core host, three inference threads leave one core available for the
 OS, Discord bot, and API. Four inference threads can make the machine
 unresponsive even though the bot's event loop itself is not blocked.
+
+Keep `--ctx-size` at `4096` or more (per slot, when `--parallel` is above 1). A
+mention prompt is about 270 tokens of instructions; with
+`LLM_CONTEXT_MESSAGES=10` and typical chat it grows to roughly 1,000 tokens, but
+with the full 6,000-character memory and history budget it reaches about 2,300
+tokens. A 2048-token context then rejects the request and the mention reply
+fails. Set `LLM_CONTEXT_MESSAGES` to around `10`: the bot needs recent history to
+answer questions about earlier messages, and on CPU-only hosts every extra
+message is reprocessed on each reply, so larger values mostly add latency.
 
 The bot calls llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint.
 Gemma's matching multimodal projector is loaded automatically by `-hf`;
@@ -135,11 +145,13 @@ and [server documentation](https://github.com/ggml-org/llama.cpp/blob/master/too
 for model/projector and endpoint details.
 
 Requests are user-only by default. Mention answers and empty-ping summons add a
-short, mention-specific `system` instruction asking for direct final output and
-discouraging thinking blocks; other generators remain user-only. Persistent
-identity and behavior should still be configured with the model or llama.cpp
-chat template. This instruction does not guarantee compliance from every model
-or chat template. If multiple aliases are listed, each one must be reachable
+short, mention-specific `system` instruction that names the bot (its live server
+nickname, so no name is configured in the repo) and asks for direct final output;
+other generators remain user-only. Every request also sends
+`chat_template_kwargs: {"enable_thinking": false}` (except @mention replies when
+`LLM_MENTION_THINKING=1`), because thinking models such as Gemma 4 otherwise spend
+short output budgets on hidden reasoning and the reply fails. These settings do not guarantee compliance from every model or chat
+template. If multiple aliases are listed, each one must be reachable
 through the configured endpoint (for example through a compatible model router).
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
@@ -479,10 +491,15 @@ never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
 
-Mention prompts ask the model to answer the requester from the assistant's
-perspective and start with the answer. Saved memory is explicitly identified as
-belonging to the requester; recall uses `you`/`your` rather than adopting the
-requester's details as the assistant's own. Validation removes leading requester/bot labels before comparing
+Mention prompts tell the model who it is (the bot's server nickname) and who it
+is replying to (the requester's display name), and ask it to start with the
+answer. In chat history and replied-to messages, the bot's own lines are marked
+`Name (you):`. Saved memory is labelled as notes about the requester, who is
+addressed as `you` rather than having their details adopted as the assistant's
+own. When a mention also @mentions other server members, up to two of their saved
+profiles (1,000 characters each) are included as notes about them, so the bot can
+answer questions such as "what do you know about @Alex?". Members who opted out,
+channels without memory (automatic mode), and DMs are excluded. Validation removes leading requester/bot labels before comparing
 the reply with the question, including short questions and differences in
 case, punctuation, or diacritics. Echoes receive one corrective retry; a second
 echo produces a generation-failure message instead of posting the question.

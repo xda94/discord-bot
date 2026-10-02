@@ -174,12 +174,12 @@ def query_llm(
     image_mime: str | None = None,
     base_url: str = LLAMA_CPP_BASE_URL,
     timeout: int | None = None,
+    thinking: bool = False,
 ) -> str:
     """Call llama-server's OpenAI-compatible chat-completions endpoint.
 
     Calls are user-only by default. Callers may opt in to a nonempty system
-    instruction for feature-specific behavior; persistent bot identity still
-    belongs in the llama.cpp deployment's model/chat template.
+    instruction for feature-specific behavior.
     """
     if timeout is None:
         timeout = LLAMA_CPP_TIMEOUT
@@ -219,6 +219,9 @@ def query_llm(
         "messages": messages,
         "stream": False,
         "max_tokens": DEFAULT_MAX_TOKENS,
+        # Thinking models (e.g. Gemma 4) otherwise spend short token budgets on
+        # hidden reasoning and return an empty, truncated answer.
+        "chat_template_kwargs": {"enable_thinking": thinking},
     }
 
     if options:
