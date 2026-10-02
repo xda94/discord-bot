@@ -134,10 +134,13 @@ See the official llama.cpp [multimodal documentation](https://github.com/ggml-or
 and [server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 for model/projector and endpoint details.
 
-It sends only a `user` message and does not inject a `system` message; persistent
-identity and behavior should be configured with the model or llama.cpp chat
-template. If multiple aliases are listed, each one must be reachable through the
-configured endpoint (for example through a compatible model router).
+Requests are user-only by default. Mention answers and empty-ping summons add a
+short, mention-specific `system` instruction asking for direct final output and
+discouraging thinking blocks; other generators remain user-only. Persistent
+identity and behavior should still be configured with the model or llama.cpp
+chat template. This instruction does not guarantee compliance from every model
+or chat template. If multiple aliases are listed, each one must be reachable
+through the configured endpoint (for example through a compatible model router).
 
 The database file and its `-wal` / `-shm` sidecars are **gitignored** — back up `responses.db` yourself (e.g. `sqlite3 .backup`), not via git.
 
@@ -486,6 +489,15 @@ echo produces a generation-failure message instead of posting the question.
 Replies that quote a question and then add an answer are accepted. These checks
 detect textual repetition; they do not judge the correctness of an answer or
 recognize every semantic paraphrase.
+
+Mention answers and empty-ping summons also use a concise system instruction
+that asks for a ready-to-send final answer without thinking, analysis, planning,
+or preamble. It is intended to preserve the reply budget for visible output;
+the existing token defaults and configuration remain unchanged. Teases,
+reactions, inactivity messages, birthdays, memory extraction, scraper calls,
+and other generators do not receive this instruction. Model and chat-template
+behavior varies, so the instruction reduces unwanted thinking output but cannot
+guarantee its suppression.
 
 Every inference request has an output-token limit: 384 by default for mention
 replies, 96 for short social replies, 32 for reactions, and 1,024 by default

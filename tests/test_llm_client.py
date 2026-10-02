@@ -102,6 +102,83 @@ def test_query_llm_sends_chat_completion_options(monkeypatch):
     assert mock_post.call_args.args[0] == "http://localhost:8080/v1/chat/completions"
 
 
+def test_query_llm_sends_supplied_system_prompt_before_text_user_message(monkeypatch):
+    response = MagicMock(ok=True)
+    response.json.return_value = {
+        "choices": [{"message": {"content": '{"answer":"ok"}'}}]
+    }
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", post)
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+
+    query_llm(
+        "exact user prompt",
+        system_prompt="Direct answers only.",
+        options={"format": "json", "max_tokens": 450},
+        response_schema=schema,
+    )
+
+    payload = post.call_args.kwargs["json"]
+    assert payload["messages"] == [
+        {"role": "system", "content": "Direct answers only."},
+        {"role": "user", "content": "exact user prompt"},
+    ]
+    assert payload["max_tokens"] == 450
+    assert payload["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
+
+
+def test_query_llm_sends_supplied_system_prompt_before_multimodal_user_message(
+    monkeypatch,
+):
+    response = MagicMock(ok=True)
+    response.json.return_value = {
+        "choices": [{"message": {"content": "A small PNG."}}]
+    }
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", post)
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+
+    query_llm(
+        "Describe it exactly.",
+        system_prompt="No analysis.",
+        image_bytes=b"\x89PNG",
+        image_mime="image/png",
+        options={"format": "json", "max_tokens": 450},
+        response_schema=schema,
+    )
+
+    payload = post.call_args.kwargs["json"]
+    assert payload["messages"] == [
+        {"role": "system", "content": "No analysis."},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,iVBORw=="},
+                },
+                {"type": "text", "text": "Describe it exactly."},
+            ],
+        },
+    ]
+    assert payload["max_tokens"] == 450
+    assert payload["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
+
+
 @pytest.mark.parametrize("options,expected", [(None, 384), ({"format": "json"}, 384), ({"max_tokens": 32}, 32)])
 def test_all_generation_paths_have_a_finite_output_budget(monkeypatch, options, expected):
     response = MagicMock(ok=True)

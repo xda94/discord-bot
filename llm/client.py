@@ -167,6 +167,7 @@ def query_llm(
     prompt: str,
     model: str | None = None,
     *,
+    system_prompt: str | None = None,
     options: dict | None = None,
     response_schema: dict | None = None,
     image_bytes: bytes | None = None,
@@ -176,9 +177,9 @@ def query_llm(
 ) -> str:
     """Call llama-server's OpenAI-compatible chat-completions endpoint.
 
-    The application deliberately sends only a user message. Persistent bot
-    identity and behavior belong in the model/chat template configured by the
-    llama.cpp deployment, not in an application-provided system message.
+    Calls are user-only by default. Callers may opt in to a nonempty system
+    instruction for feature-specific behavior; persistent bot identity still
+    belongs in the llama.cpp deployment's model/chat template.
     """
     if timeout is None:
         timeout = LLAMA_CPP_TIMEOUT
@@ -208,9 +209,14 @@ def query_llm(
             {"type": "text", "text": prompt},
         ]
 
+    messages: list[dict] = []
+    if system_prompt and system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": message_content})
+
     payload: dict = {
         "model": model,
-        "messages": [{"role": "user", "content": message_content}],
+        "messages": messages,
         "stream": False,
         "max_tokens": DEFAULT_MAX_TOKENS,
     }
