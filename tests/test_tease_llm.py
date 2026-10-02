@@ -10,6 +10,7 @@ from llm.memory_extraction import (
     get_memory_max_tokens,
 )
 from llm.responses import (
+    MENTION_SYSTEM_PROMPT,
     build_birthday_prompt,
     build_inactivity_prompt,
     build_mention_prompt,
@@ -240,18 +241,38 @@ def test_get_mention_max_tokens(monkeypatch):
     assert get_mention_max_tokens() == 1
 
 
-def test_mention_uses_configured_output_budget(monkeypatch):
-    query = MagicMock(return_value='{"text":"Configured reply.","reaction":null}')
+@pytest.mark.parametrize(
+    "generation_kwargs",
+    [
+        {},
+        {"memory_enabled": True, "user_memory": "Likes concise answers"},
+        {"image_bytes": b"png-data", "image_mime": "image/png"},
+    ],
+)
+def test_mention_retries_use_direct_output_system_prompt_and_configured_budget(
+    monkeypatch, generation_kwargs
+):
+    query = MagicMock(
+        side_effect=[
+            '{"text":"","reaction":null}',
+            '{"text":"Configured reply.","reaction":null}',
+        ]
+    )
     monkeypatch.setattr("llm.client.query_llm", query)
-    monkeypatch.setenv("LLM_MENTION_MAX_TOKENS", "768")
+    monkeypatch.setenv("LLM_MENTION_MAX_TOKENS", "450")
 
-    result = generate_mention_result("Alice", "Give me a detailed answer")
+    result = generate_mention_result(
+        "Alice", "Give me a detailed answer", **generation_kwargs
+    )
 
     assert result.text == "Configured reply."
-    assert query.call_args.kwargs["options"] == {
-        "format": "json",
-        "max_tokens": 768,
-    }
+    assert query.call_count == 2
+    for call in query.call_args_list:
+        assert call.kwargs["system_prompt"] == MENTION_SYSTEM_PROMPT
+        assert call.kwargs["options"] == {
+            "format": "json",
+            "max_tokens": 450,
+        }
 
 
 def test_memory_delta_uses_bounded_schema_and_configured_output_budget(monkeypatch):
@@ -454,11 +475,19 @@ def test_mention_validation_logs_reason_without_content(monkeypatch, caplog, raw
 
 
 def test_generate_summon_reply(monkeypatch):
-    monkeypatch.setattr(
-        "llm.client.query_llm",
-        lambda prompt, **kwargs: "You rang? What do you need?",
-    )
+    query = MagicMock(return_value="You rang? What do you need?")
+    monkeypatch.setattr("llm.client.query_llm", query)
     assert generate_summon_reply("Alice") == "You rang? What do you need?"
+    assert query.call_args.kwargs["system_prompt"] == MENTION_SYSTEM_PROMPT
+    assert query.call_args.kwargs["options"] == {"max_tokens": 96}
+
+
+def test_unrelated_birthday_generator_does_not_use_mention_system_prompt(monkeypatch):
+    query = MagicMock(return_value="Happy birthday!")
+    monkeypatch.setattr("llm.client.query_llm", query)
+
+    assert generate_birthday_message() == "Happy birthday!"
+    assert "system_prompt" not in query.call_args.kwargs
 
 
 def test_build_inactivity_prompt_with_question_and_name():

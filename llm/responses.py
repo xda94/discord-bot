@@ -20,6 +20,12 @@ TEASE_LLM_ENABLED = os.getenv("TEASE_LLM_ENHANCE", "true").lower() in ("1", "tru
 TEASE_LLAMA_CPP_TIMEOUT = int(os.getenv("TEASE_LLAMA_CPP_TIMEOUT", "45"))
 TEASE_LLM_MAX_CHARS = 280
 REACTION_EMOJIS = ("👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "🤔", "👏", "💯", "✅")
+MENTION_SYSTEM_PROMPT = (
+    "Return only a direct, concise, ready-to-send final answer. "
+    "Do not output thinking blocks, internal reasoning, analysis, planning, or a "
+    "preamble. Include a brief explanation only when useful. Follow the user's "
+    "requested language and style."
+)
 
 PRICE_CHANGE_TONES: dict[str, str] = {
     "funny": "funny and witty",
@@ -414,6 +420,7 @@ def generate_mention_result(
             raw = client.query_llm(
                 prompt=attempt_prompt,
                 model=model,
+                system_prompt=MENTION_SYSTEM_PROMPT,
                 options={"format": "json", "max_tokens": get_mention_max_tokens()},
                 response_schema=MENTION_RESPONSE_SCHEMA,
                 image_bytes=image_bytes,
@@ -464,6 +471,7 @@ def generate_summon_reply(
         raw = client.query_llm(
             build_summon_prompt(username, assistant_profile),
             model=model,
+            system_prompt=MENTION_SYSTEM_PROMPT,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
             options={"max_tokens": 96},
         )
