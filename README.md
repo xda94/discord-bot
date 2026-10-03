@@ -83,6 +83,7 @@ LLM_MEMORY_ENABLED=0
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. Set it to around `10` so the bot can answer questions about recent messages and pick up the channel's language for very short questions. |
 | `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. With `LLM_MENTION_THINKING=1` this budget also covers the hidden reasoning, so leave room for llama-server's `--reasoning-budget`. |
+| `LLM_PREREAD` | No (bot) | `1` pre-reads a channel's chat history into llama-server's prompt cache a few seconds after it goes quiet, so the next @mention only reads the new part. Only channels with an @mention in the last 30 minutes, and only while the model is idle. Needs `--swa-full --cache-reuse 64` on llama-server and `LLM_CONTEXT_MESSAGES` above `0`. Default: off. |
 | `LLM_MENTION_THINKING` | No (bot) | `1` lets thinking models reason before @mention replies; every other request (teases, reactions, summons, birthdays, memory) always disables thinking. Requires a bounded `--reasoning-budget` on llama-server. Improves answers about chat history at the cost of slower replies. Default: off. |
 | `LLM_MEMORY_ENABLED` | No (bot) | Memory mode selected at startup. Only `1` enables automatic channel capture and synthesis. `0`, a missing value, or an invalid value uses manual memory through `/memory-add`, `/memory-show`, and `/memory-erase`. Restart the bot after changing it. |
 | `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Automatic mode only. Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
@@ -114,7 +115,9 @@ llama-server \
   --ctx-size 4096 \
   --parallel 1 \
   --threads 3 \
-  --threads-batch 3
+  --threads-batch 3 \
+  --swa-full \
+  --cache-reuse 64
 ```
 
 On a four-core host, three inference threads leave one core available for the
@@ -127,8 +130,20 @@ mention prompt is about 270 tokens of instructions; with
 with the full 6,000-character memory and history budget it reaches about 2,300
 tokens. A 2048-token context then rejects the request and the mention reply
 fails. Set `LLM_CONTEXT_MESSAGES` to around `10`: the bot needs recent history to
-answer questions about earlier messages, and on CPU-only hosts every extra
-message is reprocessed on each reply, so larger values mostly add latency.
+answer questions about earlier messages.
+
+`--swa-full --cache-reuse 64` let consecutive mentions reuse the already
+processed instructions and chat history instead of reading the whole prompt
+again. Gemma 4's sliding-window attention otherwise discards that cache, and
+`--cache-reuse` lets llama.cpp keep the history lines that only shifted
+position. The mention prompt is ordered for this: fixed instructions first, then
+the chat history, then everything that differs per request. On a CPU-only host a
+follow-up mention reads about 200 new tokens instead of about 550, which roughly
+halves the reply time; the first mention after a restart is still read in full.
+With `LLM_PREREAD=1` the bot also reads new chat history in the background while
+the channel is quiet, so a mention reads only its own part (about 100–150
+tokens) and the first mention after a quiet period is not read in full either.
+`--swa-full` costs about 120 MB of extra memory at a 4096-token context.
 
 The bot calls llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint.
 Gemma's matching multimodal projector is loaded automatically by `-hf`;
