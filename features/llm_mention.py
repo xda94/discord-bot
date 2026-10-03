@@ -21,7 +21,6 @@ from llm.client import (
     get_allowed_models,
     get_mention_model,
     llama_supports_vision,
-    warm_prompt_cache,
 )
 from llm.memory import MemoryBatch, MemoryStore
 from mention_utils import (
@@ -32,13 +31,10 @@ from mention_utils import (
 from llm.memory_extraction import generate_memory_delta
 from llm.responses import (
     MentionResult,
-    build_mention_prompt_head,
-    build_mention_system_prompt,
     format_chat_line,
     generate_mention_result,
     generate_ordinary_reaction,
     generate_summon_reply,
-    get_mention_thinking,
 )
 from llm.worker import SingleSlotWorker, WorkerResult
 
@@ -60,13 +56,6 @@ def get_reaction_chance() -> float:
 def get_reaction_cooldown_seconds() -> float:
     return max(0.0, float(os.getenv("LLM_REACTION_COOLDOWN_SECONDS", "60")))
 
-
-def get_preread_enabled() -> bool:
-    return os.getenv("LLM_PREREAD", "").strip().lower() in ("1", "true", "yes")
-
-
-PREREAD_DELAY_SECONDS = 5.0
-PREREAD_ACTIVE_SECONDS = 30 * 60
 
 
 def get_memory_consolidation_interval_seconds() -> float:
@@ -124,10 +113,10 @@ def get_selected_model() -> str:
 
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
-MENTION_PROMPT_VERSION = "mention-v11-identity"
-MEMORY_MENTION_PROMPT_VERSION = "mention-v11-identity-memory"
-VISION_MENTION_PROMPT_VERSION = "mention-v11-identity-vision"
-VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v11-identity-vision-memory"
+MENTION_PROMPT_VERSION = "mention-v12-reminders"
+MEMORY_MENTION_PROMPT_VERSION = "mention-v12-reminders-memory"
+VISION_MENTION_PROMPT_VERSION = "mention-v12-reminders-vision"
+VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v12-reminders-vision-memory"
 SUMMON_PROMPT_VERSION = "summon-v3"
 REFERENCE_CONTEXT_CHAR_BUDGET = 6000
 VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
@@ -409,9 +398,6 @@ class LLMMentionFeature:
         self._memory_consecutive_failures = 0
         self._reaction_pending_channels: set[int] = set()
         self._reaction_last_attempt: dict[int, float] = {}
-        self._last_mention_at: dict[int, float] = {}
-        self._preread_tasks: dict[int, asyncio.Task] = {}
-        self._preread_running = False
         self._register_commands()
 
     def _cooldown_remaining(self, user_id: int) -> float:
@@ -486,7 +472,10 @@ class LLMMentionFeature:
         if self.memory is None or not getattr(
             self.memory, "automatic_enabled", True
         ):
-            logger.info("Memory scheduler disabled mode=manual")
+            logger.info(
+                "Memory scheduler disabled mode=%s",
+                "disabled" if self.memory is None else "manual",
+            )
             return
         if self._memory_scheduler_task is None or self._memory_scheduler_task.done():
             self._memory_scheduler_task = asyncio.create_task(
@@ -735,8 +724,6 @@ class LLMMentionFeature:
         except Exception:
             await record_for("failure", "llm-reply", job.reply_to)
             raise
-        if job.channel is not None:
-            self.schedule_preread(job.channel)
         if result.reaction and job.reply_to is not None:
             reaction_channel_id = getattr(
                 getattr(job.reply_to, "channel", None), "id", None
@@ -896,7 +883,6 @@ class LLMMentionFeature:
 
     async def handle_ordinary_message(self, message: discord.Message) -> bool:
         """Occasionally queue one reaction while keeping mention work first."""
-        self.schedule_preread(message.channel)
         content = getattr(message, "clean_content", "").strip()
         channel_id = getattr(message.channel, "id", None)
         if not content or channel_id is None or random.random() >= get_reaction_chance():
@@ -1017,48 +1003,6 @@ class LLMMentionFeature:
         lines.reverse()
         return lines
 
-    def schedule_preread(self, channel) -> None:
-        """Pre-read a recently active channel's history once it goes quiet."""
-        channel_id = getattr(channel, "id", None)
-        if not get_preread_enabled() or channel_id is None:
-            return
-        last_mention = self._last_mention_at.get(channel_id)
-        if last_mention is None or time.monotonic() - last_mention > PREREAD_ACTIVE_SECONDS:
-            return
-        pending = self._preread_tasks.pop(channel_id, None)
-        if pending is not None:
-            pending.cancel()
-        self._preread_tasks[channel_id] = asyncio.create_task(self._preread(channel))
-
-    async def _preread(self, channel) -> None:
-        """Send the next mention's shared prompt head now, so llama.cpp has it cached."""
-        try:
-            await asyncio.sleep(PREREAD_DELAY_SECONDS)
-        except asyncio.CancelledError:
-            return
-        self._preread_tasks.pop(channel.id, None)
-        if self._preread_running or self._model_busy():
-            return
-        self._preread_running = True
-        try:
-            bot_names = self._bot_names(getattr(channel, "guild", None))
-            bot_name = bot_names[0] if bot_names else ""
-            history = await self._channel_history(channel, bot_name)
-            _, history = budget_reference_context("", history)
-            if not history:
-                return
-            await asyncio.to_thread(
-                warm_prompt_cache,
-                build_mention_prompt_head(history),
-                get_selected_model(),
-                system_prompt=build_mention_system_prompt(bot_name),
-                thinking=get_mention_thinking(),
-            )
-        except Exception:
-            logger.exception("Mention pre-read failed")
-        finally:
-            self._preread_running = False
-
     async def _enqueue_job(self, job: AskJob) -> bool:
         self._user_pending.add(job.user.id)
         admitted = await self._put_job(0, job)
@@ -1102,10 +1046,6 @@ class LLMMentionFeature:
         model = get_selected_model()
         assistant_profile = effective_profile(db.get_assistant_profile(user_id))
 
-        self._last_mention_at[message.channel.id] = time.monotonic()
-        pending = self._preread_tasks.pop(message.channel.id, None)
-        if pending is not None:
-            pending.cancel()
         bot_names = self._bot_names(message.guild)
         bot_name = bot_names[0] if bot_names else ""
         context_messages = await self._channel_history(

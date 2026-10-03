@@ -36,7 +36,11 @@ from features.wishlist import WishlistFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
-from features.user_memory import UserMemoryFeature, is_automatic_memory_enabled
+from features.user_memory import (
+    UserMemoryFeature,
+    is_automatic_memory_enabled,
+    is_memory_disabled,
+)
 
 from llm.client import LlamaCppError, get_default_model
 
@@ -97,11 +101,12 @@ assistant_profiles = AssistantProfilesFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
-AUTOMATIC_MEMORY_ENABLED = is_automatic_memory_enabled()
-user_memory = UserMemoryFeature(
-    client,
-    tree,
-    automatic_enabled=AUTOMATIC_MEMORY_ENABLED,
+MEMORY_DISABLED = is_memory_disabled()
+AUTOMATIC_MEMORY_ENABLED = not MEMORY_DISABLED and is_automatic_memory_enabled()
+user_memory = (
+    None
+    if MEMORY_DISABLED
+    else UserMemoryFeature(client, tree, automatic_enabled=AUTOMATIC_MEMORY_ENABLED)
 )
 llm_mention = LLMMentionFeature(
     client,
@@ -122,10 +127,11 @@ help_feature = HelpFeature(
     client,
     tree,
     automatic_memory_enabled=AUTOMATIC_MEMORY_ENABLED,
+    memory_disabled=MEMORY_DISABLED,
 )
 logger.info(
     "LLM memory mode=%s",
-    "automatic" if AUTOMATIC_MEMORY_ENABLED else "manual",
+    "disabled" if MEMORY_DISABLED else ("automatic" if AUTOMATIC_MEMORY_ENABLED else "manual"),
 )
 
 # Bounded natural commands claim supported mentions before the general LLM.

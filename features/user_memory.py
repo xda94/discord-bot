@@ -28,6 +28,11 @@ from llm.memory import (
 logger = logging.getLogger("discord_bot")
 
 
+def is_memory_disabled() -> bool:
+    """LLM_MEMORY_DISABLED=1 turns memory off entirely (no commands, capture, or prompt use)."""
+    return os.getenv("LLM_MEMORY_DISABLED", "").strip().lower() in ("1", "true", "yes")
+
+
 def is_automatic_memory_enabled() -> bool:
     """Return whether automatic capture and synthesis are enabled."""
     raw_value = os.getenv("LLM_MEMORY_ENABLED")
