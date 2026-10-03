@@ -684,3 +684,14 @@ def test_profile_for_manual_mode_skips_only_opted_out_members(tmp_db):
         guild_id=100, channel_id=10, user_id=9, query=""
     ) == ""
     asyncio.run(client.close())
+
+
+@pytest.mark.parametrize("value,expected", [(None, False), ("0", False), ("1", True), ("true", True)])
+def test_memory_disabled_setting(monkeypatch, value, expected):
+    from features.user_memory import is_memory_disabled
+
+    if value is None:
+        monkeypatch.delenv("LLM_MEMORY_DISABLED", raising=False)
+    else:
+        monkeypatch.setenv("LLM_MEMORY_DISABLED", value)
+    assert is_memory_disabled() is expected

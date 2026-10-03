@@ -32,3 +32,14 @@ def test_help_text_matches_manual_memory_mode():
 def test_help_text_chunks_stay_within_discord_limit_in_both_modes():
     for automatic in (True, False):
         assert all(len(chunk) <= 1900 for chunk in _chunk_text(build_help_text(automatic)))
+
+
+def test_help_text_without_memory_lists_no_memory_commands():
+    from features.help_feature import build_help_text
+
+    text = build_help_text(automatic_memory_enabled=False, memory_disabled=True)
+
+    assert "/memory-" not in text
+    assert "/llm-memory" not in text
+    assert "supplement live chat history" not in text
+    assert "**@bot** (mention)" in text

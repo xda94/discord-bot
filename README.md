@@ -81,10 +81,10 @@ LLM_MEMORY_ENABLED=0
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
-| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. Set it to around `10` so the bot can answer questions about recent messages and pick up the channel's language for very short questions. |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. Set it to `5` so the bot can answer questions about recent messages and pick up the channel's language for very short questions; every extra message makes each reply slower on a CPU-only host. |
 | `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. With `LLM_MENTION_THINKING=1` this budget also covers the hidden reasoning, so leave room for llama-server's `--reasoning-budget`. |
-| `LLM_PREREAD` | No (bot) | `1` pre-reads a channel's chat history into llama-server's prompt cache a few seconds after it goes quiet, so the next @mention only reads the new part. Only channels with an @mention in the last 30 minutes, and only while the model is idle. Needs `--swa-full --cache-reuse 64` on llama-server and `LLM_CONTEXT_MESSAGES` above `0`. Default: off. |
 | `LLM_MENTION_THINKING` | No (bot) | `1` lets thinking models reason before @mention replies; every other request (teases, reactions, summons, birthdays, memory) always disables thinking. Requires a bounded `--reasoning-budget` on llama-server. Improves answers about chat history at the cost of slower replies. Default: off. |
+| `LLM_MEMORY_DISABLED` | No (bot) | `1` turns LLM memory off entirely: no `/memory-*` or `/llm-memory*` commands, no automatic capture, and no saved memory in mention prompts (yours or other people's). Overrides `LLM_MEMORY_ENABLED`. Saved notes add a few hundred tokens to every mention, which on a CPU-only host is often the largest part of the reply time. Default: off. |
 | `LLM_MEMORY_ENABLED` | No (bot) | Memory mode selected at startup. Only `1` enables automatic channel capture and synthesis. `0`, a missing value, or an invalid value uses manual memory through `/memory-add`, `/memory-show`, and `/memory-erase`. Restart the bot after changing it. |
 | `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Automatic mode only. Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
 | `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Automatic mode only. Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
@@ -125,25 +125,25 @@ OS, Discord bot, and API. Four inference threads can make the machine
 unresponsive even though the bot's event loop itself is not blocked.
 
 Keep `--ctx-size` at `4096` or more (per slot, when `--parallel` is above 1). A
-mention prompt is about 270 tokens of instructions; with
-`LLM_CONTEXT_MESSAGES=10` and typical chat it grows to roughly 1,000 tokens, but
+mention prompt is about 250 tokens of instructions; with
+`LLM_CONTEXT_MESSAGES=5` and typical chat it grows to roughly 450 tokens, but
 with the full 6,000-character memory and history budget it reaches about 2,300
 tokens. A 2048-token context then rejects the request and the mention reply
-fails. Set `LLM_CONTEXT_MESSAGES` to around `10`: the bot needs recent history to
-answer questions about earlier messages.
+fails.
 
-`--swa-full --cache-reuse 64` let consecutive mentions reuse the already
-processed instructions and chat history instead of reading the whole prompt
-again. Gemma 4's sliding-window attention otherwise discards that cache, and
-`--cache-reuse` lets llama.cpp keep the history lines that only shifted
-position. The mention prompt is ordered for this: fixed instructions first, then
-the chat history, then everything that differs per request. On a CPU-only host a
-follow-up mention reads about 200 new tokens instead of about 550, which roughly
-halves the reply time; the first mention after a restart is still read in full.
-With `LLM_PREREAD=1` the bot also reads new chat history in the background while
-the channel is quiet, so a mention reads only its own part (about 100–150
-tokens) and the first mention after a quiet period is not read in full either.
-`--swa-full` costs about 120 MB of extra memory at a 4096-token context.
+On a CPU-only host, reading the prompt takes most of the reply time (an Intel
+N150 with three threads reads about 11 tokens per second). Set
+`LLM_CONTEXT_MESSAGES` to `5`: enough for questions about recent messages, at
+about 100 tokens of typical chat. Saved memory notes are usually the largest
+part of the prompt (20 notes add roughly 250–500 tokens), so on a slow host consider
+`LLM_MEMORY_DISABLED=1`.
+
+`--swa-full --cache-reuse 64` let every mention reuse the already processed
+instructions (about 250 tokens) instead of reading them again; Gemma 4's
+sliding-window attention otherwise discards that cache. The mention prompt
+starts with these fixed instructions, followed by everything that differs per
+request. `--swa-full` costs about 120 MB of extra memory at a 4096-token
+context.
 
 The bot calls llama.cpp's OpenAI-compatible `/v1/chat/completions` endpoint.
 Gemma's matching multimodal projector is loaded automatically by `-hf`;
@@ -565,7 +565,9 @@ or prompt automatically.
 Only the exact value `1` enables automatic memory; `0`, a missing value, or an
 invalid value selects manual memory. Restart the bot to change modes. Stored
 entries are retained across mode changes, and the API/dashboard remain
-available in both modes.
+available in both modes. `LLM_MEMORY_DISABLED=1` overrides both modes: memory
+commands are not registered and mention prompts never include saved notes;
+stored entries are kept for when it is turned back on.
 
 In manual mode, `/memory-add` stores one user-authored memory categorized as
 Likes, Dislikes, Facts, Interests, Opinions, or Other. `/memory-show` groups
