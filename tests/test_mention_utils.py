@@ -78,3 +78,38 @@ def test_extract_mention_text_resolves_other_user_mentions():
     # The bot's own mention is stripped; other users become readable names,
     # so no raw <@id> reaches the LLM.
     assert extract_mention_text(FakeMessage(), 99) == "what did @Carol say?"
+
+
+class _NamedBot:
+    id = 99
+    display_name = "Nova"
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("<@99> who is <@99>?", "who is @Nova?"),
+        ("who is <@!99>?", "who is @Nova?"),
+        ("<@99> what is python?", "what is python?"),
+        ("<@99>", ""),
+    ],
+)
+def test_extract_mention_text_can_keep_later_self_mentions(content, expected):
+    class FakeMessage:
+        mentions = [_NamedBot()]
+        role_mentions = []
+        channel_mentions = []
+
+    message = FakeMessage()
+    message.content = content
+    assert extract_mention_text(message, 99, keep_self_mentions=True) == expected
+
+
+def test_extract_mention_text_strips_every_self_mention_by_default():
+    class FakeMessage:
+        mentions = [_NamedBot()]
+        content = "<@99> show my wishlist <@99>"
+        role_mentions = []
+        channel_mentions = []
+
+    assert extract_mention_text(FakeMessage(), 99) == "show my wishlist"

@@ -50,7 +50,7 @@ def test_database_helper_rejects_invalid_profile_values(tmp_db):
 
 def test_profile_prompt_defaults_and_explicit_language_precedence():
     default_prompt = build_mention_prompt("Ana", "Salut")
-    assert "use <current_message>'s language" in default_prompt
+    assert "the language of <current_message>" in default_prompt
 
     profile = effective_profile({
         "language": "ro", "tone": "formal", "currency": None,
