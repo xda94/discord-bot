@@ -379,3 +379,52 @@ def query_llm(
         time.monotonic() - started,
     )
     return answer
+
+
+def warm_prompt_cache(
+    prompt: str,
+    model: str,
+    *,
+    system_prompt: str,
+    thinking: bool = False,
+    base_url: str = LLAMA_CPP_BASE_URL,
+    timeout: int | None = None,
+) -> None:
+    """Have llama-server process a prompt prefix now so a later request reuses it.
+
+    Sends the same message layout as query_llm with a one-token budget; failures
+    are logged and ignored because this is only an optimisation.
+    """
+    if timeout is None:
+        timeout = LLAMA_CPP_TIMEOUT
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "max_tokens": 1,
+        "chat_template_kwargs": {"enable_thinking": thinking},
+    }
+    started = time.monotonic()
+    try:
+        response = requests.post(
+            _chat_completions_url(base_url),
+            json=payload,
+            headers=_request_headers(),
+            timeout=(10, timeout),
+        )
+        timings = response.json().get("timings", {}) if response.ok else {}
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        logger.info("LLM prompt pre-read failed error=%s", type(exc).__name__)
+        return
+    logger.info(
+        "LLM prompt pre-read status=%s prompt_tokens=%s cached_tokens=%s "
+        "prompt_ms=%s elapsed=%.2fs",
+        response.status_code,
+        _numeric_metric(timings, "prompt_n"),
+        _numeric_metric(timings, "cache_n"),
+        _numeric_metric(timings, "prompt_ms"),
+        time.monotonic() - started,
+    )

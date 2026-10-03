@@ -24,7 +24,7 @@ def strip_leading_reply_labels(
         return cleaned
     alternatives = "|".join(re.escape(name) for name in usable)
     leading_at_name = re.compile(
-        rf"^\s*(?:[*_`~]{{1,3}})?\s*@(?:{alternatives})\b\s*"
+        rf"^\s*(?:[*_`~]{{1,3}})?\s*@(?:{alternatives})\b,?\s*"
         rf"(?:[*_`~]{{1,3}})?\s*",
         flags=re.IGNORECASE,
     )
@@ -36,11 +36,12 @@ def strip_leading_reply_labels(
         flags=re.IGNORECASE,
     )
     for pattern in (leading_at_name, label):
-        while True:
-            updated = pattern.sub("", cleaned, count=1).lstrip()
-            if updated == cleaned:
+        while match := pattern.match(cleaned):
+            rest = cleaned[match.end():].lstrip()
+            # "@Bot is a Discord bot": the name is the sentence subject, not a ping.
+            if pattern is leading_at_name and rest[:1].islower() and "," not in match.group(0):
                 break
-            cleaned = updated
+            cleaned = rest
     return cleaned or text.strip()
 
 
