@@ -68,17 +68,24 @@ def resolve_bot_display_name(
     return ""
 
 
-def extract_mention_text(message: discord.Message, bot_id: int) -> str | None:
+def extract_mention_text(
+    message: discord.Message, bot_id: int, *, keep_self_mentions: bool = False
+) -> str | None:
     """Return the text after the bot mention, or '' if only the ping.
 
     The bot's own mention is removed, and every other user/role/channel mention
-    is rendered as a readable name so no raw `<@id>` reaches the LLM. Returns
-    None if the bot was not mentioned."""
+    is rendered as a readable name so no raw `<@id>` reaches the LLM. With
+    `keep_self_mentions`, only the leading bot ping is removed and later ones
+    become `@name`, so "who is @Bot?" keeps its subject. Returns None if the bot
+    was not mentioned."""
     if not is_bot_mentioned(message, bot_id):
         return None
-    text = re.sub(rf"<@!?{bot_id}>\s*", "", message.content).strip()
+    if keep_self_mentions:
+        text = re.sub(rf"^\s*<@!?{bot_id}>\s*", "", message.content).strip()
+    else:
+        text = re.sub(rf"<@!?{bot_id}>\s*", "", message.content).strip()
     for user in message.mentions:
-        if user.id == bot_id:
+        if user.id == bot_id and not keep_self_mentions:
             continue
         text = text.replace(f"<@{user.id}>", f"@{user.display_name}")
         text = text.replace(f"<@!{user.id}>", f"@{user.display_name}")
