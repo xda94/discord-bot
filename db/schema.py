@@ -557,6 +557,8 @@ def init_db():
                 "INSERT OR IGNORE INTO analytics_metadata (key, value) VALUES (?, ?)",
                 ("tracking_started_at", str(time.time())),
             )
+            from db.experience_schema import migrate
+            migrate(c)
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")

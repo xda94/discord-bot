@@ -78,6 +78,7 @@ LLM_MEMORY_ENABLED=0
 | `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
 | `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm-set`. A single-server setup normally lists one alias. |
+| `NATURAL_LLM_ENABLED` | No | Defaults to disabled. Set `1` only after the deployed model passes the read-only bilingual corpus evaluation; deterministic mention commands remain available. |
 | `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
@@ -291,7 +292,8 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
 | Birthday check | Daily at 00:01 | Sends one LLM-generated annual birthday greeting per saved user; failures retry every 30 minutes during the date |
-| Reminders | 10 s | Delivers due reminders |
+| Reminders | 10 s | Claims due occurrences, delivers/retries, and advances recurrence |
+| Tracking notifications | 30 s | Drains the durable outbox, respecting opt-in quiet hours and daily digests |
 | Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm-inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
 | Teases | On message | Random mood lines rewritten via llama.cpp |
@@ -307,15 +309,44 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 | `/keyword-add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
 | `/top-keywords [user]` | Most triggered keywords in the server. |
 | `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style and in the triggering message's language. |
-| `/help` | Full command list (chunked for Discord’s 2000-character limit). |
+| `/help` | Localized categories and examples, with a complete command reference button. |
+| `/start` | Private language/timezone setup and feature navigation. |
 
 ### Reminders
 
 | Command | Description |
 |---|---|
-| `/remind <when> <who> <what>` | Timed reminder — `when` like `30m`, `2h`, `1d`. |
+| `/remind <when> <who> <what> [recurrence]` | Duration or calendar reminder, with optional daily, weekdays, or weekly recurrence. |
+| `/reminder-list` | Private lifecycle list and owner-checked edit/cancel/retry controls. |
+| `/reminder-edit <reminder-id>` | Edit reminder text and local time. |
+| `/reminder-cancel <reminder-id>` | Cancel a saved reminder. |
+| `/reminder-snooze <reminder-id>` | Create an independent ten-minute one-off. |
 
 ### Assistant profile and natural commands
+
+Romanian commands, calendar reminders, reminder management, flight budgets, durable quiet-hour/digest notifications, bilingual dashboard controls, additive migrations, and rollout verification are documented in [Bilingual commands and delivery](docs/romanian-commands.md). Use `/start` for private language/timezone setup.
+
+The implementation and runtime architecture are also summarized in
+[`bot.md`](bot.md), including event routing, persistence, delivery recovery,
+API routes, and deployment notes.
+
+### Current implementation status
+
+The repository now includes the deterministic Romanian/English command parser,
+shared localization catalogs, timezone-aware duration/calendar parsing,
+clarification and ownership controls, lifecycle-managed reminders, recurrence,
+retry/reconciliation, durable tracking notifications, wishlist IDs and target
+controls, flight budgets and airport autocomplete, `/start`, categorized help,
+the independent bilingual dashboard selector, and aggregate natural-command
+analytics. SQLite changes are additive and existing slash/API contracts remain
+compatible.
+
+The reviewed parser corpus contains 148 English/Romanian cases and currently
+passes at 100% with zero unauthorized actions. The full automated suite passes
+830 tests. `NATURAL_LLM_ENABLED` remains disabled by default until a deployed
+model passes the read-only 100-case evaluation gate; the live model endpoint
+and a Discord test server still need to be exercised before enabling generated
+action execution.
 
 | Command | Description |
 |---|---|
@@ -330,9 +361,10 @@ Language, tone, and answer detail are snapshotted when a text, vision, or empty
 summon mention is queued; an explicit language request in the current message
 wins over the saved language. A saved currency is used only when a supported
 wishlist/flight command omits currency. `compact` shortens scheduled wishlist
-and flight DMs. Timezone remains a stored/displayed preference; immediate
-relative reminders do not need timezone conversion, and existing feature date
-and schedule semantics remain unchanged.
+and flight DMs. Calendar reminders, recurrence, quiet hours, and daily digests
+require an explicitly configured timezone; relative one-off durations do not.
+Tracking delivery defaults to immediate with no quiet hours. The dashboard
+language preference is independent of the selected Discord user’s profile.
 
 When the bot is explicitly mentioned, it recognizes these complete English or
 Romanian phrases before falling through to the ordinary mention LLM:
@@ -351,18 +383,19 @@ Romanian phrases before falling through to the ordinary mention LLM:
 | Compare | `compare my wishlist [for 30 days]` | `compară wishlist-ul meu [pentru 30 zile]` |
 | Reminder | `remind me in two hours to stretch` | `amintește-mi peste 2 ore să sun acasă` |
 
-Durations accept positive numbers and common number words with minute, hour,
-or day units; graph periods are whole days from 1 to 180. Every recognized
-command executes immediately. Successful mutations and private deliveries are
-acknowledged only with ✅ on the source message. Flight, wishlist, refresh, and
-graph results are sent only to the requester's DM with mentions and embeds
-suppressed; if DMs are blocked, the bot gives generic channel guidance and
-never posts the private result publicly. Wishlist actions always use the
-requester's own records, and refresh retains its five-minute per-item cooldown,
-sequential fetches, and saved-history-only graph behavior. Unsupported or
-loosely phrased prose falls through to the normal mention response, while
-ambiguous/missing fields receive generic usage guidance. This is intentionally
-not a general-purpose agent.
+Durations accept positive numbers, common written values, fractions, weeks,
+and compounds such as `o oră și 30 de minute`. Graph periods are whole days
+from 1 to 180. Complete actions execute immediately; missing or ambiguous fields
+start a ten-minute clarification. Every text follow-up requires a bot mention.
+Successful actions and requested private deliveries receive only ✅.
+
+Flight, wishlist, reminder, refresh, and graph results stay private. If DMs fail,
+the response names the exact slash command for an ephemeral alternative.
+Wishlist references accept owned IDs, titles, URLs, or unambiguous bot results.
+Refresh preserves existing cooldowns and saved-history graphs. Unmatched mentions
+use the existing model worker; structured model execution is opt-in through
+`NATURAL_LLM_ENABLED=1` after the read-only evaluation passes. See the bilingual
+delivery guide above for migrations, limitations, and rollout checks.
 
 ### Birthdays
 
@@ -461,7 +494,8 @@ list reports the source domain and the outcome/time of its latest check.
 
 | Command | Description |
 |---|---|
-| `/flight-tracker-add <origin> <destination> <start-date> <end-date> [adults] [currency]` | Save a fixed-date round-trip watch and run its first search immediately. Omitted currency uses the saved profile currency, then EUR. On first use, opens the private SerpApi login modal. Use three-letter IATA city/airport codes and `YYYY-MM-DD`. |
+| `/flight-tracker-add <origin> <destination> <start-date> <end-date> [adults] [currency] [budget]` | Save a fixed-date round-trip watch and run its first search immediately. Omitted currency uses the saved profile currency, then EUR. On first use, opens the private SerpApi login modal. Use airport/city autocomplete or three-letter IATA codes and `YYYY-MM-DD`. |
+| `/flight-tracker-budget <tracker-id> [budget]` | Set or clear a budget threshold in the tracker’s currency. |
 | `/flight-tracker-show` | List only your trackers, IDs, periods, latest best dates/prices, and any provider error. |
 | `/flight-tracker-delete <tracker-id>` | Delete only your own tracker and its price history. |
 | `/flight-tracker-login` | Validate and set/replace your own SerpApi API Key. |
@@ -767,14 +801,12 @@ python -m pytest
 
 Coverage highlights: the `db` package (CRUD, migrations, cascades, memory, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, row-level user memory, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
 
-Natural-command/profile verification on 2026-10-01 used `.venv` Python 3.9.6.
-The affected targeted set passed `245 passed, 1 warning`. The single requested
-complete-suite run reported `535 passed, 1 failed, 1 warning`; its only failure
-was eager `asyncio.Lock` construction after an earlier test cleared the
-main-thread event loop. The lock was made lazy, then the focused
-profile/natural-command/naming/help regression set passed `23 passed, 1
-warning`. The complete suite was not run a second time. The warning is the
-existing urllib3/LibreSSL compatibility warning.
+Verification on 2026-10-03 used the repository `.venv` (Python 3.9.6). The
+complete repository suite passed `830 passed, 1 warning`; the warning is the
+existing urllib3/LibreSSL compatibility warning. The reviewed bilingual
+parser corpus passed 148/148 cases (100%) with zero unauthorized actions.
+Tests use isolated databases; no live Discord messages or production services
+were used.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 

@@ -62,7 +62,7 @@ def delete_flight_api_credentials(user_id):
 _FLIGHT_TRACKER_COLUMNS = (
     "id, user_id, origin, destination, start_date, end_date, trip_days, "
     "adults, currency, last_price, last_departure_date, last_return_date, "
-    "last_checked_at, last_error, created_at"
+    "last_checked_at, last_error, created_at, budget, budget_alerted, language"
 )
 
 
@@ -72,29 +72,34 @@ def _flight_tracker_dict(row):
     keys = (
         "id", "user_id", "origin", "destination", "start_date", "end_date",
         "trip_days", "adults", "currency", "last_price", "last_departure_date",
-        "last_return_date", "last_checked_at", "last_error", "created_at",
+        "last_return_date", "last_checked_at", "last_error", "created_at", "budget", "budget_alerted", "language",
     )
     return dict(zip(keys, row))
 
 
 def add_flight_tracker(
     user_id, origin, destination, start_date, end_date,
-    trip_days=0, adults=1, currency="EUR",
+    trip_days=0, adults=1, currency="EUR", budget=None, language="en",
 ):
     """Add one per-user route/date watch and return its numeric ID.
 
     The full search definition is unique per user. The same route can still be
     tracked for different periods, durations, passenger counts, or currencies.
     """
+    import math
+    if language not in ("en","ro"):
+        raise ValueError("Invalid language")
+    if budget is not None and (isinstance(budget,bool) or not isinstance(budget,(int,float)) or not math.isfinite(budget) or budget<=0):
+        raise ValueError('Budget must be a positive finite number')
     try:
         with _connect(commit=True) as c:
             c.execute(
                 "INSERT OR IGNORE INTO flight_trackers "
                 "(user_id, origin, destination, start_date, end_date, trip_days, "
-                "adults, currency, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "adults, currency, created_at, budget, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id, origin, destination, start_date, end_date,
-                    int(trip_days or 0), int(adults), currency, time.time(),
+                    int(trip_days or 0), int(adults), currency, time.time(), budget, language,
                 ),
             )
             return c.lastrowid if c.rowcount > 0 else None
@@ -221,3 +226,17 @@ def get_flight_price_history(tracker_id, user_id=None):
         logger.exception(f"Failed to fetch flight price history for tracker {tracker_id}")
         return []
 
+
+
+def set_flight_budget(tracker_id,user_id,budget):
+    import math
+    if budget is not None and (isinstance(budget,bool) or not isinstance(budget,(int,float)) or not math.isfinite(budget) or budget<=0):
+        raise ValueError('Budget must be positive and finite')
+    with _connect(commit=True) as c:
+        c.execute('UPDATE flight_trackers SET budget=?,budget_alerted=0 WHERE id=? AND user_id=?',(budget,tracker_id,user_id))
+        return c.rowcount>0
+
+
+def mark_budget_alerted(tracker_id,alerted):
+    with _connect(commit=True) as c:
+        c.execute('UPDATE flight_trackers SET budget_alerted=? WHERE id=?',(int(alerted),tracker_id))

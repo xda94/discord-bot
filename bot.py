@@ -25,12 +25,14 @@ from features.birthdays import BirthdaysFeature
 from features.llm_mention import ContextReactionFeature, LLMMentionFeature
 from features.natural_commands import NaturalCommandsFeature
 from features.help_feature import HelpFeature
+from features.onboarding import OnboardingFeature
 from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
 from features.keywords import KeywordsFeature
 from features.llm_feedback import LLMFeedbackFeature
 from features.reminders import RemindersFeature
+from notifications import NotificationsFeature
 from features.response_gate import ResponseGate
 from features.wishlist import WishlistFeature
 from features.sponsors import SponsorsFeature
@@ -93,6 +95,7 @@ keywords = KeywordsFeature(client, tree, gate, sponsors)
 teases = TeasesFeature(client, tree)
 inactivity = InactivityFeature(client, tree)
 reminders = RemindersFeature(client, tree)
+notifications = NotificationsFeature(client)
 jokes = JokesFeature(client, tree)
 birthdays = BirthdaysFeature(client, tree)
 wishlist = WishlistFeature(client, tree)
@@ -122,6 +125,7 @@ natural_commands = NaturalCommandsFeature(
     flights=flights,
     reminders=reminders,
 )
+llm_mention.natural_commands = natural_commands
 context_reactions = ContextReactionFeature(llm_mention)
 help_feature = HelpFeature(
     client,
@@ -129,6 +133,7 @@ help_feature = HelpFeature(
     automatic_memory_enabled=AUTOMATIC_MEMORY_ENABLED,
     memory_disabled=MEMORY_DISABLED,
 )
+onboarding = OnboardingFeature(client,tree,memory_disabled=MEMORY_DISABLED)
 logger.info(
     "LLM memory mode=%s",
     "disabled" if MEMORY_DISABLED else ("automatic" if AUTOMATIC_MEMORY_ENABLED else "manual"),
@@ -148,6 +153,8 @@ BACKGROUND_FEATURES = (
     sponsors,
     inactivity,
     reminders,
+    notifications,
+    natural_commands,
     jokes,
     birthdays,
     wishlist,

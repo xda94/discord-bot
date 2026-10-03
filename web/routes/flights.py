@@ -44,7 +44,12 @@ def _validate_flight_tracker_payload(data):
         raise ValueError(
             f"currency must be one of: {', '.join(SUPPORTED_CURRENCIES)}"
         )
+    budget=data.get("budget")
+    import math
+    if budget is not None and (isinstance(budget,bool) or not isinstance(budget,(int,float)) or not math.isfinite(budget) or budget<=0):
+        raise ValueError("Budget must be positive and finite")
     return {
+        "budget":budget,
         "user_id": user_id,
         "origin": origin,
         "destination": destination,
@@ -133,6 +138,7 @@ def api_add_flight_tracker():
         values["end_date"],
         adults=values["adults"],
         currency=values["currency"],
+        budget=values["budget"],
     )
     if not tracker_id:
         return jsonify({"error": "That exact tracker already exists"}), 409
@@ -195,3 +201,27 @@ def api_get_flight_tracker_history(tracker_id):
 
 
 # --- Settings Routes ---
+
+
+@blueprint.route('/flights/trackers/<int:tracker_id>',methods=['PATCH'])
+@require_token
+def api_flight_budget(tracker_id):
+    from db.flights import set_flight_budget
+    data=request.get_json(silent=True)
+    if not isinstance(data,dict) or set(data)!={'user_id','budget'}:
+        return jsonify({'error':'Provide user_id and budget'}),400
+    try:
+        user_id=_discord_id(data['user_id'],'user_id')
+        ok=set_flight_budget(tracker_id,user_id,data['budget'])
+    except (ValueError,TypeError) as exc:
+        return jsonify({'error':str(exc)}),400
+    if not ok:
+        return jsonify({'error':'Tracker not found'}),404
+    return jsonify(get_flight_tracker(tracker_id,user_id))
+
+
+@blueprint.route('/flights/airports',methods=['GET'])
+@require_token
+def api_airports():
+    from airports import search_airports
+    return jsonify(search_airports(request.args.get('q','')))

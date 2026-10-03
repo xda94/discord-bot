@@ -9,7 +9,7 @@ from db.connection import _connect
 
 logger = logging.getLogger("database")
 
-def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=None):
+def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=None, *, language="en"):
     """Insert a new tracked item.
 
     `stock` is tri-state: True/1 → in stock, False/0 → out of stock,
@@ -20,8 +20,8 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
         stock_int = None if stock is None else (1 if stock else 0)
         with _connect(commit=True) as c:
             c.execute(
-                "INSERT OR IGNORE INTO scraped_items (user_id, url, title, last_price, last_stock_status, currency) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, url, title, price, stock_int, currency)
+                "INSERT OR IGNORE INTO scraped_items (user_id, url, title, last_price, last_stock_status, currency, language) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, url, title, price, stock_int, currency, language)
             )
             if c.rowcount > 0:
                 item_id = c.lastrowid

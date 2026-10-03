@@ -13,6 +13,8 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
+from i18n import localized_interaction, language_for, localize
+from notifications import deliver_tracking, tracking_language
 import db
 from analytics import record
 from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph, send_graph_to_user
@@ -106,10 +108,11 @@ class WishlistFeature:
         @self.tree.command(name="wishlist-item", description="Add a link to track price and stock")
         @app_commands.describe(url="The URL of the item to track")
         async def scrape_item(interaction: discord.Interaction, url: str):
+            interaction = localized_interaction(interaction)
             logger.info(f"Command /wishlist-item called by {interaction.user} for {url}")
             await interaction.response.defer(ephemeral=True)
 
-            result = await feature.add_item_for_user(interaction.user.id, url)
+            result = await feature.add_item_for_user(interaction.user.id, url, language=interaction._language)
             if result.status == "invalid":
                 await interaction.followup.send(
                     "❌ That doesn't look like a valid HTTP(S) URL. Expected something like "
@@ -161,6 +164,7 @@ class WishlistFeature:
         @self.tree.command(name="wishlist-item-delete", description="Remove a link from tracking")
         @app_commands.describe(url="The URL to remove")
         async def scrape_item_delete(interaction: discord.Interaction, url: str):
+            interaction = localized_interaction(interaction)
             logger.info(f"Command /wishlist-item-delete called by {interaction.user} for {url}")
             if feature.delete_item_for_user(interaction.user.id, url):
                 await interaction.response.send_message("Link removed and data cleared.", ephemeral=True)
@@ -183,6 +187,7 @@ class WishlistFeature:
             price: float,
             currency: app_commands.Choice[str],
         ):
+            interaction = localized_interaction(interaction)
             try:
                 success = feature.set_target_for_user(
                     interaction.user.id, url, price, currency.value
@@ -209,6 +214,7 @@ class WishlistFeature:
         )
         @app_commands.describe(url="The tracked item URL")
         async def wishlist_target_clear(interaction: discord.Interaction, url: str):
+            interaction = localized_interaction(interaction)
             if feature.clear_target_for_user(interaction.user.id, url):
                 await interaction.response.send_message(
                     "Target-price alert removed.", ephemeral=True
@@ -229,6 +235,7 @@ class WishlistFeature:
         async def wishlist_restock_only(
             interaction: discord.Interaction, url: str, enabled: bool
         ):
+            interaction = localized_interaction(interaction)
             if feature.set_restock_only_for_user(interaction.user.id, url, enabled):
                 text = (
                     "Restock-only mode enabled. Price history still updates, "
@@ -253,6 +260,7 @@ class WishlistFeature:
             # Preserve the slash command's immediate response for an empty
             # selection; actual refresh work and cooldown reservation stay in
             # the shared requester-scoped helper below.
+            interaction = localized_interaction(interaction)
             if url is not None:
                 has_items = db.get_scraped_item(interaction.user.id, url) is not None
             else:
@@ -282,6 +290,7 @@ class WishlistFeature:
             interaction: discord.Interaction,
             currency: Optional[app_commands.Choice[str]] = None,
         ):
+            interaction = localized_interaction(interaction)
             logger.info(
                 f"Command /wishlist-show called by {interaction.user} "
                 f"(currency={currency.value if currency else 'native'})"
@@ -290,8 +299,10 @@ class WishlistFeature:
             chunks = feature.format_items_for_user(
                 interaction.user.id, currency.value if currency else None
             )
-            for chunk in chunks:
-                await interaction.followup.send(chunk, ephemeral=True, suppress_embeds=True)
+            from features.wishlist_controls import WishlistManageView
+            view = WishlistManageView(interaction.user.id)
+            for index, chunk in enumerate(chunks):
+                await interaction.followup.send(chunk, ephemeral=True, suppress_embeds=True, view=view if view.children and index == len(chunks)-1 else discord.utils.MISSING)
 
         @self.tree.command(
             name="wishlist-graph", description="Generate a price history graph for a tracked item"
@@ -308,6 +319,7 @@ class WishlistFeature:
             currency: Optional[app_commands.Choice[str]] = None,
             days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
         ):
+            interaction = localized_interaction(interaction)
             target_currency = feature.graph_currency_for_user(
                 interaction.user.id, url=url, currency=currency.value if currency else None
             )
@@ -333,6 +345,7 @@ class WishlistFeature:
             days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
             percentage: bool = False,
         ):
+            interaction = localized_interaction(interaction)
             target_currency = feature.graph_currency_for_user(
                 interaction.user.id, currency=currency.value if currency else None
             )
@@ -377,13 +390,16 @@ class WishlistFeature:
     def set_restock_only_for_user(self, user_id: int, url: str, enabled: bool) -> bool:
         return bool(db.set_scraped_item_restock_only(user_id, url, bool(enabled)))
 
-    def format_items_for_user(self, user_id: int, currency: str | None = None) -> list[str]:
+    def format_items_for_user(self, user_id: int, currency: str | None = None, *, language: str | None = None) -> list[str]:
         """Return private, requester-scoped wishlist display chunks."""
         target_currency = currency or _profile_currency(user_id)
         items = db.get_user_scraped_items_with_settings(user_id)
         if not items:
-            return ["You are not tracking any items."]
+            return [localize("You are not tracking any items.", language or language_for(profile=db.get_assistant_profile(user_id)))]
 
+        from db.connection import _connect
+        with _connect() as c:
+            ids = dict(c.execute("SELECT url,id FROM scraped_items WHERE user_id=?",(user_id,)).fetchall())
         blocks = []
         for (
             url, price, stock, title, item_currency, alert_price,
@@ -399,7 +415,7 @@ class WishlistFeature:
             price_display = self._format_show_price(
                 price, source_currency, target_currency
             )
-            item_name = f"**{title}**" if title else f"🔗 {url}"
+            item_name = f"**#{ids.get(url, '?')} {title}**" if title else f"🔗 #{ids.get(url, '?')} {url}"
             target = (
                 f"🎯 Target: {alert_price:.2f} {alert_currency}"
                 if alert_price is not None and alert_currency
@@ -428,7 +444,8 @@ class WishlistFeature:
                 current += block + "\n\n"
         if current.strip():
             chunks.append(current.strip())
-        return chunks
+        lang=language or language_for(profile=db.get_assistant_profile(user_id))
+        return [localize(chunk,lang, protected=[value for item in items for value in (item[0], f"**#{ids.get(item[0], '?')} {item[3]}**")]) for chunk in chunks]
 
     async def refresh_items_for_user(
         self, user_id: int, url: str | None = None
@@ -529,7 +546,7 @@ class WishlistFeature:
 
     async def send_graph_for_user(
         self, user, *, url: str | None = None, currency: str | None = None,
-        days: int = GRAPH_MAX_DAYS, percentage: bool = False,
+        days: int = GRAPH_MAX_DAYS, percentage: bool = False, language: str | None = None,
     ) -> None:
         target_currency = self.graph_currency_for_user(
             user.id, url=url, currency=currency
@@ -537,10 +554,10 @@ class WishlistFeature:
         await send_graph_to_user(
             user, url=url, currency=target_currency, days=days,
             percentage=percentage, converter=self.converter,
-            effective_currency=_effective_currency,
+            effective_currency=_effective_currency, language=language,
         )
 
-    async def add_item_for_user(self, user_id: int, url: str) -> WishlistAddResult:
+    async def add_item_for_user(self, user_id: int, url: str, *, language: str | None = None) -> WishlistAddResult:
         """Shared wishlist execution path for slash and natural commands."""
         if not _is_valid_http_url(url):
             return WishlistAddResult("invalid", url)
@@ -550,7 +567,7 @@ class WishlistFeature:
         if result.failure == FAILURE_UNSUPPORTED:
             return WishlistAddResult("unsupported", url)
         item_id = db.add_scraped_item(
-            user_id, url, result.title, result.price, result.in_stock, result.currency
+            user_id, url, result.title, result.price, result.in_stock, result.currency, language=language or language_for(profile=db.get_assistant_profile(user_id))
         )
         if item_id is None:
             return WishlistAddResult("exists", url)
@@ -661,7 +678,7 @@ class WishlistFeature:
             else ("In stock" if stock else "Out of stock")
         )
         lines = [
-            f"Refreshed: {title}",
+            f"Refreshed: **{title}**",
             f"Source: {_domain(url)}",
             f"Price: {price_display} | {stock_label}",
         ]
@@ -786,8 +803,6 @@ class WishlistFeature:
             target_currency,
         )
         target_alert = target_reached is True and not target_alerted
-        if target_reached is not None and target_reached != target_alerted:
-            db.update_scraped_item_target_state(item_id, target_reached)
 
         if result.price is not None:
             db.add_price_history(item_id, result.price)
@@ -799,87 +814,90 @@ class WishlistFeature:
         )
         if should_notify:
             try:
-                user = await self.client.fetch_user(user_id)
-                if user:
-                    stored_profile = db.get_assistant_profile(user_id)
-                    profile_currency = (
-                        stored_profile.get("currency") if stored_profile else None
+                stored_profile = db.get_assistant_profile(user_id)
+                profile_currency = (
+                    stored_profile.get("currency") if stored_profile else None
+                )
+                compact = bool(
+                    stored_profile
+                    and stored_profile.get("notification_style") == "compact"
+                )
+                disp_name = result.title or old_title or url
+                msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
+                if back_in_stock:
+                    msg += "✅ Item is now **BACK IN STOCK**!\n"
+                if price_changed:
+                    # Apply the same TLD currency fallback `/wishlist-show`
+                    # uses, so old rows with currency = NULL render in the
+                    # right unit instead of as a bare number.
+                    old_src = _effective_currency(old_currency, url)
+                    new_src = _effective_currency(result.currency, url)
+                    old_str = (
+                        self.converter.format_in_currency(old_price, old_src, profile_currency)
+                        if profile_currency else
+                        self.converter.format_with_conversions(old_price, old_src)
                     )
-                    compact = bool(
-                        stored_profile
-                        and stored_profile.get("notification_style") == "compact"
+                    new_str = (
+                        self.converter.format_in_currency(result.price, new_src, profile_currency)
+                        if profile_currency else
+                        self.converter.format_with_conversions(result.price, new_src)
                     )
-                    disp_name = result.title or old_title or url
-                    msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
+                    msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
+                    try:
+                        llm_msg = await asyncio.to_thread(
+                            generate_price_change_message,
+                            disp_name,
+                            old_price,
+                            result.price,
+                            old_str,
+                            new_str,
+                            language=tracking_language(user_id,"wishlist",item_id),
+                        )
+                        if llm_msg:
+                            msg += f"🤖 *{llm_msg}*\n"
+                    except Exception:
+                        # Creative commentary is optional. The exact price
+                        # notification must still be sent if generation has
+                        # an unexpected failure.
+                        logger.exception(
+                            f"Unexpected LLM price-message failure for {url}"
+                        )
+                if decision.alert_kind:
+                    new_src = _effective_currency(result.currency, url)
+                    alert_text = self._format_alert_section(decision, new_src)
+                    msg += alert_text
+                if target_alert and target_price is not None and target_currency:
+                    msg += (
+                        f"Target reached. Now "
+                        f"{converted_target_price:.2f} {target_currency} "
+                        f"(target: {target_price:.2f} {target_currency}).\n"
+                    )
+                if compact:
+                    parts = []
                     if back_in_stock:
-                        msg += "✅ Item is now **BACK IN STOCK**!\n"
+                        parts.append("back in stock")
                     if price_changed:
-                        # Apply the same TLD currency fallback `/wishlist-show`
-                        # uses, so old rows with currency = NULL render in the
-                        # right unit instead of as a bare number.
-                        old_src = _effective_currency(old_currency, url)
-                        new_src = _effective_currency(result.currency, url)
-                        old_str = (
-                            self.converter.format_in_currency(old_price, old_src, profile_currency)
-                            if profile_currency else
-                            self.converter.format_with_conversions(old_price, old_src)
-                        )
-                        new_str = (
-                            self.converter.format_in_currency(result.price, new_src, profile_currency)
-                            if profile_currency else
-                            self.converter.format_with_conversions(result.price, new_src)
-                        )
-                        msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
-                        try:
-                            llm_msg = await asyncio.to_thread(
-                                generate_price_change_message,
-                                disp_name,
-                                old_price,
-                                result.price,
-                                old_str,
-                                new_str,
-                            )
-                            if llm_msg:
-                                msg += f"🤖 *{llm_msg}*\n"
-                        except Exception:
-                            # Creative commentary is optional. The exact price
-                            # notification must still be sent if generation has
-                            # an unexpected failure.
-                            logger.exception(
-                                f"Unexpected LLM price-message failure for {url}"
-                            )
+                        parts.append(f"{old_str} → {new_str}")
                     if decision.alert_kind:
-                        new_src = _effective_currency(result.currency, url)
-                        alert_text = self._format_alert_section(decision, new_src)
-                        msg += alert_text
-                    if target_alert and target_price is not None and target_currency:
-                        msg += (
-                            f"Target reached. Now "
-                            f"{converted_target_price:.2f} {target_currency} "
-                            f"(target: {target_price:.2f} {target_currency}).\n"
-                        )
-                    if compact:
-                        parts = []
-                        if back_in_stock:
-                            parts.append("back in stock")
-                        if price_changed:
-                            parts.append(f"{old_str} → {new_str}")
-                        if decision.alert_kind:
-                            parts.append(decision.alert_kind.replace("low", "buy window").replace("high", "maybe wait"))
-                        if target_alert:
-                            parts.append("target reached")
-                        msg = f"🔔 **{disp_name}**: {', '.join(parts)}. {url}"
-                    await user.send(msg, suppress_embeds=True)
-                    await record("scheduled", "wishlist-notification", scope_type="dm")
-                    logger.info(
-                        f"Scrape DM sent to user {user_id} for {url} "
-                        f"(price_changed={price_changed}, back_in_stock={back_in_stock}, "
-                        f"alert={decision.alert_kind}, target_alert={target_alert}, "
-                        f"restock_only={restock_only})"
-                    )
+                        parts.append(decision.alert_kind.replace("low", "buy window").replace("high", "maybe wait"))
+                    if target_alert:
+                        parts.append("target reached")
+                    msg = f"🔔 **{disp_name}**: {', '.join(parts)}. {url}"
+                event_kind = "+".join(k for k,active in (("target",target_alert),("restock",back_in_stock),("price",price_changed),("signal",bool(decision.alert_kind))) if active)
+                await deliver_tracking(self.client,user_id,"wishlist",item_id,event_kind,msg, protected=(disp_name, url))
+                logger.info(
+                    f"Scrape notification queued to user {user_id} for {url} "
+                    f"(price_changed={price_changed}, back_in_stock={back_in_stock}, "
+                    f"alert={decision.alert_kind}, target_alert={target_alert}, "
+                    f"restock_only={restock_only})"
+                )
             except Exception as e:
                 logger.error(f"Could not send DM to user {user_id}: {e}")
                 await record("failure", "wishlist-notification", scope_type="dm")
+                return  # Keep previous state so a failed enqueue can be retried.
+
+        if target_reached is not None and target_reached != target_alerted:
+            db.update_scraped_item_target_state(item_id, target_reached)
 
         # Persist the latest price / stock / title / currency snapshot. COALESCE
         # inside the SQL means passing None for any field leaves the previous

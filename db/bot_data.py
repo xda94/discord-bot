@@ -150,6 +150,7 @@ def get_due_reminders():
 def delete_reminder(reminder_id):
     try:
         with _connect(commit=True) as c:
+            c.execute("DELETE FROM reminder_occurrences WHERE reminder_id = ?", (reminder_id,))
             c.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
         logger.debug(f"Deleted reminder ID: {reminder_id}")
     except Exception:

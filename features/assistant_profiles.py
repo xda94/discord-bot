@@ -7,6 +7,7 @@ from typing import Optional
 import discord
 from discord import app_commands
 
+from i18n import localized_interaction, localize,language_for,t
 import db
 from assistant_profiles import (
     CURRENCIES,
@@ -25,15 +26,18 @@ def _choices(values):
 
 def format_profile(profile) -> str:
     currency = profile.currency or "feature default"
-    return (
+    text = (
         "**Your assistant profile**\n"
         f"Language: `{profile.language}`\n"
         f"Tone: `{profile.tone}`\n"
         f"Currency: `{currency}`\n"
         f"Timezone: `{profile.timezone}`\n"
         f"Notifications: `{profile.notification_style}`\n"
-        f"LLM behavior: `{profile.llm_behavior}`"
+        f"LLM behavior: `{profile.llm_behavior}`\n"
+        f"Quiet hours: `{profile.quiet_start or '—'}` → `{profile.quiet_end or '—'}`\n"
+        f"Delivery: `{profile.delivery_mode}` | Digest: `{profile.digest_time}`"
     )
+    return localize(text,language_for(profile=profile))
 
 
 class AssistantProfilesFeature:
@@ -45,6 +49,7 @@ class AssistantProfilesFeature:
     def _register_commands(self) -> None:
         @self.tree.command(name="assistant-profile", description="Show your private assistant preferences")
         async def assistant_profile(interaction: discord.Interaction):
+            interaction = localized_interaction(interaction)
             profile = effective_profile(db.get_assistant_profile(interaction.user.id))
             await interaction.response.send_message(format_profile(profile), ephemeral=True)
 
@@ -56,6 +61,10 @@ class AssistantProfilesFeature:
             timezone="IANA timezone, e.g. Europe/Bucharest",
             notification_style="Standard or compact wishlist/flight alerts",
             llm_behavior="Preferred LLM answer detail",
+            quiet_start="HH:MM, or unset to disable quiet hours",
+            quiet_end="HH:MM, or unset to disable quiet hours",
+            delivery_mode="immediate or daily",
+            digest_time="HH:MM in your configured timezone",
         )
         @app_commands.choices(
             language=_choices(LANGUAGES),
@@ -67,6 +76,8 @@ class AssistantProfilesFeature:
         @app_commands.rename(
             notification_style="notification-style",
             llm_behavior="llm-behavior",
+            quiet_start="quiet-start", quiet_end="quiet-end",
+            delivery_mode="delivery-mode", digest_time="digest-time",
         )
         async def assistant_profile_set(
             interaction: discord.Interaction,
@@ -76,7 +87,10 @@ class AssistantProfilesFeature:
             timezone: Optional[str] = None,
             notification_style: Optional[app_commands.Choice[str]] = None,
             llm_behavior: Optional[app_commands.Choice[str]] = None,
+            quiet_start: Optional[str] = None, quiet_end: Optional[str] = None,
+            delivery_mode: Optional[str] = None, digest_time: Optional[str] = None,
         ):
+            interaction = localized_interaction(interaction)
             updates = {}
             for name, choice in (
                 ("language", language), ("tone", tone),
@@ -89,6 +103,9 @@ class AssistantProfilesFeature:
                 updates["currency"] = None if currency.value == "unset" else currency.value
             if timezone is not None:
                 updates["timezone"] = timezone
+            for field,value in (("quiet_start",quiet_start),("quiet_end",quiet_end),("delivery_mode",delivery_mode),("digest_time",digest_time)):
+                if value is not None:
+                    updates[field]=None if value=="unset" and field.startswith("quiet_") else value
             if not updates:
                 await interaction.response.send_message(
                     "Choose at least one preference to update.", ephemeral=True
@@ -111,6 +128,7 @@ class AssistantProfilesFeature:
 
         @self.tree.command(name="assistant-profile-reset", description="Reset your assistant preferences to defaults")
         async def assistant_profile_reset(interaction: discord.Interaction):
+            interaction = localized_interaction(interaction)
             reset = db.reset_assistant_profile(interaction.user.id)
             if reset is None:
                 await interaction.response.send_message(

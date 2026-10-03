@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 
 import db
+from i18n import t, language_for, localize
 from assistant_profiles import AssistantProfile, DEFAULT_PROFILE, effective_profile
 from analytics import record, record_for
 from features.llm_feedback import LLMFeedbackFeature
@@ -618,8 +619,12 @@ class LLMMentionFeature:
         if job.reply_to is None:
             return
         await record_for("failure", "llm-reply", job.reply_to)
+        from action_proposals import action_candidate
+        if action_candidate(job.question):
+            lang = language_for(job.question,job.assistant_profile)
+            await record_for('control',f'natural/unknown/{lang}/llm/model_unavailable',job.reply_to)
         await job.reply_to.reply(
-            text,
+            t("unavailable",language_for(job.question,job.assistant_profile)) if "reliable answer" in text else localize(text,language_for(job.question,job.assistant_profile)),
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
@@ -710,6 +715,15 @@ class LLMMentionFeature:
             )
             return
 
+        if result is not None and getattr(result,'action',None) is not None:
+            from llm.responses import natural_llm_enabled
+            if not natural_llm_enabled():
+                await self._reply_job_error(job,"I couldn't generate a reliable answer. Please try again.")
+                return
+            executor=getattr(self,'natural_commands',None)
+            if executor and job.reply_to is not None:
+                await executor.execute_proposal(job.reply_to,result.action)
+                return
         if result is None or not result.text:
             await self._reply_job_error(
                 job,
@@ -719,12 +733,16 @@ class LLMMentionFeature:
             )
             return
 
+        from action_proposals import action_candidate
+        if action_candidate(job.question):
+            lang = language_for(job.question,job.assistant_profile)
+            await record_for('control',f'natural/unknown/{lang}/llm/unsupported',job.reply_to)
         try:
             await self._reply_mention(job, result.text)
         except Exception:
             await record_for("failure", "llm-reply", job.reply_to)
             raise
-        if result.reaction and job.reply_to is not None:
+        if result.reaction and job.reply_to is not None and not (action_candidate(job.question) and result.reaction == "✅"):
             reaction_channel_id = getattr(
                 getattr(job.reply_to, "channel", None), "id", None
             )
@@ -1029,7 +1047,15 @@ class LLMMentionFeature:
         user_id = message.author.id
         blocked = self._begin_job_checks(user_id)
         if blocked:
-            await message.reply(blocked, mention_author=False)
+            profile=db.get_assistant_profile(user_id)
+            lang=language_for(text,profile)
+            key="wait" if "wait" in blocked.lower() else "pending" if "already" in blocked.lower() else "busy"
+            import re
+            seconds=re.search(r"(\d+)s",blocked)
+            from action_proposals import action_candidate
+            if action_candidate(text):
+                await record_for('control',f'natural/unknown/{lang}/llm/model_unavailable',message)
+            await message.reply(t(key,lang,seconds=seconds[1] if seconds else 1),mention_author=False)
             return True
 
         has_image = image_attachment is not None

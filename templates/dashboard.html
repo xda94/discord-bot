@@ -14,7 +14,7 @@
       <p class="eyebrow">LOCAL ADMINISTRATION</p>
       <h1 id="auth-title">Sign in to Bot Control</h1>
       <p>Enter the <code>API_TOKEN</code> configured on your mini PC.</p>
-      <form id="login-form" class="form-stack">
+      <form id="login-form" class="form-stack" method="post">
         <label>API token<input name="token" type="password" autocomplete="current-password" required autofocus placeholder="Paste your API_TOKEN"></label>
         <div id="login-error" class="login-error" aria-live="polite"></div>
         <button class="button primary">Sign in</button>
@@ -38,6 +38,7 @@
       <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
       <button class="nav-item" data-page="memory"><span>◉</span>LLM memory</button>
       <button class="nav-item" data-page="analytics"><span>⌁</span>Analytics</button>
+      <button class="nav-item" data-page="preferences"><span>☷</span>Preferences</button>
       <button class="nav-item" data-page="settings"><span>⚙</span>Bot settings</button>
     </nav>
     <div class="sidebar-note"><span class="status-dot"></span><div><strong>LAN administration</strong><small>IDs select data; they do not sign in users.</small></div></div>
@@ -51,6 +52,7 @@
         <label>Server ID<input id="global-guild-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord server ID"></label>
         <label id="global-user-scope">User ID<input id="global-user-id" inputmode="numeric" pattern="[0-9]+" placeholder="Discord user ID"></label>
       </div>
+      <label>Language<select id="dashboard-language"><option value="en">English</option><option value="ro">Română</option></select></label>
       <button class="button secondary logout-button" data-action="logout">Log out</button>
     </header>
 
@@ -83,9 +85,9 @@
       </section>
 
       <section class="page" id="page-reminders" data-title="Reminders">
-        <div class="page-heading"><div><p class="eyebrow">GLOBAL QUEUE</p><h2>Scheduled reminders</h2><p>Times entered here use this browser’s local timezone.</p></div><button class="button secondary" data-action="load-reminders">Refresh</button></div>
+        <div class="page-heading"><div><p class="eyebrow">GLOBAL QUEUE</p><h2>Scheduled reminders</h2><p>Times use the reminder timezone. Set a timezone before scheduling.</p></div><button class="button secondary" data-action="load-reminders">Refresh</button></div>
         <div class="two-column narrow-first">
-          <article class="panel"><h3>Create reminder</h3><form id="reminder-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+"></label><label>When<input name="when" type="datetime-local" required></label><label>Message<textarea name="message" required maxlength="1900"></textarea></label><button class="button primary">Schedule</button></form></article>
+          <article class="panel"><h3>Create reminder</h3><form id="reminder-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+"></label><label>When<input name="when" type="datetime-local" required></label><label>Message<textarea name="message" required maxlength="1900"></textarea></label><label>Recurrence<select name="recurrence"><option value="">One-off</option><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select></label><label>Timezone<input name="timezone" placeholder="Europe/Bucharest / UTC"></label><button class="button primary">Schedule</button></form></article>
           <article class="panel table-panel"><div class="panel-title"><h3>Pending reminders</h3><span class="scope-pill global">global</span></div><div id="reminders-list" class="empty">Loading reminders…</div></article>
         </div>
       </section>
@@ -117,7 +119,7 @@
         <div class="page-heading"><div><p class="eyebrow">USER-SCOPED</p><h2>Flight tracking</h2><p>New trackers wait for the bot’s normal scheduled check.</p></div><button class="button secondary" data-action="load-flights">Refresh</button></div>
         <div class="two-column">
           <article class="panel"><div class="panel-title"><h3>SerpApi credentials</h3><span id="credential-status" class="scope-pill">unknown</span></div><form id="credential-form" class="form-stack"><label>API key<input name="api_key" type="password" autocomplete="off" required maxlength="200" placeholder="Never returned or saved in this browser"></label><div class="button-row"><button class="button primary">Validate & save</button><button type="button" class="button danger ghost" data-action="delete-credentials">Remove</button></div></form></article>
-          <article class="panel"><h3>Add exact-date tracker</h3><form id="flight-form" class="form-grid"><label>Origin<input name="origin" required minlength="3" maxlength="3" placeholder="OTP"></label><label>Destination<input name="destination" required minlength="3" maxlength="3" placeholder="BKK"></label><label>Outbound<input name="start_date" type="date" required></label><label>Return<input name="end_date" type="date" required></label><label>Adults<input name="adults" type="number" min="1" max="9" value="1" required></label><label>Currency<select name="currency"><option>EUR</option><option>RON</option><option>USD</option><option>GBP</option><option>DKK</option></select></label><button class="button primary span-all">Add tracker</button></form></article>
+          <article class="panel"><h3>Add exact-date tracker</h3><form id="flight-form" class="form-grid"><label>Origin<input name="origin" required list="airport-options" placeholder="OTP"></label><label>Destination<input name="destination" required list="airport-options" placeholder="BKK"></label><label>Outbound<input name="start_date" type="date" required></label><label>Return<input name="end_date" type="date" required></label><label>Adults<input name="adults" type="number" min="1" max="9" value="1" required></label><label>Currency<select name="currency"><option>EUR</option><option>RON</option><option>USD</option><option>GBP</option><option>DKK</option></select></label><label>Budget<input name="budget" type="number" min="0.01" step="0.01" placeholder="Optional"></label><datalist id="airport-options"></datalist><button class="button primary span-all">Add tracker</button></form></article>
         </div>
         <div class="wishlist-layout"><article class="panel table-panel"><div class="panel-title"><h3>Trackers</h3><span class="scope-pill">user</span></div><div id="flights-list" class="empty">Enter a user ID to load trackers.</div></article><article class="panel detail-panel" id="flight-detail"><div class="empty">Select a tracker to inspect its saved prices.</div></article></div>
       </section>
@@ -133,6 +135,25 @@
           <article class="panel table-panel"><div class="panel-title"><div><h3>Raw chat retention</h3><p>New messages are synthesized daily, then their source text is deleted.</p></div><span class="scope-pill">user</span></div><div id="memory-transcript-list" class="empty">Raw conversation is not stored as durable memory.</div></article>
         </div>
         <article class="panel danger-zone"><div><h3>Purge server memory</h3><p>Erase every user’s saved entries, transcript, and pending observations in the selected server. Channel settings and opt-out preferences are preserved.</p></div><button class="button danger ghost" data-action="purge-memory-guild">Purge server memory</button></article>
+      </section>
+
+      <section class="page" id="page-preferences" data-title="Preferences">
+        <div class="page-heading"><div><h2>Assistant preferences</h2><p>Settings for the selected user. Calendar schedules require an explicit timezone.</p></div><button class="button secondary" data-action="load-preferences">Refresh</button></div>
+        <div class="two-column">
+          <article class="panel"><form id="profile-form" class="form-grid">
+            <label>Language<select name="language"><option value="auto">Auto</option><option value="en">English</option><option value="ro">Română</option></select></label>
+            <label>Timezone<input name="timezone" required placeholder="Europe/Bucharest / UTC"></label>
+            <label>Currency<select name="currency"><option value="">Feature default</option><option>RON</option><option>EUR</option><option>USD</option><option>GBP</option><option>DKK</option></select></label>
+            <label>Tone<select name="tone"><option>default</option><option>friendly</option><option>formal</option><option>playful</option></select></label>
+            <label>Notifications<select name="notification_style"><option>standard</option><option>compact</option></select></label>
+            <label>LLM detail<select name="llm_behavior"><option>balanced</option><option>concise</option><option>detailed</option></select></label>
+            <label>Quiet start<input name="quiet_start" type="time"></label><label>Quiet end<input name="quiet_end" type="time"></label>
+            <label>Delivery<select name="delivery_mode"><option value="immediate">Immediate</option><option value="daily">Daily digest</option></select></label>
+            <label>Digest time<input name="digest_time" type="time" required value="09:00"></label>
+            <button class="button primary span-all">Save</button>
+          </form></article>
+          <article class="panel"><h3>Notification backlog</h3><div id="notifications-list" class="empty">Select a user to inspect notifications.</div></article>
+        </div>
       </section>
 
       <section class="page" id="page-settings" data-title="Bot settings">
@@ -168,12 +189,24 @@
           <article class="panel table-panel"><div class="panel-title"><div><h3>Other bot features</h3><p>Controls, automatic behavior, scheduled deliveries, processing, and feedback.</p></div></div><div id="analytics-features" class="empty">Loading features…</div></article>
           <article class="panel table-panel"><div class="panel-title"><div><h3>Failures</h3><p>Failed command execution, delivery, generation, provider, and processing operations.</p></div></div><div id="analytics-failures" class="empty">No failures in this period.</div></article>
         </div>
+        <article class="panel table-panel"><h3>Natural commands</h3><div id="natural-analytics" class="empty">Loading outcomes…</div></article>
         <article class="panel table-panel analytics-inactive-panel"><div class="panel-title"><div><h3>Inactive commands</h3><p>Removed commands retain their historical totals.</p></div></div><div id="analytics-inactive" class="empty">No inactive commands.</div></article>
         <p class="analytics-note">Counts contain no message text, command arguments, credentials, or individual user history. Low usage is informational and never removes or flags a command automatically.</p>
       </section>
     </div>
   </main>
+  <dialog id="reminder-editor" class="panel" style="width:min(560px,90vw);max-height:90vh;overflow:auto">
+    <form id="reminder-edit-form" class="form-grid">
+      <h2>Edit reminder</h2><input type="hidden" name="id">
+      <label>When<input name="remind_at" type="datetime-local" required></label>
+      <label>Message<textarea name="message" maxlength="1900" required></textarea></label>
+      <label>Recurrence<select name="recurrence"><option value="">One-off</option><option value="daily">Daily</option><option value="weekdays">Weekdays</option><option value="weekly">Weekly</option></select></label>
+      <label>Timezone<input name="timezone" placeholder="Europe/Bucharest" required></label>
+      <div class="button-row"><button class="button primary">Save</button><button type="button" class="button secondary" data-action="close-reminder-editor">Cancel</button></div>
+    </form>
+  </dialog>
   <div class="scrim" id="scrim"></div>
+  <script src="{{ url_for('static', filename='dashboard-i18n.js') }}"></script>
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
 </body>
 </html>
