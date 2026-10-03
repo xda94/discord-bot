@@ -1,0 +1,742 @@
+[
+  {
+    "text": "track https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "en"
+  },
+  {
+    "text": "track https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "en"
+  },
+  {
+    "text": "please track https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "en"
+  },
+  {
+    "text": "track https://example.com/item, please",
+    "expected": "TrackURLAction",
+    "language": "en"
+  },
+  {
+    "text": "urmărește https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "urmareste https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog urmărește https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "urmărește https://example.com/item, te rog",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "monitorizează https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "monitorizeaza https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog monitorizează https://example.com/item",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "monitorizează https://example.com/item, te rog",
+    "expected": "TrackURLAction",
+    "language": "ro"
+  },
+  {
+    "text": "show my wishlist in EUR",
+    "expected": "ShowWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "show my wishlist in eur",
+    "expected": "ShowWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "please show my wishlist in EUR",
+    "expected": "ShowWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "show my wishlist in EUR, please",
+    "expected": "ShowWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "arată-mi lista de dorințe în lei",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "arata-mi lista de dorinte in lei",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog arată-mi lista de dorințe în lei",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "arată-mi lista de dorințe în lei, te rog",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "arată-mi wishlist-ul",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "arata-mi wishlist-ul",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog arată-mi wishlist-ul",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "arată-mi wishlist-ul, te rog",
+    "expected": "ShowWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "show my flights",
+    "expected": "ShowFlightsAction",
+    "language": "en"
+  },
+  {
+    "text": "show my flights",
+    "expected": "ShowFlightsAction",
+    "language": "en"
+  },
+  {
+    "text": "please show my flights",
+    "expected": "ShowFlightsAction",
+    "language": "en"
+  },
+  {
+    "text": "show my flights, please",
+    "expected": "ShowFlightsAction",
+    "language": "en"
+  },
+  {
+    "text": "arată-mi zborurile mele",
+    "expected": "ShowFlightsAction",
+    "language": "ro"
+  },
+  {
+    "text": "arata-mi zborurile mele",
+    "expected": "ShowFlightsAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog arată-mi zborurile mele",
+    "expected": "ShowFlightsAction",
+    "language": "ro"
+  },
+  {
+    "text": "arată-mi zborurile mele, te rog",
+    "expected": "ShowFlightsAction",
+    "language": "ro"
+  },
+  {
+    "text": "stop tracking https://example.com/item",
+    "expected": "DeleteWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "stop tracking https://example.com/item",
+    "expected": "DeleteWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "please stop tracking https://example.com/item",
+    "expected": "DeleteWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "stop tracking https://example.com/item, please",
+    "expected": "DeleteWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "nu mai urmări https://example.com/item",
+    "expected": "DeleteWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "nu mai urmari https://example.com/item",
+    "expected": "DeleteWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog nu mai urmări https://example.com/item",
+    "expected": "DeleteWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "nu mai urmări https://example.com/item, te rog",
+    "expected": "DeleteWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "set target price for https://example.com/item to 100 EUR",
+    "expected": "WishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "set target price for https://example.com/item to 100 eur",
+    "expected": "WishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "please set target price for https://example.com/item to 100 EUR",
+    "expected": "WishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "set target price for https://example.com/item to 100 EUR, please",
+    "expected": "WishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "setează prețul țintă pentru https://example.com/item la 100,50 lei",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "seteaza pretul tinta pentru https://example.com/item la 100,50 lei",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog setează prețul țintă pentru https://example.com/item la 100,50 lei",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "setează prețul țintă pentru https://example.com/item la 100,50 lei, te rog",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "anunță-mă când căștile scad sub 500 lei",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "anunta-ma cand castile scad sub 500 lei",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog anunță-mă când căștile scad sub 500 lei",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "anunță-mă când căștile scad sub 500 lei, te rog",
+    "expected": "WishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "clear target price for https://example.com/item",
+    "expected": "ClearWishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "clear target price for https://example.com/item",
+    "expected": "ClearWishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "please clear target price for https://example.com/item",
+    "expected": "ClearWishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "clear target price for https://example.com/item, please",
+    "expected": "ClearWishlistTargetAction",
+    "language": "en"
+  },
+  {
+    "text": "șterge prețul țintă pentru https://example.com/item",
+    "expected": "ClearWishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "sterge pretul tinta pentru https://example.com/item",
+    "expected": "ClearWishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog șterge prețul țintă pentru https://example.com/item",
+    "expected": "ClearWishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "șterge prețul țintă pentru https://example.com/item, te rog",
+    "expected": "ClearWishlistTargetAction",
+    "language": "ro"
+  },
+  {
+    "text": "enable restock only for https://example.com/item",
+    "expected": "WishlistRestockAction",
+    "language": "en"
+  },
+  {
+    "text": "enable restock only for https://example.com/item",
+    "expected": "WishlistRestockAction",
+    "language": "en"
+  },
+  {
+    "text": "please enable restock only for https://example.com/item",
+    "expected": "WishlistRestockAction",
+    "language": "en"
+  },
+  {
+    "text": "enable restock only for https://example.com/item, please",
+    "expected": "WishlistRestockAction",
+    "language": "en"
+  },
+  {
+    "text": "activează doar notificările de stoc pentru https://example.com/item",
+    "expected": "WishlistRestockAction",
+    "language": "ro"
+  },
+  {
+    "text": "activeaza doar notificarile de stoc pentru https://example.com/item",
+    "expected": "WishlistRestockAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog activează doar notificările de stoc pentru https://example.com/item",
+    "expected": "WishlistRestockAction",
+    "language": "ro"
+  },
+  {
+    "text": "activează doar notificările de stoc pentru https://example.com/item, te rog",
+    "expected": "WishlistRestockAction",
+    "language": "ro"
+  },
+  {
+    "text": "refresh my wishlist",
+    "expected": "RefreshWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "refresh my wishlist",
+    "expected": "RefreshWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "please refresh my wishlist",
+    "expected": "RefreshWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "refresh my wishlist, please",
+    "expected": "RefreshWishlistAction",
+    "language": "en"
+  },
+  {
+    "text": "actualizează lista de dorințe",
+    "expected": "RefreshWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "actualizeaza lista de dorinte",
+    "expected": "RefreshWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog actualizează lista de dorințe",
+    "expected": "RefreshWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "actualizează lista de dorințe, te rog",
+    "expected": "RefreshWishlistAction",
+    "language": "ro"
+  },
+  {
+    "text": "graph https://example.com/item in EUR for 30 days",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "graph https://example.com/item in eur for 30 days",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "please graph https://example.com/item in EUR for 30 days",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "graph https://example.com/item in EUR for 30 days, please",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "grafic pentru lista de dorințe în lei pentru 30 zile",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "grafic pentru lista de dorinte in lei pentru 30 zile",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog grafic pentru lista de dorințe în lei pentru 30 zile",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "grafic pentru lista de dorințe în lei pentru 30 zile, te rog",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "compare my wishlist for 30 days",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "compare my wishlist for 30 days",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "please compare my wishlist for 30 days",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "compare my wishlist for 30 days, please",
+    "expected": "WishlistGraphAction",
+    "language": "en"
+  },
+  {
+    "text": "compară wishlist-ul meu pentru 30 zile",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "compara wishlist-ul meu pentru 30 zile",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog compară wishlist-ul meu pentru 30 zile",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "compară wishlist-ul meu pentru 30 zile, te rog",
+    "expected": "WishlistGraphAction",
+    "language": "ro"
+  },
+  {
+    "text": "remind me in 1 hour and 30 minutes to call home",
+    "expected": "ReminderAction",
+    "language": "en"
+  },
+  {
+    "text": "remind me in 1 hour and 30 minutes to call home",
+    "expected": "ReminderAction",
+    "language": "en"
+  },
+  {
+    "text": "please remind me in 1 hour and 30 minutes to call home",
+    "expected": "ReminderAction",
+    "language": "en"
+  },
+  {
+    "text": "remind me in 1 hour and 30 minutes to call home, please",
+    "expected": "ReminderAction",
+    "language": "en"
+  },
+  {
+    "text": "adu-mi aminte peste o oră să sun acasă",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "adu-mi aminte peste o ora sa sun acasa",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog adu-mi aminte peste o oră să sun acasă",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "adu-mi aminte peste o oră să sun acasă, te rog",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "pune-mi un reminder peste jumătate de oră să beau apă",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "pune-mi un reminder peste jumatate de ora sa beau apa",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog pune-mi un reminder peste jumătate de oră să beau apă",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "pune-mi un reminder peste jumătate de oră să beau apă, te rog",
+    "expected": "ReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "amintește-mi mâine la 9 să sun acasă",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "aminteste-mi maine la 9 sa sun acasa",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog amintește-mi mâine la 9 să sun acasă",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "amintește-mi mâine la 9 să sun acasă, te rog",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "amintește-mi zilnic la 9 să beau apă",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "aminteste-mi zilnic la 9 sa beau apa",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog amintește-mi zilnic la 9 să beau apă",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "amintește-mi zilnic la 9 să beau apă, te rog",
+    "expected": "CalendarReminderAction",
+    "language": "ro"
+  },
+  {
+    "text": "show my reminders",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "show my reminders",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "please show my reminders",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "show my reminders, please",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "arată-mi reminderele mele",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "arata-mi reminderele mele",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "te rog arată-mi reminderele mele",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "arată-mi reminderele mele, te rog",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "anulează reminderul #12",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "anuleaza reminderul #12",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "te rog anulează reminderul #12",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "anulează reminderul #12, te rog",
+    "expected": "ReminderManageAction",
+    "language": "ro"
+  },
+  {
+    "text": "snooze reminder 12",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "snooze reminder 12",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "please snooze reminder 12",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "snooze reminder 12, please",
+    "expected": "ReminderManageAction",
+    "language": "en"
+  },
+  {
+    "text": "hello",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "salut",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "what flights should I take?",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "ce produse îmi recomanzi?",
+    "expected": "conversation",
+    "language": "ro"
+  },
+  {
+    "text": "nu urmări https://example.com/item",
+    "expected": "conversation",
+    "language": "ro"
+  },
+  {
+    "text": "don't track https://example.com/item",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "how do I set a reminder?",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "cum setez un reminder?",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "\"track https://example.com/item\"",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "`urmărește https://example.com/item`",
+    "expected": "conversation",
+    "language": "ro"
+  },
+  {
+    "text": "if I say track https://example.com/item what happens?",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "dacă îți spun urmărește un produs ce se întâmplă?",
+    "expected": "conversation",
+    "language": "ro"
+  },
+  {
+    "text": "what can you do?",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "ce poți face?",
+    "expected": "conversation",
+    "language": "ro"
+  },
+  {
+    "text": "why did you track that product?",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "pretend you set a reminder",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "please explain price alerts",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "how much is 500 lei in euro?",
+    "expected": "conversation",
+    "language": "ro"
+  },
+  {
+    "text": "translate remind me into Romanian",
+    "expected": "conversation",
+    "language": "en"
+  },
+  {
+    "text": "ce înseamnă lista de dorințe?",
+    "expected": "conversation",
+    "language": "ro"
+  }
+]

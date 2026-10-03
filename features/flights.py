@@ -13,6 +13,9 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
+from i18n import localized_interaction, language_for,localize
+from notifications import deliver_tracking
+from db.flights import mark_budget_alerted, set_flight_budget
 import db
 from analytics import record, record_for
 from flight_provider import (
@@ -116,15 +119,15 @@ def _format_tracker(tracker: dict) -> str:
     return (
         f"**#{tracker['id']} {tracker['origin']} -> {tracker['destination']}**\n"
         f"{schedule} | Adults: `{tracker['adults']}`\n"
-        f"{price}\n{status}"
+        f"{price}\n{status}" + (f"\nBudget: {tracker['budget']:.2f} {tracker['currency']}" if tracker.get("budget") is not None else "")
     )
 
 
-def format_user_flight_trackers(user_id: int) -> list[str]:
+def format_user_flight_trackers(user_id: int, *, language: str | None = None) -> list[str]:
     """Shared requester-scoped rendering for slash and natural commands."""
     trackers = db.get_user_flight_trackers(user_id)
     if not trackers:
-        return ["You are not tracking any flights."]
+        return [localize("You are not tracking any flights.",language or language_for(profile=db.get_assistant_profile(user_id)))]
     blocks = [_format_tracker(tracker) for tracker in trackers]
     chunks = []
     current = "**Your flight trackers**\n\n"
@@ -136,7 +139,8 @@ def format_user_flight_trackers(user_id: int) -> list[str]:
             current += block + "\n\n"
     if current.strip():
         chunks.append(current.rstrip())
-    return chunks
+    lang=language or language_for(profile=db.get_assistant_profile(user_id))
+    return [localize(chunk,lang) for chunk in chunks]
 
 
 def _select_trackers_for_pass(trackers: list[dict]) -> list[dict]:
@@ -181,6 +185,7 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
         self._pending_tracker = pending_tracker
 
     async def on_submit(self, interaction: discord.Interaction):
+        interaction = localized_interaction(interaction)
         await interaction.response.defer(ephemeral=True)
         api_key = self.api_key.value.strip()
         provider = self._feature._build_provider(api_key)
@@ -266,11 +271,16 @@ class FlightTrackerFeature:
             end_date: str,
             adults: int = 1,
             currency: Optional[app_commands.Choice[str]] = None,
+            budget: Optional[float] = None,
         ):
+            interaction = localized_interaction(interaction)
             currency_value = currency.value if currency else (
                 _profile_currency(interaction.user.id) or "EUR"
             )
             try:
+                from airports import resolve_airport
+                origin=resolve_airport(origin)
+                destination=resolve_airport(destination)
                 values = validate_tracker_input(
                     origin, destination, start_date, end_date,
                     adults, currency_value,
@@ -281,6 +291,12 @@ class FlightTrackerFeature:
                 )
                 return
 
+            if budget is not None:
+                import math
+                if not math.isfinite(budget) or budget<=0:
+                    await interaction.response.send_message("Budget must be positive and finite.",ephemeral=True)
+                    return
+                values["budget"]=budget
             if db.get_flight_api_credentials(interaction.user.id) is None:
                 await interaction.response.send_modal(
                     _FlightCredentialsModal(feature, pending_tracker=values)
@@ -290,10 +306,28 @@ class FlightTrackerFeature:
             await interaction.response.defer(ephemeral=True)
             await feature._add_tracker(interaction, values)
 
+        async def airport_autocomplete(interaction: discord.Interaction, current: str):
+            from airports import search_airports
+            return [app_commands.Choice(name=f"{r['iata_code']} · {r['municipality']} · {r['name']}"[:100],value=r['iata_code']) for r in search_airports(current)]
+        flight_add.autocomplete('origin')(airport_autocomplete)
+        flight_add.autocomplete('destination')(airport_autocomplete)
+
+        @self.tree.command(name='flight-tracker-budget',description='Set or clear your flight budget threshold')
+        @app_commands.rename(tracker_id="tracker-id")
+        async def flight_budget(interaction: discord.Interaction, tracker_id:int, budget:Optional[float]=None):
+            interaction = localized_interaction(interaction)
+            lang=language_for(profile=db.get_assistant_profile(interaction.user.id))
+            try:
+                ok=set_flight_budget(tracker_id,interaction.user.id,budget)
+            except ValueError:
+                ok=False
+            await interaction.response.send_message(localize('Saved.' if ok else 'Invalid budget or tracker.',lang),ephemeral=True)
+
         @self.tree.command(
             name="flight-tracker-show", description="Show your saved flight trackers"
         )
         async def flight_show(interaction: discord.Interaction):
+            interaction = localized_interaction(interaction)
             chunks = format_user_flight_trackers(interaction.user.id)
             await interaction.response.send_message(chunks[0], ephemeral=True)
             for chunk in chunks[1:]:
@@ -305,6 +339,7 @@ class FlightTrackerFeature:
         @app_commands.describe(tracker_id="Numeric ID shown by /flight-tracker-show")
         @app_commands.rename(tracker_id="tracker-id")
         async def flight_delete(interaction: discord.Interaction, tracker_id: int):
+            interaction = localized_interaction(interaction)
             if db.delete_flight_tracker(interaction.user.id, tracker_id):
                 logger.info(
                     f"Command /flight-tracker-delete by user {interaction.user.id}: "
@@ -324,6 +359,7 @@ class FlightTrackerFeature:
             description="Set or replace your private SerpApi API key",
         )
         async def flight_login(interaction: discord.Interaction):
+            interaction = localized_interaction(interaction)
             await interaction.response.send_modal(_FlightCredentialsModal(feature))
 
         @self.tree.command(
@@ -331,6 +367,7 @@ class FlightTrackerFeature:
             description="Remove your saved SerpApi API key",
         )
         async def flight_logout(interaction: discord.Interaction):
+            interaction = localized_interaction(interaction)
             removed = db.delete_flight_api_credentials(interaction.user.id)
             feature._forget_provider(interaction.user.id)
             message = (
@@ -367,7 +404,8 @@ class FlightTrackerFeature:
         return provider
 
     async def _add_tracker(self, interaction: discord.Interaction, values: dict) -> None:
-        tracker_id = db.add_flight_tracker(interaction.user.id, **values)
+        interaction = localized_interaction(interaction)
+        tracker_id = db.add_flight_tracker(interaction.user.id, **values, language=interaction._language)
         if not tracker_id:
             await interaction.followup.send(
                 "That exact flight tracker is already in your list.", ephemeral=True
@@ -388,6 +426,10 @@ class FlightTrackerFeature:
                 ephemeral=True,
             )
             return
+
+        if tracker.get('budget') is not None and offer.total_price <= tracker['budget']:
+            await deliver_tracking(self.client,tracker['user_id'],'flight',tracker['id'],'budget',f"Flight tracker **#{tracker['id']}**\nBudget reached: {tracker['budget']:.2f} {tracker['currency']}\n{_format_offer(offer)}")
+            mark_budget_alerted(tracker['id'],True)
 
         await interaction.followup.send(
             f"Added flight tracker **#{tracker_id}** for **{values['origin']} -> "
@@ -466,27 +508,36 @@ class FlightTrackerFeature:
 
         # A first successful result after previous failures is useful, as is a
         # strict price drop. Equal/higher prices stay quiet to avoid DM spam.
-        if old_price is not None and offer.total_price >= old_price:
+        budget=tracker.get('budget')
+        if budget is not None:
+            under=offer.total_price<=budget
+            if not under:
+                mark_budget_alerted(tracker['id'],False)
+                return
+            if tracker.get('budget_alerted'):
+                return
+        elif old_price is not None and offer.total_price >= old_price:
             return
         try:
-            user = await self.client.fetch_user(tracker["user_id"])
-            if user:
-                label = "First price found" if old_price is None else (
-                    f"Price dropped from {old_price:.2f} {tracker['currency']}"
-                )
-                stored_profile = db.get_assistant_profile(tracker["user_id"])
-                compact = bool(
-                    stored_profile and stored_profile.get("notification_style") == "compact"
-                )
-                message = (
-                    f"✈️ **#{tracker['id']} {tracker['origin']} -> {tracker['destination']}** "
-                    f"{offer.total_price:.2f} {offer.currency} ({offer.departure_date} -> {offer.return_date})"
-                    if compact else
-                    f"Flight tracker **#{tracker['id']}**: **{tracker['origin']} -> "
-                    f"{tracker['destination']}**\n{label}.\n{_format_offer(offer)}"
-                )
-                await user.send(message)
-                await record("scheduled", "flight-notification", scope_type="dm")
+            label = "First price found" if old_price is None else (
+                f"Price dropped from {old_price:.2f} {tracker['currency']}"
+            )
+            if budget is not None:
+                label = f"Budget reached: {budget:.2f} {tracker['currency']}"
+            stored_profile = db.get_assistant_profile(tracker["user_id"])
+            compact = bool(
+                stored_profile and stored_profile.get("notification_style") == "compact"
+            )
+            message = (
+                f"✈️ **#{tracker['id']} {tracker['origin']} -> {tracker['destination']}** "
+                f"{offer.total_price:.2f} {offer.currency} ({offer.departure_date} -> {offer.return_date})"
+                if compact else
+                f"Flight tracker **#{tracker['id']}**: **{tracker['origin']} -> "
+                f"{tracker['destination']}**\n{label}.\n{_format_offer(offer)}"
+            )
+            await deliver_tracking(self.client,tracker["user_id"],"flight",tracker["id"],"budget" if budget is not None else "price",message)
+            if budget is not None:
+                mark_budget_alerted(tracker["id"],True)
         except Exception as exc:
             logger.error(
                 f"Could not send flight tracker DM to user {tracker['user_id']}: {exc}"

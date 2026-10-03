@@ -25,6 +25,8 @@ def test_partial_profile_updates_preserve_existing_fields(tmp_db):
         "timezone": "Europe/Bucharest",
         "notification_style": "standard",
         "llm_behavior": "balanced",
+        "timezone_configured": 1, "quiet_start": None, "quiet_end": None,
+        "delivery_mode": "immediate", "digest_time": "09:00",
     }
 
 

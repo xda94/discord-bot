@@ -11,6 +11,8 @@ DISCORD_ID_FIELDS = {
     "user_id",
     "channel_id",
     "requester_user_id",
+    "creator_id",
+    "discord_message_id",
     "message_id",
     "scope_id",
 }

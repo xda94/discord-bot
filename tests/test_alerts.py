@@ -408,7 +408,7 @@ def test_target_price_preserves_state_when_conversion_is_unavailable():
     assert converted is None
 
 
-def test_price_change_dm_includes_llm_reaction(monkeypatch):
+def test_price_change_dm_includes_llm_reaction(monkeypatch, tmp_db):
     feature = object.__new__(WishlistFeature)
     feature.scraper = MagicMock()
     feature.scraper.fetch.return_value = ScrapeResult(
@@ -455,13 +455,14 @@ def test_price_change_dm_includes_llm_reaction(monkeypatch):
         80.0,
         "100.00 RON",
         "80.00 RON",
+        language="en",
     )
     sent_message = user.send.await_args.args[0]
     assert "Price changed: `100.00 RON` -> **80.00 RON**" in sent_message
     assert "The price finally chose kindness." in sent_message
 
 
-def test_price_change_dm_survives_missing_llm_reaction(monkeypatch):
+def test_price_change_dm_survives_missing_llm_reaction(monkeypatch, tmp_db):
     feature = object.__new__(WishlistFeature)
     feature.scraper = MagicMock()
     feature.scraper.fetch.return_value = ScrapeResult(

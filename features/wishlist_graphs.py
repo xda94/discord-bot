@@ -13,6 +13,7 @@ from functools import partial
 import discord
 
 import db
+from i18n import language_for, t
 from analytics import record_for
 from wishlist.charts import render_multi_price_history_png, render_price_history_png
 
@@ -26,7 +27,7 @@ def validate_days(days: int) -> int:
     return days
 
 
-def build_graph(user_id, url, currency, days, percentage, converter, effective_currency):
+def build_graph(user_id, url, currency, days, percentage, converter, effective_currency, language="en"):
     """Build from owned, saved observations only; safe to run in a worker thread."""
     validate_days(days)
     now = time.time()
@@ -34,13 +35,13 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
     if url is not None:
         item = db.get_scraped_item(user_id, url)
         if item is None:
-            return "That URL is not in your tracking list.", None
+            return t("graph_not_found", language), None
         items = [(item[2], item[3], item[4], item[5], item[6])]
     else:
         item = None
         items = db.get_user_scraped_items(user_id)
     if not items:
-        return "You are not tracking any items.", None
+        return t("empty_wishlist", language), None
 
     series = []
     skipped = 0
@@ -58,19 +59,13 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
             continue
         series.append((title or item_url, points))
 
-    mode = "percentage change" if percentage else currency
-    content = f"Last **{days} days** · {mode} · dates in UTC."
+    mode = t("graph_percentage", language) if percentage else currency
+    content = t("graph_period", language, days=days, mode=mode)
     if not series:
-        return (
-            content + " No usable observations in this period. Try a longer range. "
-            "Currency views need a known currency/rate; percentage views need a positive starting price.",
-            None,
-        )
+        return content + t("graph_empty", language), None
     if skipped:
-        content += (
-            f" Skipped {skipped} item(s): no observations, unavailable currency conversion, "
-            "or nonpositive starting price."
-        )
+        content += t("graph_skipped", language, count=skipped)
+    render_options = {"language": language} if language != "en" else {}
     if item is not None:
         target = (
             converter.to_currency(item[9], item[10], currency)
@@ -78,24 +73,24 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
         )
         label, points = series[0]
         png = render_price_history_png(
-            [p[0] for p in points], [p[1] for p in points], label, currency, target
+            [p[0] for p in points], [p[1] for p in points], label, currency, target, **render_options
         )
         filename = "price_history.png"
     else:
-        png = render_multi_price_history_png(series, currency, percentage=percentage)
+        png = render_multi_price_history_png(series, currency, percentage=percentage, **render_options)
         filename = "price_history_all.png"
-        content += f" Showing {len(series)} product(s)."
+        content += t("graph_showing", language, count=len(series))
         if percentage:
-            content += " Each starts at 0% at its first observation in this period."
+            content += t("graph_baseline", language)
     return content, discord.File(io.BytesIO(png), filename=filename)
 
 
 class CustomDaysModal(discord.ui.Modal):
     def __init__(self, graph_view):
-        super().__init__(title="Custom graph period")
+        super().__init__(title=t("graph_custom", graph_view.language))
         self.graph_view = graph_view
         self.days_input = discord.ui.TextInput(
-            label=f"Number of days (1–{GRAPH_MAX_DAYS})",
+            label=t("graph_days_label", graph_view.language, maximum=GRAPH_MAX_DAYS),
             default=str(graph_view.days), min_length=1, max_length=3,
         )
         self.add_item(self.days_input)
@@ -105,7 +100,7 @@ class CustomDaysModal(discord.ui.Modal):
             days = validate_days(int(self.days_input.value.strip()))
         except ValueError:
             await interaction.response.send_message(
-                f"Enter a whole number from 1 to {GRAPH_MAX_DAYS}.", ephemeral=True
+                t("graph_days_error", self.graph_view.language, maximum=GRAPH_MAX_DAYS), ephemeral=True
             )
             return
         await self.graph_view.update_graph(
@@ -114,15 +109,16 @@ class CustomDaysModal(discord.ui.Modal):
 
 
 class WishlistGraphView(discord.ui.View):
-    def __init__(self, user_id, build, *, days=GRAPH_MAX_DAYS, percentage=False, allow_percentage=False):
+    def __init__(self, user_id, build, *, days=GRAPH_MAX_DAYS, percentage=False, allow_percentage=False, language="en"):
         super().__init__(timeout=600)
+        self.language = language
         self.user_id = user_id
         self.build = build
         self.days = validate_days(days)
         self.percentage = percentage
         self._lock = asyncio.Lock()
         for period in (7, 30, 90):
-            button = discord.ui.Button(label=f"{period} days", custom_id=f"graph-days-{period}")
+            button = discord.ui.Button(label=t("graph_days", self.language, days=period), custom_id=f"graph-days-{period}")
 
             async def select_period(interaction, selected=period):
                 await self.update_graph(
@@ -131,7 +127,7 @@ class WishlistGraphView(discord.ui.View):
 
             button.callback = select_period
             self.add_item(button)
-        custom = discord.ui.Button(label="Custom days", custom_id="graph-custom-days")
+        custom = discord.ui.Button(label=t("graph_custom_button", self.language), custom_id="graph-custom-days")
 
         async def show_custom(interaction):
             await interaction.response.send_modal(CustomDaysModal(self))
@@ -156,14 +152,14 @@ class WishlistGraphView(discord.ui.View):
                 selected = int(button.custom_id.rsplit("-", 1)[1]) == self.days
                 button.style = discord.ButtonStyle.primary if selected else discord.ButtonStyle.secondary
             elif button.custom_id == "graph-toggle-percentage":
-                button.label = "Show prices" if self.percentage else "Compare % change"
+                button.label = t("graph_prices" if self.percentage else "graph_compare", self.language)
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Run your own wishlist graph command to use these controls.", ephemeral=True)
+            await interaction.response.send_message(t("graph_owner", self.language), ephemeral=True)
             return False
         if self.is_finished():
-            await interaction.response.send_message("These controls expired. Run the graph command again.", ephemeral=True)
+            await interaction.response.send_message(t("graph_expired", self.language), ephemeral=True)
             return False
         return True
 
@@ -174,7 +170,7 @@ class WishlistGraphView(discord.ui.View):
             return
         await record_for("control", analytics_activity, interaction)
         if self._lock.locked():
-            await interaction.response.send_message("Your graph is still rendering. Please wait.", ephemeral=True)
+            await interaction.response.send_message(t("graph_busy", self.language), ephemeral=True)
             return
         async with self._lock:
             await interaction.response.defer()
@@ -198,29 +194,30 @@ class WishlistGraphView(discord.ui.View):
             except Exception:
                 logger.exception("Could not update wishlist graph for user %s", self.user_id)
                 await record_for("failure", analytics_activity, interaction)
-                await interaction.followup.send("Could not render the graph. Please try again.", ephemeral=True)
+                await interaction.followup.send(t("graph_failed", self.language), ephemeral=True)
             finally:
                 if file:
                     file.close()
 
 
 async def send_graph(interaction, *, url, currency, days, percentage, converter, effective_currency):
+    language = getattr(interaction, "_language", None) or language_for(profile=db.get_assistant_profile(interaction.user.id))
     try:
         validate_days(days)
     except ValueError as exc:
-        await interaction.response.send_message(str(exc), ephemeral=True)
+        await interaction.response.send_message(t("graph_days_error", language, maximum=GRAPH_MAX_DAYS), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     build = partial(
         build_graph, interaction.user.id, url, currency,
-        converter=converter, effective_currency=effective_currency,
+        converter=converter, effective_currency=effective_currency, language=language,
     )
     file = None
     try:
         content, file = await asyncio.to_thread(build, days, percentage)
         view = WishlistGraphView(
             interaction.user.id, build, days=days, percentage=percentage,
-            allow_percentage=url is None,
+            allow_percentage=url is None, language=language,
         )
         kwargs = {"content": content, "view": view, "ephemeral": True,
                   "allowed_mentions": discord.AllowedMentions.none()}
@@ -229,14 +226,14 @@ async def send_graph(interaction, *, url, currency, days, percentage, converter,
         await interaction.followup.send(**kwargs)
     except Exception:
         logger.exception("Could not build wishlist graph for user %s", interaction.user.id)
-        await interaction.followup.send("Could not render the graph. Please try again.", ephemeral=True)
+        await interaction.followup.send(t("graph_failed", language), ephemeral=True)
     finally:
         if file:
             file.close()
 
 
 async def send_graph_to_user(
-    user, *, url, currency, days, percentage, converter, effective_currency
+    user, *, url, currency, days, percentage, converter, effective_currency, language=None
 ):
     """Build and deliver a graph directly to the requester's DM.
 
@@ -244,17 +241,18 @@ async def send_graph_to_user(
     the view is created after the worker-thread build and remains available
     even when the selected period has no saved observations.
     """
+    language = language or language_for(profile=db.get_assistant_profile(user.id))
     validate_days(days)
     build = partial(
         build_graph, user.id, url, currency,
-        converter=converter, effective_currency=effective_currency,
+        converter=converter, effective_currency=effective_currency, language=language,
     )
     file = None
     try:
         content, file = await asyncio.to_thread(build, days, percentage)
         view = WishlistGraphView(
             user.id, build, days=days, percentage=percentage,
-            allow_percentage=url is None,
+            allow_percentage=url is None, language=language,
         )
         kwargs = {
             "content": content,

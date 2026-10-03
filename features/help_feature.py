@@ -251,9 +251,8 @@ class HelpFeature:
         )
         async def help_cmd(interaction: discord.Interaction):
             logger.info(f"Command /help called by {interaction.user}")
-            chunks = _chunk_text(self.help_text)
-            # First chunk satisfies Discord's initial interaction-response
-            # contract; the rest go through follow-ups on the same token.
-            await interaction.response.send_message(chunks[0], ephemeral=True)
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk, ephemeral=True)
+            import db
+            from i18n import language_for,t
+            from features.onboarding import HelpView
+            lang=language_for(profile=db.get_assistant_profile(interaction.user.id))
+            await interaction.response.send_message(t('help',lang),view=HelpView(interaction.user.id,lang,self.tree,memory_disabled='/memory-' not in self.help_text),ephemeral=True)

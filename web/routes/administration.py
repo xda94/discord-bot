@@ -249,7 +249,7 @@ def api_keywords_top():
 def api_add_reminder():
     data = request.get_json()
     required = ["user_id", "channel_id", "remind_at", "message"]
-    if not data or not all(k in data for k in required):
+    if not isinstance(data,dict) or not all(k in data for k in required):
         logger.warning("Invalid payload for /reminders/add")
         return jsonify({"error": "Missing required fields"}), 400
 
@@ -258,14 +258,27 @@ def api_add_reminder():
         channel_id = _discord_id(data["channel_id"], "channel_id")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    add_reminder(
-        user_id,
-        channel_id,
-        data["remind_at"],
-        data["message"]
-    )
-    logger.info(f"Reminder set via API for User ID {user_id}")
-    return jsonify({"status": "reminder_set"})
+    from db import reminders as reminder_store
+    import db
+    from assistant_profiles import effective_profile
+    profile=effective_profile(db.get_assistant_profile(user_id))
+    recurrence=data.get('recurrence')
+    zone=data.get('timezone',profile.timezone)
+    if (recurrence or data.get('local_time')) and not (data.get('timezone') or profile.timezone_configured):
+        return jsonify({'error':'An explicit timezone is required for recurrence'}),400
+    try:
+        if data.get('local_time'):
+            from command_time import calendar_time
+            if not isinstance(data['local_time'],str):
+                raise ValueError('local_time must be a string')
+            data['remind_at'] = calendar_time(data['local_time'].replace('T',' '), zone)
+            if data['remind_at'] is None:
+                raise ValueError('Use a future, unambiguous date and time')
+        from i18n import language_for
+        rid=reminder_store.create(user_id,channel_id,data['remind_at'],data['message'],creator_id=_discord_id(data.get('creator_id',user_id),'creator_id'),timezone=zone,language=data.get('language',language_for(data['message'],profile)),recurrence=recurrence)
+    except (ValueError,TypeError,KeyError) as exc:
+        return jsonify({'error':str(exc)}),400
+    return jsonify({'status':'reminder_set','id':rid})
 
 @blueprint.route("/reminders/delete/<int:reminder_id>", methods=["DELETE"])
 @require_token
@@ -278,19 +291,8 @@ def api_delete_reminder(reminder_id):
 @require_token
 def api_get_all_reminders():
     try:
-        reminders = get_all_reminders()
-        # Mapping the database rows to a clean JSON format
-        result = [
-            {
-                "id": r[0],
-                "user_id": r[1],
-                "channel_id": r[2],
-                "message": r[3],
-                "remind_at": r[4]
-            }
-            for r in reminders
-        ]
-        logger.info(f"All reminders fetched. Count: {len(result)}")
+        from db import reminders as reminder_store
+        result=reminder_store.list_for()
         return jsonify(result)
     except Exception:
         logger.exception("Error in /reminders/all")
@@ -645,3 +647,112 @@ def api_set_setting(key):
     set_setting(key, data["value"])
     logger.info(f"Setting '{key}' updated via API from {request.remote_addr}")
     return jsonify({"status": "updated", "key": key, "value": data["value"]})
+
+
+@blueprint.route('/reminders/<int:reminder_id>',methods=['PATCH'])
+@require_token
+def api_edit_reminder(reminder_id):
+    from db import reminders as store
+    data=request.get_json(silent=True)
+    if not isinstance(data,dict):
+        return jsonify({'error':'JSON object required'}),400
+    try:
+        if 'local_time' in data:
+            from command_time import calendar_time
+            row = store.get(reminder_id)
+            if row is None:
+                return jsonify({'error':'Reminder unavailable'}),404
+            zone = data.get('timezone',row['timezone'])
+            if not isinstance(data['local_time'],str):
+                raise ValueError('local_time must be a string')
+            data['remind_at'] = calendar_time(data.pop('local_time').replace('T',' '), zone)
+            if data['remind_at'] is None:
+                raise ValueError('Use a future, unambiguous date and time')
+        ok=store.edit(reminder_id,**data)
+    except (ValueError,TypeError,KeyError) as exc:
+        return jsonify({'error':str(exc)}),400
+    if not ok:
+        return jsonify({'error':'Reminder unavailable'}),404
+    return jsonify(store.get(reminder_id))
+
+
+@blueprint.route('/reminders/<int:reminder_id>/retry',methods=['POST'])
+@require_token
+def api_retry_reminder(reminder_id):
+    from db import reminders as store
+    if not store.retry(reminder_id):
+        return jsonify({'error':'Failed reminder not found'}),404
+    return jsonify(store.get(reminder_id))
+
+
+@blueprint.route('/assistant-profiles/<user_id>',methods=['GET','PATCH'])
+@require_token
+def api_assistant_profile(user_id):
+    import db
+    from assistant_profiles import effective_profile,validate_profile_updates
+    try:
+        user_id=_discord_id(user_id,'user_id')
+    except ValueError as exc:
+        return jsonify({'error':str(exc)}),400
+    if request.method=='PATCH':
+        data=request.get_json(silent=True)
+        if not isinstance(data,dict):
+            return jsonify({'error':'JSON object required'}),400
+        try:
+            updates=validate_profile_updates(**data)
+        except (ValueError,TypeError,KeyError) as exc:
+            return jsonify({'error':str(exc)}),400
+        if 'timezone_configured' in updates and 'timezone' not in updates:
+            return jsonify({'error':'Provide a timezone to configure it'}),400
+        if db.set_assistant_profile(user_id,**updates) is None:
+            return jsonify({'error':'Invalid profile; quiet hours need both bounds and an explicit timezone'}),400
+    return jsonify(effective_profile(db.get_assistant_profile(user_id)).as_dict())
+
+
+@blueprint.route('/notifications',methods=['GET'])
+@require_token
+def api_notifications():
+    from db.connection import _connect
+    from db.notifications import summary
+    raw_user=request.args.get('user_id')
+    try:
+        user_id=_discord_id(raw_user,'user_id') if raw_user else None
+    except ValueError as exc:
+        return jsonify({'error':str(exc)}),400
+    with _connect() as c:
+        query='SELECT id,user_id,source,item_key,event_kind,observed_at,due_at,state,attempts,last_error FROM notification_outbox'
+        rows=c.execute(query+(' WHERE user_id=?' if user_id is not None else '')+' ORDER BY id DESC LIMIT 100',[user_id] if user_id is not None else []).fetchall()
+    keys=('id','user_id','source','item_key','event_kind','observed_at','due_at','state','attempts','last_error')
+    return jsonify({'counts':summary(user_id),'items':[dict(zip(keys,r)) for r in rows]})
+
+
+@blueprint.route('/notifications/<int:notification_id>/retry',methods=['POST'])
+@require_token
+def api_retry_notification(notification_id):
+    from db.notifications import retry
+    if not retry(notification_id):
+        return jsonify({'error':'Failed notification not found'}),404
+    return jsonify({'status':'pending'})
+
+
+@blueprint.route('/analytics/natural',methods=['GET'])
+@require_analytics_token
+def api_natural_analytics():
+    from db.connection import _connect
+    period = request.args.get('period', '30d')
+    try:
+        guild = request.args.get('guild_id')
+        guild_id = _discord_id(guild, 'guild_id') if guild else None
+        bounds = get_analytics_summary(period, guild_id)['period']
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    query = "SELECT activity,SUM(count) FROM analytics_daily WHERE activity LIKE 'natural/%' AND day>=? AND day<=?"
+    args = [bounds['start'], bounds['end']]
+    if guild_id is not None:
+        query += ' AND guild_id=?'
+        args.append(guild_id)
+    with _connect() as c:
+        rows = c.execute(query + ' GROUP BY activity', args).fetchall()
+        reminder_states = dict(c.execute('SELECT state,COUNT(*) FROM reminders GROUP BY state').fetchall())
+        notification_states = dict(c.execute('SELECT state,COUNT(*) FROM notification_outbox GROUP BY state').fetchall())
+    return jsonify({'delivery':{'reminders':reminder_states,'notifications':notification_states},'outcomes':[{'intent':a.split('/')[1],'language':a.split('/')[2],'route':a.split('/')[3],'outcome':a.split('/')[4],'count':n} for a,n in rows]})

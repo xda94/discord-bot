@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 
 import vl_convert as vlc
+from i18n import t
 
 
 BACKGROUND = "#111827"
@@ -16,7 +17,7 @@ PRIMARY = "#60A5FA"
 TARGET = "#FBBF24"
 
 
-def _time_encoding(timestamps: list[datetime]) -> dict:
+def _time_encoding(timestamps: list[datetime], language="en") -> dict:
     span = max(timestamps) - min(timestamps)
     # Include hours for short histories and years when the range crosses one.
     date_format = (
@@ -24,9 +25,11 @@ def _time_encoding(timestamps: list[datetime]) -> dict:
         else "%d %b %Y" if min(timestamps).year != max(timestamps).year
         else "%d %b"
     )
+    if language == "ro":
+        date_format = "%d.%m %H:%M" if span.total_seconds() <= 2 * 86400 else "%d.%m.%Y"
     return {
         "field": "checked_at", "type": "temporal", "scale": {"type": "utc"},
-        "axis": {"title": "Date / time (UTC)", "format": date_format,
+        "axis": {"title": t("chart_time", language), "format": date_format,
                  "labelOverlap": "greedy", "tickCount": 6},
     }
 
@@ -73,7 +76,8 @@ def _base_config() -> dict:
 
 def _png(spec: dict) -> bytes:
     """Render a self-contained spec; no URLs or external data are accepted."""
-    return vlc.vegalite_to_png(vl_spec=json.dumps(spec), scale=2)
+    locale = {"decimal": ",", "thousands": ".", "grouping": [3], "currency": ["", ""]} if spec.get("usermeta", {}).get("language") == "ro" else None
+    return vlc.vegalite_to_png(vl_spec=json.dumps(spec), scale=2, format_locale=locale)
 
 
 def render_price_history_png(
@@ -82,6 +86,7 @@ def render_price_history_png(
     title: str,
     currency: str,
     target_price: float | None = None,
+    *, language: str = "en",
 ) -> bytes:
     first = float(prices[0])
     current = float(prices[-1])
@@ -102,11 +107,15 @@ def render_price_history_png(
         f"Current {current:.2f} {currency}  •  Lowest {minimum:.2f} {currency}  •  Change {change:+.1f}%",
     ]
 
-    temporal = _time_encoding(timestamps)
+    if language == "ro":
+        subtitle = [t("chart_observations", language, count=len(prices)),
+                    t("chart_summary", language, current=f"{current:.2f}".replace(".", ","),
+                      minimum=f"{minimum:.2f}".replace(".", ","), change=f"{change:+.1f}".replace(".", ","), currency=currency)]
+    temporal = _time_encoding(timestamps, language)
     quantitative = {
         "field": "price",
         "type": "quantitative",
-        "axis": {"title": f"Price ({currency})", "format": ".2f"},
+        "axis": {"title": t("chart_price", language, currency=currency), "format": ".2f"},
         "scale": {"zero": False, "nice": True},
     }
     layers = [
@@ -185,7 +194,7 @@ def render_price_history_png(
                             "scale": {"zero": False, "nice": True},
                         },
                         "x": {"value": "width"},
-                        "text": {"value": f"Target {target_price:.2f} {currency}"},
+                        "text": {"value": t("chart_target", language, price=f"{target_price:.2f}".replace(".", ",") if language == "ro" else f"{target_price:.2f}", currency=currency)},
                     },
                 },
             ]
@@ -193,6 +202,7 @@ def render_price_history_png(
 
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "usermeta": {"language": language},
         "width": 900,
         "height": 480,
         "padding": 24,
@@ -208,6 +218,7 @@ def render_multi_price_history_png(
     series: list[tuple[str, list[tuple[datetime, float]]]],
     currency: str,
     percentage: bool = False,
+    *, language: str = "en",
 ) -> bytes:
     values = []
     endpoints = []
@@ -247,27 +258,28 @@ def render_multi_price_history_png(
             "symbolStrokeWidth": 4,
         },
     }
-    x = _time_encoding([timestamp for _, points in series for timestamp, _ in points])
+    x = _time_encoding([timestamp for _, points in series for timestamp, _ in points], language)
     y = {
         "field": "price",
         "type": "quantitative",
         "axis": {
-            "title": "Change from first observation (%)" if percentage else f"Price ({currency})",
+            "title": t("chart_change", language) if percentage else t("chart_price", language, currency=currency),
             "format": "+.1%" if percentage else ".2f",
         },
         "scale": {"zero": False, "nice": True},
     }
     spec = {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "usermeta": {"language": language},
         "width": 980,
         "height": 540,
         "padding": 24,
         "title": {
-            "text": "Price evolution — all tracked items",
+            "text": t("chart_title", language),
             "subtitle": [
-                f"{len(series)} product{'s' if len(series) != 1 else ''}",
-                "Each product starts at 0% in the selected period" if percentage
-                else f"All prices shown in {currency}",
+                t("chart_products", language, count=len(series)),
+                t("chart_start", language) if percentage
+                else t("chart_currency", language, currency=currency),
             ],
         },
         "data": {"values": values},

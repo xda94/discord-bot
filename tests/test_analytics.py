@@ -1,3 +1,4 @@
+import time
 """Focused coverage for deployer-only bot analytics."""
 
 import asyncio
@@ -221,7 +222,7 @@ def test_multipart_llm_delivery_counts_once_and_failed_delivery_is_not_counted(m
     assert recorded == []
 
 
-def test_scheduled_delivery_counts_only_after_send_succeeds(monkeypatch):
+def test_scheduled_delivery_counts_only_after_send_succeeds(monkeypatch, tmp_db):
     recorded = []
     deleted = []
 
@@ -242,7 +243,11 @@ def test_scheduled_delivery_counts_only_after_send_succeeds(monkeypatch):
     feature = reminders.RemindersFeature.__new__(reminders.RemindersFeature)
     feature.client = SimpleNamespace(get_channel=lambda channel_id: channels[channel_id])
     monkeypatch.setattr(reminders, "record_for", fake_record_for)
-    monkeypatch.setattr(db, "get_due_reminders", lambda: [(10, 1, 1, "ok"), (11, 1, 2, "bad")])
+    from db import reminders as reminder_store
+    first=reminder_store.create(1,1,time.time()+1,"ok")
+    second=reminder_store.create(1,2,time.time()+1,"bad")
+    with db._connect(commit=True) as cursor:
+        cursor.execute("UPDATE reminders SET remind_at=1")
     monkeypatch.setattr(db, "delete_reminder", deleted.append)
 
     asyncio.run(reminders.RemindersFeature._check.coro(feature))
@@ -251,7 +256,9 @@ def test_scheduled_delivery_counts_only_after_send_succeeds(monkeypatch):
         ("scheduled", "reminder-delivery", 44),
         ("failure", "reminder-delivery", 44),
     ]
-    assert deleted == [10, 11]
+    assert deleted == []
+    assert reminder_store.get(first)["state"] == "delivered"
+    assert reminder_store.get(second)["state"] == "pending"
 
 
 def test_graph_control_counts_only_after_ownership_check(monkeypatch):

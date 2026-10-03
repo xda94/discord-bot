@@ -3,6 +3,7 @@
 
   const state = {
     page: "overview",
+    locale: localStorage.getItem("bot-dashboard-language") === "ro" ? "ro-RO" : "en-GB",
     token: sessionStorage.getItem("bot-dashboard-token") || "",
     guildId: localStorage.getItem("bot-dashboard-guild") || "",
     userId: localStorage.getItem("bot-dashboard-user") || "",
@@ -22,9 +23,10 @@
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   })[char]);
+  const tr = (value) => window.DashboardI18n?.translate(value) || value;
   const idValue = (value, name = "ID") => {
     const text = String(value || "").trim();
-    if (!/^\d+$/.test(text)) throw new Error(`${name} must contain digits only.`);
+    if (!/^\d+$/.test(text)) throw new Error(tr(`${name} must contain digits only.`));
     return text;
   };
   const unixSeconds = (localDateTime) => {
@@ -42,31 +44,31 @@
     }
     return { month, day };
   };
-  const formatDate = (seconds, withTime = true) => {
-    if (seconds === null || seconds === undefined || seconds === "") return "Never";
+  const formatDate = (seconds, withTime = true, timezone) => {
+    if (seconds === null || seconds === undefined || seconds === "") return tr("Never");
     const date = new Date(Number(seconds) * 1000);
-    if (Number.isNaN(date.getTime())) return "Unknown";
-    return withTime ? date.toLocaleString() : date.toLocaleDateString();
+    if (Number.isNaN(date.getTime())) return tr("Unknown");
+    return withTime ? date.toLocaleString(state.locale, timezone ? {timeZone:timezone} : undefined) : date.toLocaleDateString(state.locale, timezone ? {timeZone:timezone} : undefined);
   };
   const formatBytes = (bytes) => {
-    if (bytes === null || bytes === undefined) return "Unavailable";
+    if (bytes === null || bytes === undefined) return tr("Unavailable");
     const units = ["B", "KB", "MB", "GB", "TB"];
     let value = Number(bytes); let index = 0;
     while (Math.abs(value) >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
-    return `${value.toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
+    return `${value.toLocaleString(state.locale, {maximumFractionDigits: index > 2 ? 1 : 0})} ${units[index]}`;
   };
   const formatUptime = (seconds) => {
-    if (seconds === null || seconds === undefined) return "Unavailable";
+    if (seconds === null || seconds === undefined) return tr("Unavailable");
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor((seconds % 86400) / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     return `${days}d ${hours}h ${minutes}m`;
   };
   const formatPrice = (value, currency = "") => value === null || value === undefined
-    ? "—" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(currency)}`.trim();
+    ? "—" : `${Number(value).toLocaleString(state.locale, { maximumFractionDigits: 2 })} ${escapeHtml(currency)}`.trim();
   const formatChancePercent = (value) => {
     const percent = Number(value) * 100;
-    return Number.isFinite(percent) ? percent.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "—";
+    return Number.isFinite(percent) ? percent.toLocaleString(state.locale, { maximumFractionDigits: 4 }) : "—";
   };
   const hostname = (value) => { try { return new URL(value).hostname; } catch (_error) { return value; } };
 
@@ -119,7 +121,7 @@
   function toast(message, kind = "success") {
     const node = document.createElement("div");
     node.className = `toast ${kind}`;
-    node.textContent = message;
+    node.textContent = tr(message);
     $("#toast-region").append(node);
     setTimeout(() => node.remove(), 4200);
   }
@@ -167,7 +169,7 @@
       if (!ticket.current()) return;
       renderSponsorTiers(rows);
     } catch (error) {
-      if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+      if (ticket.current()) $("#sponsor-tiers-list").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     }
   }
 
@@ -177,13 +179,13 @@
       const data = await api("/system/stats");
       if (!ticket.current()) return;
       const setMetric = (name, value) => { $(`[data-metric="${name}"]`).textContent = value; };
-      setMetric("cpu", data.cpu_percent === null ? "Unavailable" : `${Number(data.cpu_percent).toFixed(1)}%`);
-      setMetric("temperature", data.temperature_celsius === null ? "Unavailable" : `${Number(data.temperature_celsius).toFixed(1)}°C`);
-      setMetric("memory", data.memory ? `${Number(data.memory.percent).toFixed(1)}%` : "Unavailable");
-      setMetric("disk", data.disk ? `${Number(data.disk.percent).toFixed(1)}%` : "Unavailable");
+      setMetric("cpu", data.cpu_percent === null ? "Unavailable" : `${Number(data.cpu_percent).toLocaleString(state.locale,{maximumFractionDigits:1})}%`);
+      setMetric("temperature", data.temperature_celsius === null ? "Unavailable" : `${Number(data.temperature_celsius).toLocaleString(state.locale,{maximumFractionDigits:1})}°C`);
+      setMetric("memory", data.memory ? `${Number(data.memory.percent).toLocaleString(state.locale,{maximumFractionDigits:1})}%` : "Unavailable");
+      setMetric("disk", data.disk ? `${Number(data.disk.percent).toLocaleString(state.locale,{maximumFractionDigits:1})}%` : "Unavailable");
       setMetric("uptime", formatUptime(data.uptime_seconds));
-      $("[data-detail='memory']").textContent = data.memory ? `${formatBytes(data.memory.used)} of ${formatBytes(data.memory.total)}` : "Host metric unavailable";
-      $("[data-detail='disk']").textContent = data.disk ? `${formatBytes(data.disk.used)} of ${formatBytes(data.disk.total)}` : "Host metric unavailable";
+      $("[data-detail='memory']").textContent = data.memory ? `${formatBytes(data.memory.used)} ${state.locale === "ro-RO" ? "din" : "of"} ${formatBytes(data.memory.total)}` : "Host metric unavailable";
+      $("[data-detail='disk']").textContent = data.disk ? `${formatBytes(data.disk.used)} ${state.locale === "ro-RO" ? "din" : "of"} ${formatBytes(data.disk.total)}` : "Host metric unavailable";
       $("[data-detail='timezone']").textContent = data.timezone ? `${data.platform || "Host"} · ${data.timezone}` : "Mini PC local time";
       $("[data-meter='cpu']").style.width = `${Math.min(100, data.cpu_percent || 0)}%`;
       $("[data-meter='memory']").style.width = `${Math.min(100, data.memory?.percent || 0)}%`;
@@ -239,7 +241,7 @@
     target.innerHTML = '<div class="empty">Loading reminders…</div>';
     try {
       const rows = await api("/reminders/all"); if (!ticket.current()) return;
-      target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>When</th><th>Recipient</th><th>Message</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(formatDate(row.remind_at))}</td><td>User ${escapeHtml(row.user_id)}<span class="cell-muted">Channel ${escapeHtml(row.channel_id)}</span></td><td>${escapeHtml(row.message)}</td><td class="actions"><button class="button danger ghost small" data-action="delete-reminder" data-id="${row.id}">Delete</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No reminders are waiting.</div>';
+      target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>When</th><th>Recipient</th><th>Message</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(formatDate(row.remind_at, true, row.timezone))}</td><td>${escapeHtml(tr("User"))} ${escapeHtml(row.user_id)}<span class="cell-muted">${escapeHtml(tr("Channel"))} ${escapeHtml(row.channel_id)}</span></td><td>${escapeHtml(row.message)}<span class="cell-muted">${escapeHtml(tr(row.state))} · ${escapeHtml(tr(row.recurrence || "One-off"))} · ${escapeHtml(row.timezone)}${row.last_error ? `<br>${escapeHtml(tr(row.last_error))}` : ""}</span></td><td class="actions">${["pending", "failed"].includes(row.state) ? `<button class="button secondary small" data-action="edit-reminder" data-id="${row.id}">Edit</button>` : ""}${row.state === "failed" ? `<button class="button secondary small" data-action="retry-reminder" data-id="${row.id}">Retry</button>` : ""}<button class="button danger ghost small" data-action="delete-reminder" data-id="${row.id}">Delete</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No reminders are waiting.</div>';
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
 
@@ -253,7 +255,7 @@
       $("[name='date']", form).value = selected ? `${String(selected.day).padStart(2, "0")}.${String(selected.month).padStart(2, "0")}` : "";
       $("[name='channel_id']", form).value = selected?.channel_id || "";
       $("[name='guild_id']", form).value = selected ? (selected.guild_id || "") : state.guildId;
-      target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>User</th><th>Birthday</th><th>Destination</th><th>Last sent</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.user_id)}</td><td>${String(row.day).padStart(2, "0")}.${String(row.month).padStart(2, "0")}</td><td>Channel ${escapeHtml(row.channel_id)}<span class="cell-muted">${row.guild_id ? `Server ${escapeHtml(row.guild_id)}` : "Direct message"}</span></td><td>${escapeHtml(row.last_sent_year || "Never")}</td><td class="actions"><button class="button danger ghost small" data-action="delete-birthday" data-user-id="${escapeHtml(row.user_id)}">Delete</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No birthdays are saved.</div>';
+      target.innerHTML = rows.length ? `<table class="data-table"><thead><tr><th>User</th><th>Birthday</th><th>Destination</th><th>Last sent</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.user_id)}</td><td>${String(row.day).padStart(2, "0")}.${String(row.month).padStart(2, "0")}</td><td>${escapeHtml(tr("Channel"))} ${escapeHtml(row.channel_id)}<span class="cell-muted">${row.guild_id ? `Server ${escapeHtml(row.guild_id)}` : "Direct message"}</span></td><td>${escapeHtml(row.last_sent_year || "Never")}</td><td class="actions"><button class="button danger ghost small" data-action="delete-birthday" data-user-id="${escapeHtml(row.user_id)}">Delete</button></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No birthdays are saved.</div>';
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
 
@@ -275,7 +277,7 @@
     try {
       const all = await api("/wishlist/all"); if (!ticket.current()) return;
       state.wishlist = all.filter((item) => item.user_id === user);
-      target.innerHTML = state.wishlist.length ? `<table class="data-table"><thead><tr><th>Product</th><th>Price</th><th>Status</th></tr></thead><tbody>${state.wishlist.map((item) => `<tr data-select="wishlist" data-id="${item.id}" class="${state.selectedWishlist === item.id ? "selected" : ""}"><td>${escapeHtml(item.title || "Untitled product")}<span class="cell-muted">${escapeHtml(hostname(item.url))}</span></td><td>${formatPrice(item.last_price, item.currency)}</td><td><span class="tag ${item.in_stock === true ? "good" : item.in_stock === false ? "bad" : ""}">${item.in_stock === true ? "in stock" : item.in_stock === false ? "out of stock" : "unknown"}</span></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No products are tracked for this user.</div>';
+      target.innerHTML = state.wishlist.length ? `<table class="data-table"><thead><tr><th>Product</th><th>Price</th><th>Status</th></tr></thead><tbody>${state.wishlist.map((item) => `<tr data-select="wishlist" data-id="${item.id}" class="${state.selectedWishlist === item.id ? "selected" : ""}"><td>${escapeHtml(item.title || tr("Untitled product"))}<span class="cell-muted">${escapeHtml(hostname(item.url))}</span></td><td>${formatPrice(item.last_price, item.currency)}</td><td><span class="tag ${item.in_stock === true ? "good" : item.in_stock === false ? "bad" : ""}">${escapeHtml(tr(item.in_stock === true ? "in stock" : item.in_stock === false ? "out of stock" : "unknown"))}</span></td></tr>`).join("")}</tbody></table>` : '<div class="empty">No products are tracked for this user.</div>';
       if (state.selectedWishlist && state.wishlist.some((item) => item.id === state.selectedWishlist)) loadWishlistDetail(state.selectedWishlist);
       else { state.selectedWishlist = null; $("#wishlist-detail").innerHTML = '<div class="empty">Select a product to inspect history and preferences.</div>'; }
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
@@ -302,7 +304,7 @@
     const path = points.map((p, index) => `${index ? "L" : "M"}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(" ");
     const grid = [0, .5, 1].map((ratio) => { const y = top + ratio * (height - top - bottom); const value = maxY - ratio * (maxY - minY); return `<line class="grid" x1="${left}" x2="${width-right}" y1="${y}" y2="${y}"/><text x="2" y="${y+3}">${escapeHtml(value.toFixed(0))}</text>`; }).join("");
     const range = state.ranges[type];
-    return `<div class="chart-toolbar"><small>${points.length} observation${points.length === 1 ? "" : "s"}</small><div class="range-buttons">${[[7,"7d"],[30,"30d"],[90,"90d"],[0,"All"]].map(([value,label]) => `<button class="${range === value ? "active" : ""}" data-action="chart-range" data-chart="${type}" data-days="${value}">${label}</button>`).join("")}</div></div><div class="chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Saved price history">${grid}<path class="line" d="${path}"/>${points.map((p) => `<circle class="dot" cx="${px(p.x)}" cy="${py(p.y)}" r="3"/>`).join("")}<text x="${left}" y="${height-7}">${escapeHtml(new Date(minX*1000).toLocaleDateString())}</text><text x="${width-right}" y="${height-7}" text-anchor="end">${escapeHtml(new Date(maxX*1000).toLocaleDateString())}</text></svg></div><div class="chart-values">Low ${formatPrice(minYRaw, currency)} · High ${formatPrice(maxYRaw, currency)} · Latest ${formatPrice(points.at(-1).y, currency)}</div>`;
+    return `<div class="chart-toolbar"><small>${points.length} ${escapeHtml(tr(points.length === 1 ? "observation" : "observations"))}</small><div class="range-buttons">${[[7,"7d"],[30,"30d"],[90,"90d"],[0,"All"]].map(([value,label]) => `<button class="${range === value ? "active" : ""}" data-action="chart-range" data-chart="${type}" data-days="${value}">${escapeHtml(tr(label))}</button>`).join("")}</div></div><div class="chart"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(tr("Saved price history"))}">${grid}<path class="line" d="${path}"/>${points.map((p) => `<circle class="dot" cx="${px(p.x)}" cy="${py(p.y)}" r="3"/>`).join("")}<text x="${left}" y="${height-7}">${escapeHtml(new Date(minX*1000).toLocaleDateString(state.locale))}</text><text x="${width-right}" y="${height-7}" text-anchor="end">${escapeHtml(new Date(maxX*1000).toLocaleDateString(state.locale))}</text></svg></div><div class="chart-values">${escapeHtml(tr("Low"))} ${formatPrice(minYRaw, currency)} · ${escapeHtml(tr("High"))} ${formatPrice(maxYRaw, currency)} · ${escapeHtml(tr("Latest"))} ${formatPrice(points.at(-1).y, currency)}</div>`;
   }
 
   async function loadWishlistDetail(id) {
@@ -311,7 +313,7 @@
     target.innerHTML = '<div class="empty">Loading product history…</div>';
     try {
       const data = await api(`/wishlist/history?${query({ user_id: item.user_id, url: item.url })}`); if (!ticket.current()) return;
-      target.innerHTML = `<div class="detail-heading"><h3>${escapeHtml(item.title || "Untitled product")}</h3><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a></div><div class="detail-stats"><div><small>Current</small><strong>${formatPrice(item.last_price, item.currency)}</strong></div><div><small>Target</small><strong>${formatPrice(item.target_price, item.target_currency)}</strong></div><div><small>Checked</small><strong>${escapeHtml(formatDate(item.last_checked_at))}</strong></div></div>${chartMarkup(data.history, item.currency, "wishlist")}<form id="wishlist-preferences-form" class="form-grid detail-form"><input type="hidden" name="url" value="${escapeHtml(item.url)}"><label>Target price<input name="target_price" type="number" min="0.01" step="0.01" value="${item.target_price ?? ""}"></label><label>Currency<select name="target_currency">${["EUR","RON","USD","GBP","DKK"].map((currency) => `<option ${item.target_currency === currency ? "selected" : ""}>${currency}</option>`).join("")}</select></label><label><span>Restock alerts only</span><select name="restock_only"><option value="false" ${!item.restock_only ? "selected" : ""}>No</option><option value="true" ${item.restock_only ? "selected" : ""}>Yes</option></select></label><div class="button-row"><button class="button primary">Save</button><button type="button" class="button secondary" data-action="refresh-wishlist-item" data-id="${item.id}">Refresh price</button><button type="button" class="button danger ghost" data-action="delete-wishlist-item" data-id="${item.id}">Remove</button></div></form>`;
+      target.innerHTML = `<div class="detail-heading"><h3>${escapeHtml(item.title || tr("Untitled product"))}</h3><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(item.url)}</a></div><div class="detail-stats"><div><small>Current</small><strong>${formatPrice(item.last_price, item.currency)}</strong></div><div><small>Target</small><strong>${formatPrice(item.target_price, item.target_currency)}</strong></div><div><small>Checked</small><strong>${escapeHtml(formatDate(item.last_checked_at))}</strong></div></div>${chartMarkup(data.history, item.currency, "wishlist")}<form id="wishlist-preferences-form" class="form-grid detail-form"><input type="hidden" name="url" value="${escapeHtml(item.url)}"><label>Target price<input name="target_price" type="number" min="0.01" step="0.01" value="${item.target_price ?? ""}"></label><label>Currency<select name="target_currency">${["EUR","RON","USD","GBP","DKK"].map((currency) => `<option ${item.target_currency === currency ? "selected" : ""}>${currency}</option>`).join("")}</select></label><label><span>Restock alerts only</span><select name="restock_only"><option value="false" ${!item.restock_only ? "selected" : ""}>No</option><option value="true" ${item.restock_only ? "selected" : ""}>Yes</option></select></label><div class="button-row"><button class="button primary">Save</button><button type="button" class="button secondary" data-action="refresh-wishlist-item" data-id="${item.id}">Refresh price</button><button type="button" class="button danger ghost" data-action="delete-wishlist-item" data-id="${item.id}">Remove</button></div></form>`;
       bindDynamicForms();
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
@@ -324,7 +326,7 @@
       const [credential, response] = await Promise.all([api(`/flights/credentials?${query({ user_id: user })}`), api(`/flights/trackers?${query({ user_id: user })}`)]); if (!ticket.current()) return;
       const badge = $("#credential-status"); badge.textContent = credential.configured ? "configured" : "not configured"; badge.className = `scope-pill ${credential.configured ? "global" : ""}`;
       state.flights = response.trackers;
-      target.innerHTML = state.flights.length ? `<table class="data-table"><thead><tr><th>Route</th><th>Dates</th><th>Latest</th></tr></thead><tbody>${state.flights.map((item) => `<tr data-select="flight" data-id="${item.id}" class="${state.selectedFlight === item.id ? "selected" : ""}"><td>${escapeHtml(item.origin)} → ${escapeHtml(item.destination)}<span class="cell-muted">${item.adults} adult${item.adults === 1 ? "" : "s"}</span></td><td>${escapeHtml(item.start_date)}<span class="cell-muted">return ${escapeHtml(item.end_date)}</span></td><td>${formatPrice(item.last_price, item.currency)}${item.last_error ? `<span class="cell-muted">${escapeHtml(item.last_error)}</span>` : ""}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">No flight trackers for this user.</div>';
+      target.innerHTML = state.flights.length ? `<table class="data-table"><thead><tr><th>Route</th><th>Dates</th><th>Latest</th></tr></thead><tbody>${state.flights.map((item) => `<tr data-select="flight" data-id="${item.id}" class="${state.selectedFlight === item.id ? "selected" : ""}"><td>${escapeHtml(item.origin)} → ${escapeHtml(item.destination)}<span class="cell-muted">${item.adults} ${escapeHtml(tr(item.adults === 1 ? "adult" : "adults"))}</span></td><td>${escapeHtml(item.start_date)}<span class="cell-muted">${escapeHtml(tr("return"))} ${escapeHtml(item.end_date)}</span></td><td>${formatPrice(item.last_price, item.currency)}${item.last_error ? `<span class="cell-muted">${escapeHtml(item.last_error)}</span>` : ""}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">No flight trackers for this user.</div>';
       if (state.selectedFlight && state.flights.some((item) => item.id === state.selectedFlight)) loadFlightDetail(state.selectedFlight);
       else { state.selectedFlight = null; $("#flight-detail").innerHTML = '<div class="empty">Select a tracker to inspect its saved prices.</div>'; }
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
@@ -336,7 +338,7 @@
     target.innerHTML = '<div class="empty">Loading saved prices…</div>';
     try {
       const data = await api(`/flights/trackers/${item.id}/history?${query({ user_id: item.user_id })}`); if (!ticket.current()) return;
-      target.innerHTML = `<div class="detail-heading"><h3>${escapeHtml(item.origin)} → ${escapeHtml(item.destination)}</h3><p>${escapeHtml(item.start_date)} to ${escapeHtml(item.end_date)} · ${item.adults} adult${item.adults === 1 ? "" : "s"}</p></div><div class="detail-stats"><div><small>Latest</small><strong>${formatPrice(item.last_price, item.currency)}</strong></div><div><small>Checked</small><strong>${escapeHtml(formatDate(item.last_checked_at))}</strong></div><div><small>Status</small><strong>${escapeHtml(item.last_error || "OK")}</strong></div></div>${chartMarkup(data.history, item.currency, "flight")}<div class="button-row detail-form"><button class="button danger ghost" data-action="delete-flight" data-id="${item.id}">Delete tracker</button></div>`;
+      target.innerHTML = `<div class="detail-heading"><h3>${escapeHtml(item.origin)} → ${escapeHtml(item.destination)}</h3><p>${escapeHtml(item.start_date)} ${escapeHtml(tr("to"))} ${escapeHtml(item.end_date)} · ${item.adults} ${escapeHtml(tr(item.adults === 1 ? "adult" : "adults"))}</p></div><div class="detail-stats"><div><small>Latest</small><strong>${formatPrice(item.last_price, item.currency)}</strong></div><div><small>Checked</small><strong>${escapeHtml(formatDate(item.last_checked_at))}</strong></div><div><small>Status</small><strong>${escapeHtml(item.last_error || "OK")}</strong></div></div>${chartMarkup(data.history, item.currency, "flight")}<label>Budget<input id="flight-budget" type="number" min="0.01" step="0.01" value="${item.budget ?? ""}"></label><button class="button secondary" data-action="save-flight-budget" data-id="${item.id}">Save budget</button><div class="button-row detail-form"><button class="button danger ghost" data-action="delete-flight" data-id="${item.id}">Delete tracker</button></div>`;
     } catch (error) { if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
   }
 
@@ -448,6 +450,8 @@
       $("#analytics-tracking").textContent = `Tracking since ${data.tracking_started_date} · showing ${data.period.start} to ${data.period.end} UTC`;
       $("#analytics-scope").textContent = state.guildId ? `server ${state.guildId}` : `all · server ${data.scope_totals.guild} · DM ${data.scope_totals.dm} · global ${data.scope_totals.global}`;
       renderAnalyticsCommands();
+      const outcomes = await api(`/analytics/natural?${query(params)}`);
+      if (ticket.current()) $("#natural-analytics").innerHTML = `<p data-ui-label>Global delivery health</p><p>${tr("Reminder failures")}: ${outcomes.delivery.reminders.failed || 0} · ${tr("Pending notifications")}: ${outcomes.delivery.notifications.pending || 0} · ${tr("Failed notifications")}: ${outcomes.delivery.notifications.failed || 0}</p><table class="data-table"><thead><tr><th>Intent</th><th>Language</th><th>Route</th><th>Outcome</th><th>Count</th></tr></thead><tbody>${outcomes.outcomes.map((row)=>`<tr><td>${escapeHtml(row.intent)}</td><td>${escapeHtml(row.language)}</td><td>${escapeHtml(tr(row.route))}</td><td>${escapeHtml(tr(row.outcome))}</td><td>${row.count}</td></tr>`).join("")}</tbody></table>`;
       renderAnalyticsList($("#analytics-unused"), data.commands.unused, "Every active command was used in this period.");
       renderAnalyticsList($("#analytics-features"), data.features, "No non-command activity in this period.", "activity");
       renderAnalyticsList($("#analytics-failures"), data.failures, "No failures in this period.", "activity");
@@ -465,7 +469,7 @@
     }
   }
 
-  const loaders = { overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, birthdays: loadBirthdays, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
+  const loaders = { preferences: loadPreferences, overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, birthdays: loadBirthdays, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
   function navigate(page) {
     if (!loaders[page]) return;
     state.page = page;
@@ -493,23 +497,32 @@
   }
 
   function bindForms() {
-    $("#keyword-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/keywords/add", { method: "POST", body: JSON.stringify({ guild_id: requireGuild(), keyword: data.get("keyword"), response: data.get("response") }) }); event.currentTarget.reset(); await loadKeywords(); }, "Keyword response added."); });
-    $("#reminder-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/reminders/add", { method: "POST", body: JSON.stringify({ user_id: requireUser(), channel_id: idValue(data.get("channel_id"), "Channel ID"), remind_at: unixSeconds(data.get("when")), message: data.get("message") }) }); event.currentTarget.reset(); await loadReminders(); }, "Reminder scheduled."); });
-    $("#birthday-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { const birthday = birthdayParts(data.get("date")); const rawGuild = String(data.get("guild_id") || "").trim(); await api(`/birthdays/${requireUser()}`, { method: "PUT", body: JSON.stringify({ channel_id: idValue(data.get("channel_id"), "Channel ID"), guild_id: rawGuild ? idValue(rawGuild, "Server ID") : null, ...birthday }) }); await loadBirthdays(); }, "Birthday saved."); });
-    $("#joke-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/jokes", { method: "POST", body: JSON.stringify({ text: data.get("text") }) }); event.currentTarget.reset(); await loadJokes(); }, "Joke added."); });
-    $("#joke-schedule-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api(`/jokes/guilds/${requireGuild()}`, { method: "PUT", body: JSON.stringify({ channel_id: idValue(data.get("channel_id"), "Channel ID"), send_time: data.get("send_time") }) }); await loadJokes(); }, "Joke schedule saved."); });
-    $("#wishlist-add-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/wishlist/add", { method: "POST", body: JSON.stringify({ user_id: requireUser(), url: data.get("url") }) }); event.currentTarget.reset(); await loadWishlist(); }, "Product added to the wishlist."); });
-    $("#credential-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/flights/credentials", { method: "POST", body: JSON.stringify({ user_id: requireUser(), api_key: data.get("api_key") }) }); event.currentTarget.reset(); await loadFlights(); }, "Credentials validated and saved."); });
-    $("#flight-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/flights/trackers", { method: "POST", body: JSON.stringify({ user_id: requireUser(), origin: data.get("origin"), destination: data.get("destination"), start_date: data.get("start_date"), end_date: data.get("end_date"), adults: Number(data.get("adults")), currency: data.get("currency") }) }); event.currentTarget.reset(); await loadFlights(); }, "Flight tracker added."); });
-    $("#model-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api("/llm/mention-model", { method: "PUT", body: JSON.stringify({ model: data.get("model") }) }); await loadSettings(); }, "Mention model updated."); });
-    $("#setting-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => { await api(`/settings/${encodeURIComponent(data.get("key"))}`, { method: "PUT", body: JSON.stringify({ value: data.get("value") }) }); }, "Setting saved."); });
-    $("#sponsor-tier-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.currentTarget, async (data) => {
+    $("#profile-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => {
+      const payload = Object.fromEntries(data); payload.currency ||= null; payload.quiet_start ||= null; payload.quiet_end ||= null;
+      await api(`/assistant-profiles/${requireUser()}`, {method:"PATCH",body:JSON.stringify(payload)}); await loadPreferences();
+    }, "Saved."); });
+    for (const input of $$("#flight-form [list='airport-options']")) {
+      let timer; input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(async () => {
+        try { const rows=await api(`/flights/airports?q=${encodeURIComponent(input.value)}`); $("#airport-options").innerHTML=rows.map((row)=>`<option value="${escapeHtml(row.iata_code)}">${escapeHtml(row.municipality)} · ${escapeHtml(row.name)}</option>`).join(""); } catch (_error) { /* Manual IATA input stays available. */ }
+      }, 250); });
+    }
+    $("#keyword-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/keywords/add", { method: "POST", body: JSON.stringify({ guild_id: requireGuild(), keyword: data.get("keyword"), response: data.get("response") }) }); form.reset(); await loadKeywords(); }, "Keyword response added."); });
+    $("#reminder-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/reminders/add", { method: "POST", body: JSON.stringify({ user_id: requireUser(), channel_id: idValue(data.get("channel_id"), "Channel ID"), remind_at: unixSeconds(data.get("when")), local_time: data.get("when"), message: data.get("message"), recurrence: data.get("recurrence") || null, ...(data.get("timezone") ? {timezone:data.get("timezone")} : {}) }) }); form.reset(); await loadReminders(); }, "Reminder scheduled."); });
+    $("#birthday-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { const birthday = birthdayParts(data.get("date")); const rawGuild = String(data.get("guild_id") || "").trim(); await api(`/birthdays/${requireUser()}`, { method: "PUT", body: JSON.stringify({ channel_id: idValue(data.get("channel_id"), "Channel ID"), guild_id: rawGuild ? idValue(rawGuild, "Server ID") : null, ...birthday }) }); await loadBirthdays(); }, "Birthday saved."); });
+    $("#joke-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/jokes", { method: "POST", body: JSON.stringify({ text: data.get("text") }) }); form.reset(); await loadJokes(); }, "Joke added."); });
+    $("#joke-schedule-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api(`/jokes/guilds/${requireGuild()}`, { method: "PUT", body: JSON.stringify({ channel_id: idValue(data.get("channel_id"), "Channel ID"), send_time: data.get("send_time") }) }); await loadJokes(); }, "Joke schedule saved."); });
+    $("#wishlist-add-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/wishlist/add", { method: "POST", body: JSON.stringify({ user_id: requireUser(), url: data.get("url") }) }); form.reset(); await loadWishlist(); }, "Product added to the wishlist."); });
+    $("#credential-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/flights/credentials", { method: "POST", body: JSON.stringify({ user_id: requireUser(), api_key: data.get("api_key") }) }); form.reset(); await loadFlights(); }, "Credentials validated and saved."); });
+    $("#flight-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/flights/trackers", { method: "POST", body: JSON.stringify({ user_id: requireUser(), origin: data.get("origin"), destination: data.get("destination"), start_date: data.get("start_date"), end_date: data.get("end_date"), adults: Number(data.get("adults")), currency: data.get("currency"), budget: data.get("budget") ? Number(data.get("budget")) : null }) }); form.reset(); await loadFlights(); }, "Flight tracker added."); });
+    $("#model-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/llm/mention-model", { method: "PUT", body: JSON.stringify({ model: data.get("model") }) }); await loadSettings(); }, "Mention model updated."); });
+    $("#setting-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api(`/settings/${encodeURIComponent(data.get("key"))}`, { method: "PUT", body: JSON.stringify({ value: data.get("value") }) }); }, "Setting saved."); });
+    $("#sponsor-tier-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => {
       const percent = Number(data.get("chance_percent"));
       if (!Number.isFinite(percent) || percent < 0 || percent > 100) throw new Error("Chance must be between 0 and 100 percent.");
       const tierId = String(data.get("tier_id") || "").trim();
       const payload = { name: data.get("name"), price_per_year: data.get("price_per_year"), chance: percent / 100 };
       await api(tierId ? `/sponsors/tiers/${encodeURIComponent(tierId)}` : "/sponsors/tiers", { method: tierId ? "PUT" : "POST", body: JSON.stringify(payload) });
-      event.currentTarget.reset();
+      form.reset();
       $("#sponsor-tier-form-title").textContent = "Create tier";
       $("#sponsor-tier-form button[type='submit']").textContent = "Create tier";
       $("[data-action='new-sponsor-tier']").hidden = true;
@@ -517,9 +530,37 @@
     }, "Sponsor tier saved."); });
   }
 
+  async function loadPreferences() {
+    let user; try { user = requireUser(); } catch (error) { toast(error.message, true); return; }
+    const ticket = version("preferences");
+    const [profile, notifications] = await Promise.all([api(`/assistant-profiles/${user}`), api(`/notifications?${query({ user_id: user })}`)]);
+    if (!ticket.current()) return;
+    for (const [name, value] of Object.entries(profile)) {
+      const input = $("#profile-form").elements.namedItem(name); if (input) input.value = value ?? "";
+    }
+    $("#notifications-list").innerHTML = `<p><span data-ui-label>Pending</span>: ${notifications.counts.pending || 0} · <span data-ui-label>Failed</span>: ${notifications.counts.failed || 0} · <span data-ui-label>Sent</span>: ${notifications.counts.sent || 0}</p>` + notifications.items.map((item) => `<div class="memory-message"><strong>${escapeHtml(item.source)} #${escapeHtml(item.item_key)}</strong><p>${escapeHtml(tr(item.state))} · ${escapeHtml(formatDate(item.due_at))} ${escapeHtml(item.last_error || "")}</p>${item.state === "failed" ? `<button class="button secondary" data-action="retry-notification" data-id="${item.id}">Retry</button>` : ""}</div>`).join("");
+  }
+
   async function handleAction(button) {
     const action = button.dataset.action;
     try {
+      if (action === "close-reminder-editor") { $("#reminder-editor").close(); return; }
+      if (action === "load-preferences") return loadPreferences();
+      if (action === "retry-notification") { await api(`/notifications/${button.dataset.id}/retry`, {method:"POST"}); return loadPreferences(); }
+      if (action === "retry-reminder") { await api(`/reminders/${button.dataset.id}/retry`, {method:"POST"}); return loadReminders(); }
+      if (action === "edit-reminder") {
+        const rows = await api("/reminders/all"); const row = rows.find((item) => String(item.id) === button.dataset.id);
+        if (!row) return;
+        const form = $("#reminder-edit-form");
+        for (const [name, value] of Object.entries(row)) { const input = form.elements.namedItem(name); if (input) input.value = value ?? ""; }
+        const parts = new Intl.DateTimeFormat('sv-SE',{timeZone:row.timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(new Date(row.remind_at * 1000));
+        form.elements.namedItem("remind_at").value = parts.replace(' ','T');
+        $("#reminder-editor").showModal(); return;
+      }
+      if (action === "save-flight-budget") {
+        const value = $("#flight-budget").value;
+        await api(`/flights/trackers/${button.dataset.id}`, {method:"PATCH",body:JSON.stringify({user_id:requireUser(),budget:value ? Number(value) : null})});return loadFlights();
+      }
       if (action === "refresh-overview") return loadOverview();
       if (action === "logout") { state.token = ""; sessionStorage.removeItem("bot-dashboard-token"); showLogin(); return; }
       if (action === "load-keywords") return loadKeywords();
@@ -558,16 +599,16 @@
         if (action.endsWith("response")) payload.response = button.dataset.response;
         await api("/keywords/delete", { method: "DELETE", body: JSON.stringify(payload) }); toast(action.endsWith("response") ? "Keyword response removed." : "Keyword deleted."); return loadKeywords();
       }
-      if (action === "delete-reminder") { if (!confirm("Delete this reminder?")) return; await api(`/reminders/delete/${button.dataset.id}`, { method: "DELETE" }); toast("Reminder deleted."); return loadReminders(); }
+      if (action === "delete-reminder") { if (!confirm(tr("Delete this reminder?"))) return; await api(`/reminders/delete/${button.dataset.id}`, { method: "DELETE" }); toast("Reminder deleted."); return loadReminders(); }
       if (action === "delete-selected-birthday" || action === "delete-birthday") { const user = action === "delete-selected-birthday" ? requireUser() : idValue(button.dataset.userId, "User ID"); if (!confirm(`Delete the saved birthday for user ${user}?`)) return; await api(`/birthdays/${user}`, { method: "DELETE" }); toast("Birthday deleted."); return loadBirthdays(); }
       if (action === "delete-joke") { if (!confirm("Delete this joke from the global pool?")) return; await api(`/jokes/${button.dataset.id}`, { method: "DELETE" }); toast("Joke deleted."); return loadJokes(); }
       if (action === "edit-joke") { const text = prompt("Edit joke text", button.dataset.text); if (text === null) return; if (!text.trim()) throw new Error("Joke text cannot be empty."); await api(`/jokes/${button.dataset.id}`, { method: "PUT", body: JSON.stringify({ text: text.trim() }) }); toast("Joke updated."); return loadJokes(); }
       if (action === "reset-jokes") { if (!confirm("Reset sent history for every server? The joke pool stays intact.")) return; await api("/jokes/reset", { method: "POST", body: "{}" }); return toast("Sent history reset."); }
       if (action === "delete-joke-schedule") { if (!confirm("Remove the selected server's joke schedule?")) return; await api(`/jokes/guilds/${requireGuild()}`, { method: "DELETE" }); toast("Schedule removed."); return loadJokes(); }
       if (action === "refresh-wishlist-item") { const item = state.wishlist.find((entry) => entry.id === Number(button.dataset.id)); button.disabled = true; await api("/wishlist/refresh", { method: "POST", body: JSON.stringify({ user_id: requireUser(), url: item.url }) }); toast("Product refreshed."); return loadWishlist(); }
-      if (action === "delete-wishlist-item") { const item = state.wishlist.find((entry) => entry.id === Number(button.dataset.id)); if (!confirm("Stop tracking this product and delete its history?")) return; await api("/wishlist/remove", { method: "DELETE", body: JSON.stringify({ user_id: requireUser(), url: item.url }) }); state.selectedWishlist = null; toast("Product removed."); return loadWishlist(); }
+      if (action === "delete-wishlist-item") { const item = state.wishlist.find((entry) => entry.id === Number(button.dataset.id)); if (!confirm(tr("Stop tracking this product and delete its history?"))) return; await api("/wishlist/remove", { method: "DELETE", body: JSON.stringify({ user_id: requireUser(), url: item.url }) }); state.selectedWishlist = null; toast("Product removed."); return loadWishlist(); }
       if (action === "delete-credentials") { if (!confirm("Delete this user's saved SerpApi credentials?")) return; await api("/flights/credentials", { method: "DELETE", body: JSON.stringify({ user_id: requireUser() }) }); toast("Credentials removed."); return loadFlights(); }
-      if (action === "delete-flight") { if (!confirm("Delete this flight tracker and its price history?")) return; await api(`/flights/trackers/${button.dataset.id}`, { method: "DELETE", body: JSON.stringify({ user_id: requireUser() }) }); state.selectedFlight = null; toast("Flight tracker deleted."); return loadFlights(); }
+      if (action === "delete-flight") { if (!confirm(tr("Delete this flight tracker and its price history?"))) return; await api(`/flights/trackers/${button.dataset.id}`, { method: "DELETE", body: JSON.stringify({ user_id: requireUser() }) }); state.selectedFlight = null; toast("Flight tracker deleted."); return loadFlights(); }
       if (action === "check-memory-channel") { const channel = idValue(new FormData($("#memory-channel-form")).get("channel_id"), "Channel ID"); const data = await api(`/memory/channels/${requireGuild()}/${channel}`); $("#memory-channel-state").innerHTML = `<span class="tag ${data.enabled ? "good" : "bad"}">${data.enabled ? "Enabled" : "Disabled"}</span>`; return; }
       if (action === "set-memory-channel") { const channel = idValue(new FormData($("#memory-channel-form")).get("channel_id"), "Channel ID"); const enabled = button.dataset.enabled === "true"; await api(`/memory/channels/${requireGuild()}/${channel}`, { method: "PUT", body: JSON.stringify({ enabled }) }); $("#memory-channel-state").innerHTML = `<span class="tag ${enabled ? "good" : "bad"}">${enabled ? "Enabled" : "Disabled"}</span>`; toast(`Channel memory ${enabled ? "enabled" : "disabled"}.`); return loadMemory(); }
       if (action === "set-memory-preference") { const enabled = button.dataset.enabled === "true"; if (!enabled && !confirm("Opt this user out and permanently erase their saved memory in this scope?")) return; await api(`/memory/users/${requireUser()}/preference`, { method: "PUT", body: JSON.stringify({ scope_id: selectedMemoryScope(), enabled }) }); toast(enabled ? "User opted in." : "User opted out and memory erased."); return loadMemory(); }
@@ -580,6 +621,10 @@
   }
 
   async function init() {
+    $("#reminder-edit-form").addEventListener("submit", (event) => { event.preventDefault(); submit(event.target, async (data) => {
+      await api(`/reminders/${data.get('id')}`, {method:"PATCH", body:JSON.stringify({remind_at:unixSeconds(data.get('remind_at')), local_time:data.get('remind_at'), message:data.get('message'), timezone:data.get('timezone'), recurrence:data.get('recurrence') || null})});
+      $("#reminder-editor").close(); await loadReminders();
+    }, "Reminder updated."); });
     $("#global-guild-id").value = state.guildId; $("#global-user-id").value = state.userId;
     $$(".nav-item").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.page)));
     $("#menu-button").addEventListener("click", () => document.body.classList.toggle("menu-open"));
@@ -592,6 +637,9 @@
     $("#analytics-command-sort").addEventListener("change", renderAnalyticsCommands);
     $("#login-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => login(data.get("token"))); });
     document.addEventListener("click", (event) => { const action = event.target.closest("[data-action]"); if (action) { event.preventDefault(); handleAction(action); return; } const row = event.target.closest("[data-select]"); if (row?.dataset.select === "wishlist") loadWishlistDetail(row.dataset.id); if (row?.dataset.select === "flight") loadFlightDetail(row.dataset.id); });
+    const selector = $("#dashboard-language"); selector.value=state.locale === "ro-RO" ? "ro" : "en";
+    selector.addEventListener("change", () => { localStorage.setItem("bot-dashboard-language",selector.value); state.locale=selector.value === "ro" ? "ro-RO" : "en-GB"; window.DashboardI18n?.setLanguage(selector.value); navigate(state.page); });
+    window.DashboardI18n?.setLanguage(selector.value);
     bindForms();
     if (state.token) {
       try { await login(state.token); } catch (_error) { showLogin("Your saved session is no longer valid. Sign in again."); }

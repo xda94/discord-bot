@@ -66,7 +66,7 @@ def test_track_reply_requires_exactly_one_url():
 
 def test_relative_reminder_requires_positive_supported_duration():
     assert isinstance(parse_natural_command("remind me in 0 hours to wake up"), NaturalCommandError)
-    assert isinstance(parse_natural_command("remind me in 2 weeks to wake up"), NaturalCommandError)
+    assert parse_natural_command("remind me in 2 weeks to wake up").seconds == 14 * 86400
 
 
 def test_reminder_is_created_immediately_without_public_confirmation(monkeypatch):
@@ -117,7 +117,7 @@ def test_natural_flight_result_is_private(monkeypatch):
     monkeypatch.setattr("features.natural_commands.extract_mention_text", lambda *_: "show my flights")
     monkeypatch.setattr(
         "features.natural_commands.format_user_flight_trackers",
-        lambda user_id: [f"private flights for {user_id}"],
+        lambda user_id, **kwargs: [f"private flights for {user_id}"],
     )
     feature = NaturalCommandsFeature(None, bot_id=99, wishlist=None, flights=None, reminders=None)
     assert asyncio.run(feature.handle_message(message)) is True
@@ -137,7 +137,7 @@ def test_natural_track_executes_once_and_only_reacts_on_success(monkeypatch):
     wishlist = SimpleNamespace(add_item_for_user=AsyncMock(return_value=SimpleNamespace(status="added")))
     feature = NaturalCommandsFeature(None, bot_id=99, wishlist=wishlist, flights=None, reminders=None)
     assert asyncio.run(feature.handle_message(message)) is True
-    wishlist.add_item_for_user.assert_awaited_once_with(10, "https://example.com/item")
+    wishlist.add_item_for_user.assert_awaited_once_with(10, "https://example.com/item", language="en")
     message.add_reaction.assert_awaited_once_with("✅")
     message.reply.assert_not_awaited()
 
@@ -163,9 +163,9 @@ def test_wishlist_add_distinguishes_existing_row_from_database_failure(monkeypat
     feature.scraper = SimpleNamespace(
         fetch=lambda _url: ScrapeResult(10.0, True, "Item", "EUR")
     )
-    monkeypatch.setattr("features.wishlist.db.add_scraped_item", lambda *args: None)
+    monkeypatch.setattr("features.wishlist.db.add_scraped_item", lambda *args, **kwargs: None)
     existing = asyncio.run(feature.add_item_for_user(10, "https://example.com/item"))
-    monkeypatch.setattr("features.wishlist.db.add_scraped_item", lambda *args: False)
+    monkeypatch.setattr("features.wishlist.db.add_scraped_item", lambda *args, **kwargs: False)
     failed = asyncio.run(feature.add_item_for_user(10, "https://example.com/item"))
     assert existing.status == "exists"
     assert failed.status == "database-error"
