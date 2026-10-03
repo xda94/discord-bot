@@ -395,3 +395,25 @@ def test_query_llm_enables_thinking_only_when_asked(monkeypatch):
 
     query_llm("hello", thinking=True)
     assert post.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_warm_prompt_cache_sends_a_one_token_request_and_never_raises(monkeypatch):
+    from llm.client import warm_prompt_cache
+
+    response = MagicMock(ok=True)
+    response.json.return_value = {"timings": {"prompt_n": 12, "cache_n": 300}}
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", post)
+
+    warm_prompt_cache("head", "discord-bot", system_prompt="system")
+
+    payload = post.call_args.kwargs["json"]
+    assert payload["max_tokens"] == 1
+    assert payload["messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "head"},
+    ]
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+    post.side_effect = requests.exceptions.ConnectionError("down")
+    warm_prompt_cache("head", "discord-bot", system_prompt="system")
