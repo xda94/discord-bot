@@ -207,12 +207,19 @@ HELP_TEXT = (
 )
 
 
-def build_help_text(automatic_memory_enabled: bool) -> str:
+def build_help_text(automatic_memory_enabled: bool, memory_disabled: bool = False) -> str:
+    memory_start = HELP_TEXT.index("**/llm-memory**")
+    mention_start = HELP_TEXT.index("**@bot** (mention)")
+    if memory_disabled:
+        text = HELP_TEXT[:memory_start] + HELP_TEXT[mention_start:]
+        return text.replace(
+            " In memory-enabled channels, the same requester's synthesized facts, "
+            "impressions, preferences, and topics supplement live chat history.",
+            "",
+        )
     if automatic_memory_enabled:
         return HELP_TEXT
 
-    memory_start = HELP_TEXT.index("**/llm-memory**")
-    mention_start = HELP_TEXT.index("**@bot** (mention)")
     text = HELP_TEXT[:memory_start] + MANUAL_MEMORY_HELP_TEXT + HELP_TEXT[mention_start:]
     return text.replace(
         "In memory-enabled channels, the same requester's synthesized facts, "
@@ -231,10 +238,11 @@ class HelpFeature:
         tree: app_commands.CommandTree,
         *,
         automatic_memory_enabled: bool = True,
+        memory_disabled: bool = False,
     ):
         self.client = client
         self.tree = tree
-        self.help_text = build_help_text(automatic_memory_enabled)
+        self.help_text = build_help_text(automatic_memory_enabled, memory_disabled)
         self._register_commands()
 
     def _register_commands(self) -> None:
