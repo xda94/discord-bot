@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import db
 from wishlist.refresh import refresh_item
-from wishlist.scraper import FAILURE_BLOCKED, FAILURE_UNSUPPORTED, ScrapeResult
+from wishlist.scraper import FAILURE_BLOCKED, FAILURE_BUSY, FAILURE_UNSUPPORTED, ScrapeResult
 
 
 def _scraper(result):
@@ -30,11 +30,10 @@ def test_failed_refresh_records_status_without_overwriting_snapshot(tmp_db):
     db.add_scraped_item(7, url, title="Saved", price=100, stock=True, currency="RON")
     original = db.get_scraped_item(7, url)
 
-    for failure in (FAILURE_BLOCKED, FAILURE_UNSUPPORTED):
-        result = ScrapeResult(failure=failure)
+    for failure in (FAILURE_BLOCKED, FAILURE_BUSY, FAILURE_UNSUPPORTED):
+        result = ScrapeResult(title="New metadata", currency="EUR", failure=failure)
         refresh_item(original, _scraper(result))
         refreshed = db.get_scraped_item(7, url)
         assert refreshed[3:7] == original[3:7]
         assert refreshed[14] == failure
         assert db.get_price_history(7, url) == []
-

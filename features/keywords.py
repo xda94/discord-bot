@@ -108,7 +108,12 @@ class KeywordsFeature:
                     ephemeral=True,
                 )
                 return
-            db.add_response(keyword, response, interaction.guild.id)
+            if not db.add_response(keyword, response, interaction.guild.id):
+                await interaction.response.send_message(
+                    "Failed to save this keyword. Please try again.",
+                    ephemeral=True,
+                )
+                return
             await interaction.response.send_message(
                 f"Added keyword **{keyword}** for this server."
             )

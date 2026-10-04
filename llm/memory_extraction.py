@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from llm import client
 from llm.client import LlamaCppError
+from llm.capacity import CapacityError
 
 logger = logging.getLogger("discord_bot")
 
@@ -38,6 +39,7 @@ class MemoryDeltaResult:
     successful: bool
     additions: tuple[dict, ...] = ()
     corrections: tuple[dict, ...] = ()
+    skipped: bool = False
 
 
 MEMORY_ENTRY_RESPONSE_SCHEMA = {
@@ -210,6 +212,7 @@ def generate_memory_delta(
                 "max_tokens": get_memory_max_tokens(),
             },
             response_schema=_memory_entry_response_schema(len(observations)),
+            capacity_policy="background",
         )
         data = json.loads(raw)
         if not isinstance(data, dict) or set(data) != {"add", "correct"}:
@@ -274,6 +277,8 @@ def generate_memory_delta(
             if (entry := validated(item, correction=True)) is not None
         )
         return MemoryDeltaResult(True, additions, corrections)
+    except CapacityError:
+        return MemoryDeltaResult(successful=False, skipped=True)
     except (LlamaCppError, ValueError, TypeError, json.JSONDecodeError) as exc:
         logger.warning(
             "Persistent row memory extraction failed (%s): %s",

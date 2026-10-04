@@ -4,16 +4,18 @@ These all run without a network round-trip — they exercise the URL
 validator, the TLD currency fallback, and the JSON-LD / meta / text-fallback
 extractors against canned HTML fixtures.
 
-`PriceScraper.fetch` itself isn't tested here because that would require
-mocking out `curl_cffi` / `requests` at the network boundary. The
-extractors it composes are tested individually instead, which is where the
-real complexity (and the real regression risk) lives.
 """
+
+import json
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from bs4 import BeautifulSoup
 
 from features.wishlist import PriceScraper, _is_valid_http_url
+from llm.capacity import CapacityBusy, CapacityError, CapacityTimeout
+from wishlist.scraper import FAILURE_BUSY, FAILURE_UNSUPPORTED, ScrapeResult
 
 
 def _parse(html: str) -> BeautifulSoup:
@@ -274,3 +276,125 @@ def test_fetch_ignores_script_tags():
     # Since it is stripped, the "in stoc" in the body should win.
     assert result.in_stock is True
 
+
+@pytest.mark.parametrize("price", [True, False, -1, "-1", float("nan"), float("inf"), "NaN", "Infinity", "", "bad"])
+def test_scrape_result_rejects_invalid_price(price):
+    result = ScrapeResult(price=price, title="Item", currency="EUR")
+    assert result.price is None
+    assert result.has_data is False
+
+
+@pytest.mark.parametrize("result", [ScrapeResult(price=0), ScrapeResult(in_stock=False), ScrapeResult(in_stock=True)])
+def test_scrape_result_usable_evidence(result):
+    assert result.has_data is True
+
+
+@pytest.mark.parametrize("result", [ScrapeResult(title="Item"), ScrapeResult(currency="RON"), ScrapeResult(in_stock=0)])
+def test_scrape_result_metadata_is_not_usable_evidence(result):
+    assert result.has_data is False
+
+
+@pytest.mark.parametrize("price", [True, False, -1, "bad", "", "NaN", "Infinity"])
+def test_json_ld_invalid_price_is_unknown(price):
+    soup = _parse('<script type="application/ld+json">' + json.dumps({
+        "@type": "Product", "offers": {"price": price}
+    }) + '</script>')
+    assert PriceScraper._extract_from_json_ld(soup, None, None, None, None)[0] is None
+
+
+@pytest.mark.parametrize("price", ["-1", "bad", "", "NaN", "Infinity"])
+def test_meta_invalid_price_is_unknown(price):
+    soup = _parse(f'<meta property="product:price:amount" content="{price}">')
+    assert PriceScraper._extract_meta_price(soup) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("https://schema.org/InStock", True), ("PreOrder", True),
+    ("https://schema.org/OutOfStock", False), ("out of stock", False),
+    ("SoldOut", False), ("", None), ("https://schema.org/BackOrder", None),
+    ("unknown", None),
+])
+def test_structured_availability_preserves_unknown_and_false(value, expected):
+    soup = _parse('<script type="application/ld+json">' + json.dumps({
+        "@type": "Product", "offers": {"availability": value}
+    }) + '</script>')
+    assert PriceScraper._extract_from_json_ld(soup, None, None, None, None)[3] is expected
+    soup = _parse(f'<meta property="product:availability" content="{value}">')
+    assert PriceScraper._extract_meta_availability(soup) is expected
+
+
+@pytest.mark.parametrize("html,url,currency", [
+    ("<title>Site</title>", "https://example.com/item", None),
+    ('<meta property="product:price:currency" content="EUR">', "https://example.com/item", "EUR"),
+    ("<p></p>", "https://example.ro/item", "RON"),
+    ("<p></p>", "https://example.dk/item", "DKK"),
+])
+def test_fetch_metadata_only_runs_fallback_and_stays_unsupported(monkeypatch, html, url, currency):
+    scraper = PriceScraper()
+    monkeypatch.setattr(scraper, "_http_get", lambda _url: SimpleNamespace(status_code=200, text=html))
+    fallback = Mock(return_value=(None, "Fallback title", None, None))
+    monkeypatch.setattr(scraper, "_extract_with_llm", fallback)
+    result = scraper.fetch(url)
+    fallback.assert_called_once()
+    assert result.failure == FAILURE_UNSUPPORTED
+    assert result.currency == currency
+    assert result.has_data is False
+
+
+def test_fetch_fallback_preserves_metadata_and_currency_precedes_tld(monkeypatch):
+    scraper = PriceScraper()
+    html = '<title>Source title</title>'
+    monkeypatch.setattr(scraper, "_http_get", lambda _url: SimpleNamespace(status_code=200, text=html))
+    monkeypatch.setattr(scraper, "_extract_with_llm", Mock(return_value=(0, "Fallback title", "EUR", False)))
+    result = scraper.fetch("https://example.ro/item")
+    assert result == ScrapeResult(price=0, title="Source title", currency="EUR", in_stock=False)
+
+
+def test_fetch_fallback_keeps_explicit_currency(monkeypatch):
+    scraper = PriceScraper()
+    html = '<meta property="product:price:currency" content="RON">'
+    monkeypatch.setattr(scraper, "_http_get", lambda _url: SimpleNamespace(status_code=200, text=html))
+    monkeypatch.setattr(scraper, "_extract_with_llm", Mock(return_value=(10, "Title", "EUR", None)))
+    result = scraper.fetch("https://example.ro/item")
+    assert result.currency == "RON"
+    assert result.price == 10
+
+
+def test_fetch_zero_and_false_structured_data_take_precedence(monkeypatch):
+    scraper = PriceScraper()
+    html = '''<script type="application/ld+json">
+    {"@type":"Product","name":"Structured","offers":[
+      {"price":0,"priceCurrency":"EUR","availability":"OutOfStock"},
+      {"price":9,"priceCurrency":"USD","availability":"InStock"}]}
+    </script><meta property="product:price:amount" content="10">
+    <meta property="product:availability" content="InStock"><p>add to cart</p>'''
+    monkeypatch.setattr(scraper, "_http_get", lambda _url: SimpleNamespace(status_code=200, text=html))
+    fallback = Mock(side_effect=AssertionError("Fallback is unnecessary"))
+    monkeypatch.setattr(scraper, "_extract_with_llm", fallback)
+    result = scraper.fetch("https://example.ro/item")
+    assert result == ScrapeResult(price=0, in_stock=False, title="Structured", currency="EUR")
+    fallback.assert_not_called()
+
+
+def test_blank_metadata_allows_fallback(monkeypatch):
+    scraper = PriceScraper()
+    html = '''<script type="application/ld+json">
+    {"@type":"Product","name":" ","offers":{"priceCurrency":" "}}
+    </script><title> </title><meta property="product:price:currency" content=" ">'''
+    monkeypatch.setattr(scraper, "_http_get", lambda _url: SimpleNamespace(status_code=200, text=html))
+    monkeypatch.setattr(scraper, "_extract_with_llm", Mock(return_value=(10, "Item", "EUR", None)))
+    result = scraper.fetch("https://example.ro/item")
+    assert result == ScrapeResult(price=10, title="Item", currency="EUR")
+
+
+@pytest.mark.parametrize("error", [CapacityBusy, CapacityTimeout, CapacityError])
+@pytest.mark.parametrize("policy", ["interactive", "background"])
+def test_fetch_reports_temporary_capacity_failure(monkeypatch, error, policy):
+    scraper = PriceScraper()
+    monkeypatch.setattr(scraper, "_http_get", lambda _url: SimpleNamespace(status_code=200, text="<title>Site</title>"))
+    query = Mock(side_effect=error("Unavailable"))
+    monkeypatch.setattr("wishlist.scraper.query_llm", query)
+    result = scraper.fetch("https://example.ro/item", capacity_policy=policy)
+    assert result.failure == FAILURE_BUSY
+    assert result.has_data is False
+    assert query.call_args.kwargs["capacity_policy"] == policy

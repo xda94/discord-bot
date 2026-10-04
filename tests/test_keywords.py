@@ -6,11 +6,14 @@ loop was a notorious infinite-loop hazard when the user added the same
 response twice for a keyword.
 """
 
+import asyncio
 import random
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
-from features.keywords import _pick_response
+import db
+from features.keywords import KeywordsFeature, _pick_response
 
 
 def test_picks_an_alternative_when_available():
@@ -52,3 +55,30 @@ def test_distribution_uses_alternatives_uniformly(monkeypatch):
     for _ in range(100):
         seen.add(_pick_response(["a", "b", "c"], "a"))
     assert seen == {"b", "c"}
+
+
+@pytest.mark.parametrize("saved", [True, False])
+def test_keyword_add_acknowledges_persistence_result(monkeypatch, saved):
+    commands = {}
+    tree = Mock()
+    tree.command.side_effect = lambda **options: lambda callback: commands.setdefault(
+        options["name"], callback
+    )
+    KeywordsFeature(MagicMock(), tree, MagicMock(), MagicMock())
+    interaction = MagicMock()
+    interaction.guild.id = 20
+    interaction.response.send_message = AsyncMock()
+    add_response = Mock(return_value=saved)
+    monkeypatch.setattr(db, "add_response", add_response)
+
+    asyncio.run(commands["keyword-add"](interaction, "hello", "world"))
+
+    add_response.assert_called_once_with("hello", "world", 20)
+    if saved:
+        interaction.response.send_message.assert_awaited_once_with(
+            "Added keyword **hello** for this server."
+        )
+    else:
+        interaction.response.send_message.assert_awaited_once_with(
+            "Failed to save this keyword. Please try again.", ephemeral=True
+        )

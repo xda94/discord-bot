@@ -20,11 +20,12 @@ from db import bot_data, connection  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def llama_cpp_env(monkeypatch):
+def llama_cpp_env(monkeypatch, tmp_path):
     """llama.cpp model config is required in production; set it for tests."""
     monkeypatch.setenv("LLAMA_CPP_ALLOWED_MODELS", "discord-bot,other-model")
     monkeypatch.setenv("LLAMA_CPP_DEFAULT_MODEL", "discord-bot")
     monkeypatch.setenv("BOT_ID", "999888777")
+    monkeypatch.setenv("LLM_CAPACITY_DIR", str(tmp_path / "llm-capacity"))
 
 
 @pytest.fixture

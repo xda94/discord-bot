@@ -33,7 +33,7 @@ def _invalidate_responses_cache(guild_id: int | None = None):
         _responses_cache_at.pop(guild_id, None)
 
 
-def add_response(keyword, response, guild_id: int):
+def add_response(keyword, response, guild_id: int) -> bool:
     try:
         with _connect(commit=True) as c:
             c.execute(
@@ -44,8 +44,10 @@ def add_response(keyword, response, guild_id: int):
             f"Inserted new response for keyword '{keyword}' in guild {guild_id}"
         )
         _invalidate_responses_cache(guild_id)
+        return True
     except Exception:
         logger.exception(f"Failed to add response for '{keyword}' in guild {guild_id}")
+        return False
 
 
 def remove_response(keyword, guild_id: int, response=None):

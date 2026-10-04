@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from assistant_profiles import AssistantProfile, DEFAULT_PROFILE, profile_prompt_preferences
 from llm import client
 from llm.client import LlamaCppError, get_default_model, get_mention_model
+from llm.capacity import CapacityError
 from mention_utils import strip_leading_reply_labels
 
 logger = logging.getLogger("discord_bot")
@@ -473,12 +474,15 @@ def generate_ordinary_reaction(
             model=model,
             options={"format": "json", "temperature": 0.2, "max_tokens": 32},
             response_schema=REACTION_RESPONSE_SCHEMA,
+            capacity_policy="background",
         )
         data = json.loads(raw)
         if not isinstance(data, dict) or set(data) != {"reaction"}:
             return None
         reaction = data["reaction"]
         return reaction if reaction in REACTION_EMOJIS else None
+    except CapacityError:
+        return None
     except (LlamaCppError, ValueError, TypeError, json.JSONDecodeError):
         logger.warning("Ordinary-message reaction generation failed")
         return None
@@ -505,9 +509,12 @@ def enhance_tease(mood: str, username: str, context: str) -> str | None:
             model=get_tease_model(),
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
             options={"max_tokens": 96},
+            capacity_policy="background",
         )
         result = normalize_tease_response(raw)
         return result or None
+    except CapacityError:
+        return None
     except LlamaCppError:
         logger.warning("Tease LLM generation failed for mood=%s", mood)
         return None
@@ -647,8 +654,11 @@ def generate_inactivity_message(
             model=model,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
             options={"temperature": 0.8, "max_tokens": 96},
+            capacity_policy="background",
         )
         return normalize_tease_response(raw) or None
+    except CapacityError:
+        return None
     except LlamaCppError:
         logger.warning("Inactivity LLM generation failed")
         return None
@@ -662,8 +672,11 @@ def generate_birthday_message(*, model: str | None = None) -> str | None:
             model=model,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
             options={"temperature": 0.8, "max_tokens": 96},
+            capacity_policy="background",
         )
         return normalize_llm_reply(raw, max_chars=280) or None
+    except CapacityError:
+        return None
     except LlamaCppError:
         logger.warning("Birthday LLM generation failed")
         return None
@@ -695,8 +708,11 @@ def generate_price_change_message(
             model=model,
             timeout=TEASE_LLAMA_CPP_TIMEOUT,
             options={"temperature": 0.9, "max_tokens": 96},
+            capacity_policy="background",
         )
         return normalize_tease_response(raw) or None
+    except CapacityError:
+        return None
     except LlamaCppError:
         direction = "decrease" if new_price < old_price else "increase"
         logger.warning(

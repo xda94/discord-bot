@@ -14,12 +14,14 @@ if _db_dir:
 
 @contextmanager
 def _connect(commit=False):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = sqlite3.connect(DB_FILE, timeout=5.0)
     try:
+        conn.execute("PRAGMA foreign_keys = ON")
         yield conn.cursor()
         if commit:
             conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-

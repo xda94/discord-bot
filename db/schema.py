@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import time
 
 from db.connection import _connect
@@ -14,6 +15,16 @@ logger = logging.getLogger("database")
 def init_db():
     try:
         with _connect(commit=True) as c:
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    c.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            c.execute("BEGIN IMMEDIATE")
             c.execute("""
                 CREATE TABLE IF NOT EXISTS responses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -562,3 +573,4 @@ def init_db():
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")
+        raise

@@ -356,6 +356,7 @@ class NaturalCommandsFeature:
                     errors = {
                         "exists": "That URL is already in your tracking list.",
                         "blocked": "The source blocked or timed out, so the URL was not added.",
+                        "busy": "Price/stock extraction is temporarily busy. Please try again shortly.",
                         "unsupported": "The page had no supported price or stock data, so the URL was not added.",
                         "database-error": "The page was read, but the database could not save it. Please try again.",
                         "invalid": "That is not a valid HTTP(S) URL.",

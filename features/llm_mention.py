@@ -24,6 +24,7 @@ from llm.client import (
     llama_supports_vision,
 )
 from llm.memory import MemoryBatch, MemoryStore
+from llm.capacity import CapacityError, Reservation, busy, reserve
 from mention_utils import (
     extract_mention_text,
     resolve_bot_display_name,
@@ -340,12 +341,14 @@ class AskJob:
     bot_names: tuple[str, ...] = ()
     assistant_profile: AssistantProfile = DEFAULT_PROFILE
     mentioned_memories: tuple[tuple[str, str], ...] = ()
+    reservation: Reservation | None = None
 
 
 @dataclass
 class MemoryJob:
     batch: MemoryBatch
     model: str
+    reservation: Reservation | None = None
 
 
 @dataclass
@@ -353,6 +356,7 @@ class ReactionJob:
     message: discord.Message
     model: str
     channel_id: int
+    reservation: Reservation | None = None
 
 
 class ContextReactionFeature:
@@ -410,15 +414,16 @@ class LLMMentionFeature:
         self._worker_task = self._worker.task
 
     def _model_busy(self) -> bool:
-        worker = getattr(self, "_worker", None)
-        if worker is not None:
-            return worker.busy()
-        return self._processing or self._queue.qsize() > 0
+        try:
+            return busy()
+        except CapacityError:
+            return True
 
     async def _queue_worker(self) -> None:
         await self._worker.run()
 
     async def _process_queued_job(self, job) -> WorkerResult:
+        self._processing = True
         if isinstance(job, AskJob):
             await self._process_job(job)
             return WorkerResult()
@@ -432,41 +437,53 @@ class LLMMentionFeature:
         return WorkerResult()
 
     def _finish_queued_job(self, job, result: WorkerResult) -> None:
+        self._processing = False
         if isinstance(job, AskJob):
             self._user_pending.discard(job.user.id)
             self._user_last_ask[job.user.id] = time.time()
+            if result.outcome == "skipped":
+                asyncio.create_task(self._reply_job_error(
+                    job, "The model is busy right now. Please try again shortly."
+                ))
         elif isinstance(job, MemoryJob):
-            self._memory_last_finished = time.monotonic()
-            if result.outcome == "failed":
-                self._memory_consecutive_failures = (
-                    getattr(self, "_memory_consecutive_failures", 0) + 1
-                )
-            else:
-                self._memory_consecutive_failures = 0
+            if result.outcome in {"completed", "failed"}:
+                self._memory_last_finished = time.monotonic()
+                if result.outcome == "failed":
+                    self._memory_consecutive_failures = (
+                        getattr(self, "_memory_consecutive_failures", 0) + 1
+                    )
+                else:
+                    self._memory_consecutive_failures = 0
             self._memory_pending.discard((job.batch.scope_id, job.batch.user_id))
         else:
             self._reaction_pending_channels.discard(job.channel_id)
 
     async def _put_job(self, priority: int, job) -> bool:
-        """Admit one job only when the model worker has no outstanding work."""
-        # This coroutine deliberately has no await before put_nowait(). Discord
-        # handlers share one event loop, so the check-and-admit operation is
-        # atomic and cannot grow a backlog between concurrent handlers.
-        worker = getattr(self, "_worker", None)
-        if worker is not None:
-            admitted = await worker.submit(priority, job)
-            self._queue_sequence = worker.sequence
-            self._processing = worker.processing
-            self._worker_task = worker.task
-            return admitted
-        # Compatibility for isolated unit tests constructing the feature
-        # without running its initializer.
-        if self._model_busy():
+        try:
+            if job.reservation is None:
+                job.reservation = reserve(
+                    policy="interactive" if isinstance(job, AskJob) else "background"
+                )
+        except CapacityError:
             return False
-        self._queue_sequence += 1
-        self._queue.put_nowait((priority, self._queue_sequence, job))
-        self._ensure_worker()
-        return True
+        try:
+            worker = getattr(self, "_worker", None)
+            if worker is not None:
+                admitted = await worker.submit(priority, job)
+                self._queue_sequence = worker.sequence
+                self._processing = worker.processing
+                self._worker_task = worker.task
+            else:
+                self._queue_sequence += 1
+                self._queue.put_nowait((job.reservation.ticket, self._queue_sequence, job))
+                self._ensure_worker()
+                admitted = True
+            if not admitted:
+                job.reservation.release()
+            return admitted
+        except BaseException:
+            job.reservation.release()
+            raise
 
     async def start_tasks(self) -> None:
         self._ensure_worker()
@@ -534,29 +551,41 @@ class LLMMentionFeature:
                 # Retry soon without consuming a scheduled new-cycle scan.
                 wait_seconds = active_chunk_rest
                 continue
-            batches = self.memory.eligible_batches(
-                allow_new_cycles=allow_new_cycles
-            )
-            if allow_new_cycles:
-                next_cycle_scan_at = now + cycle_interval
-            logger.info(
-                "Memory scan completed mode=%s eligible_batches=%d",
-                "new-cycle" if allow_new_cycles else "active-cycle",
-                len(batches),
-            )
-            for batch in batches:
-                admitted = await self._enqueue_memory(batch, get_selected_model())
-                if admitted or self._model_busy():
-                    # Run at most one background synthesis per scan. Remaining
-                    # active-cycle work is reconsidered after the short rest.
-                    break
+            try:
+                reservation = reserve(policy="background")
+            except CapacityError:
+                wait_seconds = active_chunk_rest
+                continue
+            try:
+                batches = self.memory.eligible_batches(
+                    allow_new_cycles=allow_new_cycles
+                )
+                if allow_new_cycles:
+                    next_cycle_scan_at = now + cycle_interval
+                logger.info(
+                    "Memory scan completed mode=%s eligible_batches=%d",
+                    "new-cycle" if allow_new_cycles else "active-cycle",
+                    len(batches),
+                )
+                for batch in batches:
+                    admitted = await self._enqueue_memory(
+                        batch, get_selected_model(), reservation=reservation
+                    )
+                    if admitted:
+                        reservation = None
+                        break
+            finally:
+                if reservation is not None:
+                    reservation.release()
             wait_seconds = (
                 active_chunk_rest
                 if batches
                 else max(0.0, next_cycle_scan_at - now)
             )
 
-    async def _enqueue_memory(self, batch: MemoryBatch, model: str) -> bool:
+    async def _enqueue_memory(
+        self, batch: MemoryBatch, model: str, *, reservation: Reservation | None = None
+    ) -> bool:
         key = (batch.scope_id, batch.user_id)
         if key in self._memory_pending:
             logger.info(
@@ -566,7 +595,13 @@ class LLMMentionFeature:
             )
             return False
         self._memory_pending.add(key)
-        admitted = await self._put_job(1, MemoryJob(batch=batch, model=model))
+        try:
+            admitted = await self._put_job(
+                1, MemoryJob(batch=batch, model=model, reservation=reservation)
+            )
+        except BaseException:
+            self._memory_pending.discard(key)
+            raise
         if not admitted:
             self._memory_pending.discard(key)
             logger.info(
@@ -817,6 +852,8 @@ class LLMMentionFeature:
             model=job.model,
             bot_names=bot_names,
         )
+        if getattr(result, "skipped", False):
+            return None
         if not result.successful:
             await record(
                 "failure",
@@ -940,18 +977,6 @@ class LLMMentionFeature:
                 remaining,
             )
             return f"Please wait **{int(remaining) + 1}s** before trying again."
-        if self._model_busy():
-            logger.info(
-                "Mention request blocked user_id=%s reason=model-busy "
-                "processing=%s queue_size=%d",
-                user_id,
-                self._processing,
-                self._queue.qsize(),
-            )
-            return (
-                "The model is busy right now, so I didn't queue this request. "
-                "Please try again shortly."
-            )
         return None
 
     def _mentioned_memories(
@@ -1022,8 +1047,14 @@ class LLMMentionFeature:
         return lines
 
     async def _enqueue_job(self, job: AskJob) -> bool:
+        if job.user.id in self._user_pending:
+            return False
         self._user_pending.add(job.user.id)
-        admitted = await self._put_job(0, job)
+        try:
+            admitted = await self._put_job(0, job)
+        except BaseException:
+            self._user_pending.discard(job.user.id)
+            raise
         if not admitted:
             self._user_pending.discard(job.user.id)
         return admitted

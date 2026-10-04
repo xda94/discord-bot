@@ -11,6 +11,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       DB_FILE: /data/responses.db
+      LLM_CAPACITY_DIR: /data/.llm-capacity
       LOG_DIR: /data/logs
       LLAMA_CPP_BASE_URL: ${LLAMA_CPP_BASE_URL:-http://host.docker.internal:8080}
     volumes:
@@ -24,6 +25,7 @@ services:
     env_file: .env
     environment:
       DB_FILE: /data/responses.db
+      LLM_CAPACITY_DIR: /data/.llm-capacity
       LOG_DIR: /data/logs
     ports:
       - "${PORT:-9999}:${PORT:-9999}"

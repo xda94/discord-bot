@@ -171,7 +171,8 @@ def api_keywords_add():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    add_response(data["keyword"], data["response"], guild_id)
+    if not add_response(data["keyword"], data["response"], guild_id):
+        return jsonify({"error": "Failed to save keyword"}), 500
     logger.info(
         f"Keyword added via API: '{data['keyword']}' for guild {guild_id} "
         f"from {request.remote_addr}"
