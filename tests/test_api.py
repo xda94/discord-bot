@@ -6,6 +6,7 @@ DB mutations they authorize are covered here.
 """
 
 import importlib
+from unittest.mock import Mock
 
 import pytest
 
@@ -23,6 +24,32 @@ def client(tmp_db, monkeypatch):
     return app.test_client()
 
 
+def test_keyword_add_success_is_visible(client):
+    response = client.post(
+        "/keywords/add", json={"keyword": "Hello", "response": "world", "guild_id": 20}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok"}
+    assert client.get("/keywords/get?guild_id=20").get_json() == {"hello": ["world"]}
+
+
+def test_keyword_add_database_failure_is_server_error(client, monkeypatch):
+    from web.routes import administration
+
+    add_response = Mock(return_value=False)
+    monkeypatch.setattr(administration, "add_response", add_response)
+
+    response = client.post(
+        "/keywords/add", json={"keyword": "hello", "response": "world", "guild_id": 20}
+    )
+
+    add_response.assert_called_once_with("hello", "world", 20)
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "Failed to save keyword"}
+    assert db.get_all_responses(20) == {}
+
+
 def test_keyword_analytics_can_be_filtered_to_requester(client):
     db.log_keyword_usage("Hello", 10, 20)
     db.log_keyword_usage("hello", 10, 20)
@@ -36,6 +63,64 @@ def test_keyword_analytics_can_be_filtered_to_requester(client):
         "user_id": 10,
         "keywords": [{"keyword": "hello", "count": 2}],
     }
+
+
+def test_wishlist_add_success_saves_item_and_history(client, monkeypatch):
+    from web.routes import wishlist
+    from wishlist.scraper import ScrapeResult
+
+    url = "https://shop.example/item"
+    monkeypatch.setattr(wishlist._price_scraper, "fetch", Mock(return_value=ScrapeResult(
+        price=10, title="Item", in_stock=False, currency="EUR"
+    )))
+
+    response = client.post("/wishlist/add", json={"user_id": 7, "url": url})
+
+    assert response.status_code == 201
+    assert response.get_json()["status"] == "ok"
+    saved = db.get_scraped_item(7, url)
+    assert response.get_json()["id"] == saved[0]
+    assert saved[3:7] == (10, 0, "Item", "EUR")
+    assert [row[0] for row in db.get_price_history(7, url)] == [10]
+
+
+def test_wishlist_add_duplicate_is_conflict_without_changing_saved_item(client, monkeypatch):
+    from web.routes import wishlist
+    from wishlist.scraper import ScrapeResult
+
+    url = "https://shop.example/item"
+    item_id = db.add_scraped_item(7, url, title="Saved", price=20, stock=True, currency="RON")
+    db.add_price_history(item_id, 20)
+    original = db.get_scraped_item(7, url)
+    history = db.get_price_history(7, url)
+    monkeypatch.setattr(wishlist._price_scraper, "fetch", Mock(return_value=ScrapeResult(price=10)))
+
+    response = client.post("/wishlist/add", json={"user_id": 7, "url": url})
+
+    assert response.status_code == 409
+    assert response.get_json() == {"error": "Already tracked"}
+    assert db.get_scraped_item(7, url) == original
+    assert db.get_price_history(7, url) == history
+
+
+def test_wishlist_add_database_failure_is_server_error_without_history(client, monkeypatch):
+    from web.routes import wishlist
+    from wishlist.scraper import ScrapeResult
+
+    url = "https://shop.example/item"
+    monkeypatch.setattr(wishlist._price_scraper, "fetch", Mock(return_value=ScrapeResult(price=10)))
+    add_item = Mock(return_value=False)
+    add_history = Mock()
+    monkeypatch.setattr(wishlist, "add_scraped_item", add_item)
+    monkeypatch.setattr(wishlist, "add_price_history", add_history)
+
+    response = client.post("/wishlist/add", json={"user_id": 7, "url": url})
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "Failed to save wishlist item"}
+    add_item.assert_called_once()
+    add_history.assert_not_called()
+    assert db.get_scraped_item(7, url) is None
 
 
 def test_llm_feedback_summary_and_mention_model_config(client):

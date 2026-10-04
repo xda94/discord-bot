@@ -24,6 +24,7 @@ from llm.responses import generate_price_change_message
 from wishlist.refresh import refresh_item
 from wishlist.scraper import (
     FAILURE_BLOCKED,
+    FAILURE_BUSY,
     FAILURE_UNSUPPORTED,
     PriceScraper,
     ScrapeResult,
@@ -117,6 +118,12 @@ class WishlistFeature:
                 await interaction.followup.send(
                     "❌ That doesn't look like a valid HTTP(S) URL. Expected something like "
                     "`https://example.com/product/123`.",
+                    ephemeral=True,
+                )
+                return
+            if result.status == FAILURE_BUSY:
+                await interaction.followup.send(
+                    "❌ Price/stock extraction is temporarily busy. Please try again shortly.",
                     ephemeral=True,
                 )
                 return
@@ -562,6 +569,8 @@ class WishlistFeature:
         if not _is_valid_http_url(url):
             return WishlistAddResult("invalid", url)
         result = await asyncio.to_thread(self.scraper.fetch, url)
+        if result.failure == FAILURE_BUSY:
+            return WishlistAddResult(FAILURE_BUSY, url)
         if result.failure == FAILURE_BLOCKED:
             return WishlistAddResult("blocked", url)
         if result.failure == FAILURE_UNSUPPORTED:
@@ -619,6 +628,7 @@ class WishlistFeature:
         labels = {
             "ok": "OK",
             FAILURE_BLOCKED: "source blocked/unreachable",
+            FAILURE_BUSY: "temporarily busy; retry shortly",
             FAILURE_UNSUPPORTED: "source unsupported",
         }
         return f"Last checked: {when} ({labels.get(status, status or 'unknown')})"
@@ -652,6 +662,11 @@ class WishlistFeature:
         status = result.failure or "ok"
         await record("processing", "wishlist-check", scope_type="global")
 
+        if result.failure == FAILURE_BUSY:
+            return (
+                f"Refresh temporarily busy: {_domain(url)}. Please try again shortly.\n"
+                f"{self._format_check_status(time.time(), status)}"
+            )
         if result.failure == FAILURE_BLOCKED:
             await record("failure", "wishlist-check", scope_type="global")
             return (
@@ -751,10 +766,12 @@ class WishlistFeature:
         # Each `fetch` is up to ~15s of blocking I/O. Running it in a worker
         # thread keeps the bot responsive to slash commands and messages
         # during the scrape pass.
-        result = await asyncio.to_thread(self.scraper.fetch, url)
+        result = await asyncio.to_thread(self.scraper.fetch, url, capacity_policy="background")
         db.update_scraped_item_check_status(item_id, result.failure or "ok")
         await record("processing", "wishlist-check", scope_type="global")
 
+        if result.failure == FAILURE_BUSY:
+            return
         # Transport-level failure (timeout, anti-bot block, 5xx): trust
         # nothing, change nothing. Try again next pass.
         if result.failure == FAILURE_BLOCKED:

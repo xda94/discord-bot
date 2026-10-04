@@ -14,6 +14,7 @@ from features.birthdays import (
     _next_birthday_check,
     _parse_birthday,
 )
+from llm.capacity import reserve
 
 
 def _interaction(*, user_id=1, channel_id=10, guild_id=20):
@@ -233,6 +234,24 @@ def test_delivery_failure_and_generation_empty_leave_due_for_retry(tmp_db, monke
     assert channel.send.await_count == 0
     assert db.get_birthday(1)[5] is None
     assert records == [("failure", "birthday-delivery", {"guild_id": 20})]
+
+
+def test_capacity_skip_leaves_birthday_due_for_retry(tmp_db, monkeypatch):
+    db.set_birthday(1, 10, 20, 12, 25)
+    channel = _channel()
+    feature = _delivery_feature(channel)
+    post = MagicMock(side_effect=AssertionError("busy birthday must not contact server"))
+    monkeypatch.setattr("llm.client.requests.post", post)
+    reservation = reserve()
+    try:
+        row = db.get_due_birthdays(date(2026, 12, 25))[0]
+        asyncio.run(feature._send_birthday(row, date(2026, 12, 25)))
+        channel.send.assert_not_awaited()
+        post.assert_not_called()
+        assert db.get_birthday(1)[5] is None
+        assert len(db.get_due_birthdays(date(2026, 12, 25))) == 1
+    finally:
+        reservation.release()
 
 
 def test_successful_delivery_is_not_due_for_later_retry(tmp_db, monkeypatch):

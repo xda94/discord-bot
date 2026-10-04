@@ -1,5 +1,9 @@
 from unittest.mock import patch
+import json
 
+import pytest
+
+from llm.capacity import CapacityBusy
 from wishlist.scraper import PriceScraper
 
 def test_extract_with_llm_success():
@@ -46,4 +50,24 @@ def test_extract_with_llm_truncates_long_text():
         # the text passed to the LLM should contain 3000 words + some prompt text
         # the prompt text has about 60 words
         assert len(prompt.split()) < 3100 
+
+
+@pytest.mark.parametrize("price", [True, False, -1, float("nan"), float("inf"), "bad", ""])
+def test_extract_with_llm_rejects_invalid_price(price):
+    response = json.dumps({"price": price, "title": " ", "currency": " ", "in_stock": 0})
+    with patch("wishlist.scraper.query_llm", return_value=response):
+        assert PriceScraper._extract_with_llm("Page") == (None, None, None, None)
+
+
+def test_extract_with_llm_preserves_zero_false_and_trims_metadata():
+    response = '{"price":0,"title":" Item ","currency":" EUR ","in_stock":false}'
+    with patch("wishlist.scraper.query_llm", return_value=response) as query:
+        assert PriceScraper._extract_with_llm("Page") == (0, "Item", "EUR", False)
+    assert query.call_args.kwargs["capacity_policy"] == "interactive"
+
+
+def test_extract_with_llm_propagates_capacity_failure():
+    with patch("wishlist.scraper.query_llm", side_effect=CapacityBusy("Busy")):
+        with pytest.raises(CapacityBusy):
+            PriceScraper._extract_with_llm("Page")
         

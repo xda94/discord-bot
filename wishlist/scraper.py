@@ -14,6 +14,7 @@ to fetch a page, parse HTML, and decide whether the result is useful.
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -21,6 +22,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from llm.client import query_llm
+from llm.capacity import CapacityError
 
 # Distinct logger name so the bot's "discord_bot" file handler and the API's
 # "flask_api" file handler can both pick this up via the setup wired in
@@ -60,14 +62,40 @@ except ImportError:
 # Possible values for ScrapeResult.failure.
 FAILURE_BLOCKED = "blocked"          # transport-level: timeout, conn refused, 4xx/5xx
 FAILURE_UNSUPPORTED = "unsupported"  # HTML fetched OK but no structured data
+FAILURE_BUSY = "busy"
+
+
+def _normalize_price(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        price = float(str(value).replace(",", "."))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return price if math.isfinite(price) and price >= 0 else None
+
+
+def _normalize_text(value):
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
+
+
+def _availability(value):
+    value = _normalize_text(value)
+    if value is None:
+        return None
+    value = value.rstrip("/").rsplit("/", 1)[-1].lower()
+    if value in {"instock", "preorder", "in stock", "in stoc", "în stoc"}:
+        return True
+    if value in {"outofstock", "soldout", "discontinued", "out of stock", "stoc epuizat", "indisponibil"}:
+        return False
+    return None
 
 
 @dataclass
 class ScrapeResult:
     """Outcome of a scrape attempt.
-
-    `failure` is None on success or one of `FAILURE_BLOCKED` / `FAILURE_UNSUPPORTED`
-    so the caller can render a precise error message.
 
     `in_stock` is tri-state: True / False / None. `None` means "couldn't
     determine" — distinct from False ("definitely out of stock"). The
@@ -82,16 +110,18 @@ class ScrapeResult:
     currency: str | None = None
     failure: str | None = None
 
+    def __post_init__(self):
+        self.price = _normalize_price(self.price)
+        self.title = _normalize_text(self.title)
+        self.currency = _normalize_text(self.currency)
+        if not isinstance(self.in_stock, bool):
+            self.in_stock = None
+
     @property
     def has_data(self) -> bool:
         # `in_stock` counts here too — a successful text-fallback stock read
         # is a real signal even when price/title/currency are missing.
-        return (
-            self.price is not None
-            or self.title is not None
-            or self.currency is not None
-            or self.in_stock is not None
-        )
+        return _normalize_price(self.price) is not None or isinstance(self.in_stock, bool)
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +187,6 @@ class PriceScraper:
         "in stoc", "în stoc", "disponibil",
         "adauga in cos", "adaugă în coș", "add to cart",
     )
-    # Last-resort currency guess from the hostname's TLD. Only consulted when
-    # the page returned no JSON-LD currency and no og:price:currency meta tag.
     # Keep this conservative — only TLDs that are unambiguously tied to one
     # currency belong here. Avoid `.com`, multi-currency domains, etc.
     TLD_CURRENCY_FALLBACKS = {
@@ -166,7 +194,7 @@ class PriceScraper:
         "ro": "RON",
     }
 
-    def fetch(self, url: str) -> ScrapeResult:
+    def fetch(self, url: str, *, capacity_policy="interactive") -> ScrapeResult:
         """Fetch `url` and try to extract price/title/currency/stock from it."""
         try:
             response = self._http_get(url)
@@ -191,12 +219,9 @@ class PriceScraper:
                 soup, price, title, currency, in_stock
             )
             title = title or self._extract_meta_title(soup)
-            price = price or self._extract_meta_price(soup)
+            if price is None:
+                price = self._extract_meta_price(soup)
             currency = currency or self._extract_meta_currency(soup)
-            # Last-resort: if the page didn't tell us its currency, fall back to
-            # the TLD-based guess (e.g. .dk → DKK, .ro → RON). Only kicks in
-            # when both JSON-LD and meta tags were silent.
-            currency = currency or self._currency_from_tld(url)
             if in_stock is None:
                 in_stock = self._extract_meta_availability(soup)
             
@@ -213,27 +238,31 @@ class PriceScraper:
             # leave the persisted value alone (via COALESCE) instead of
             # mis-stamping the item as out-of-stock.
 
-            if price is None and title is None and currency is None and in_stock is None:
+            if price is None and in_stock is None:
                 # Fall back to LLM extraction if standard methods failed
                 # Extract clean text and truncate to avoid huge context windows
-                llm_price, llm_title, llm_currency, llm_stock = self._extract_with_llm(clean_text)
+                llm_price, llm_title, llm_currency, llm_stock = self._extract_with_llm(
+                    clean_text, capacity_policy=capacity_policy
+                )
                 
                 price = llm_price if llm_price is not None else price
-                title = llm_title if llm_title is not None else title
-                currency = llm_currency if llm_currency is not None else currency
+                title = title if title is not None else llm_title
+                currency = currency if currency is not None else llm_currency
                 in_stock = llm_stock if llm_stock is not None else in_stock
+
+            currency = currency or self._currency_from_tld(url)
 
             result = ScrapeResult(
                 price=price,
                 in_stock=in_stock,
-                title=title.strip() if title else None,
+                title=title,
                 currency=currency,
             )
             if not result.has_data:
-                # Page returned 200 but had no JSON-LD, no meta tags, and no
-                # text signals. Most likely a JS-rendered SPA.
                 result.failure = FAILURE_UNSUPPORTED
             return result
+        except CapacityError:
+            return ScrapeResult(failure=FAILURE_BUSY)
         except Exception as e:
             logger.error(f"Scraping parse error for {url}: {e}")
             return ScrapeResult(failure=FAILURE_UNSUPPORTED)
@@ -258,7 +287,7 @@ class PriceScraper:
                     if not (isinstance(item, dict) and
                             item.get("@type") in ("Product", "http://schema.org/Product")):
                         continue
-                    title = title or item.get("name")
+                    title = title or _normalize_text(item.get("name"))
                     offers = item.get("offers")
                     if isinstance(offers, dict):
                         offer_list = [offers]
@@ -278,18 +307,14 @@ class PriceScraper:
                         raw_price = offer.get("price")
                         if raw_price is None and isinstance(spec, dict):
                             raw_price = spec.get("price")
-                        if price is None and raw_price is not None:
-                            try:
-                                price = float(str(raw_price).replace(",", "."))
-                            except ValueError:
-                                pass
+                        if price is None:
+                            price = _normalize_price(raw_price)
                         if currency is None:
-                            currency = offer.get("priceCurrency")
+                            currency = _normalize_text(offer.get("priceCurrency"))
                             if currency is None and isinstance(spec, dict):
-                                currency = spec.get("priceCurrency")
-                        availability = offer.get("availability", "")
-                        if availability:
-                            in_stock = "InStock" in availability or "PreOrder" in availability
+                                currency = _normalize_text(spec.get("priceCurrency"))
+                        if in_stock is None:
+                            in_stock = _availability(offer.get("availability"))
             except Exception:
                 continue
         return price, title, currency, in_stock
@@ -300,8 +325,8 @@ class PriceScraper:
         if not title_tag:
             return None
         if title_tag.has_attr("content"):
-            return title_tag["content"]
-        return title_tag.string
+            return _normalize_text(title_tag["content"])
+        return _normalize_text(title_tag.string)
 
     @staticmethod
     def _extract_meta_price(soup):
@@ -310,17 +335,14 @@ class PriceScraper:
         )
         if not tag:
             return None
-        try:
-            return float(tag["content"].replace(",", "."))
-        except Exception:
-            return None
+        return _normalize_price(tag.get("content"))
 
     @staticmethod
     def _extract_meta_currency(soup):
         tag = soup.find("meta", property="product:price:currency") or soup.find(
             "meta", property="og:price:currency"
         )
-        return tag["content"] if tag else None
+        return _normalize_text(tag.get("content")) if tag else None
 
     @classmethod
     def _currency_from_tld(cls, url: str) -> str | None:
@@ -346,8 +368,7 @@ class PriceScraper:
         )
         if not tag:
             return None
-        content = tag.get("content", "").lower()
-        return "instock" in content or "in stoc" in content
+        return _availability(tag.get("content"))
 
     @classmethod
     def _extract_text_availability(cls, html_text: str):
@@ -361,7 +382,7 @@ class PriceScraper:
         return None
 
     @staticmethod
-    def _extract_with_llm(text: str) -> tuple[float | None, str | None, str | None, bool | None]:
+    def _extract_with_llm(text: str, *, capacity_policy="interactive") -> tuple[float | None, str | None, str | None, bool | None]:
         # Truncate text to roughly 3000 words to save context
         words = text.split()
         if len(words) > 3000:
@@ -377,24 +398,18 @@ class PriceScraper:
             f"Webpage text:\n{text}"
         )
         try:
-            response = query_llm(prompt, options={"format": "json", "temperature": 0.0})
+            response = query_llm(
+                prompt, options={"format": "json", "temperature": 0.0},
+                capacity_policy=capacity_policy,
+            )
             data = json.loads(response)
             
-            price = data.get("price")
-            if price is not None:
-                try:
-                    price = float(price)
-                except (ValueError, TypeError):
-                    price = None
+            price = _normalize_price(data.get("price"))
                     
-            title = data.get("title")
-            if not isinstance(title, str):
-                title = None
+            title = _normalize_text(data.get("title"))
                 
-            currency = data.get("currency")
-            if not isinstance(currency, str):
-                currency = None
-            elif len(currency) > 5:
+            currency = _normalize_text(data.get("currency"))
+            if currency is not None and len(currency) > 5:
                 currency = None
                 
             in_stock = data.get("in_stock")
@@ -402,6 +417,8 @@ class PriceScraper:
                 in_stock = None
                 
             return price, title, currency, in_stock
+        except CapacityError:
+            raise
         except Exception as e:
             logger.warning(f"LLM fallback extraction failed: {e}")
             return None, None, None, None

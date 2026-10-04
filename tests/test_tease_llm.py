@@ -5,6 +5,7 @@ import pytest
 
 from assistant_profiles import AssistantProfile
 from llm.client import LlamaCppError
+from llm.capacity import reserve
 from llm.memory_extraction import (
     build_memory_entry_prompt,
     generate_memory_delta,
@@ -25,11 +26,44 @@ from llm.responses import (
     generate_birthday_message,
     generate_inactivity_message,
     generate_mention_result,
+    generate_ordinary_reaction,
     generate_price_change_message,
     generate_summon_reply,
     get_mention_max_tokens,
     normalize_tease_response,
 )
+
+
+@pytest.mark.parametrize("generate", [
+    lambda: enhance_tease("good", "Alice", "hello"),
+    lambda: generate_ordinary_reaction("Alice", "hello"),
+    lambda: generate_inactivity_message("Bot", ask_question=True),
+    lambda: generate_birthday_message(),
+    lambda: generate_price_change_message("Product", 10, 9, "10 EUR", "9 EUR"),
+])
+def test_optional_generation_skips_globally_reserved_capacity(monkeypatch, generate):
+    monkeypatch.setattr("llm.responses.TEASE_LLM_ENABLED", True)
+    post = MagicMock(side_effect=AssertionError("busy generation must not contact server"))
+    monkeypatch.setattr("llm.client.requests.post", post)
+    reservation = reserve()
+    try:
+        assert generate() is None
+        post.assert_not_called()
+    finally:
+        reservation.release()
+
+
+def test_memory_generation_busy_is_distinct_from_failed_extraction(monkeypatch):
+    post = MagicMock(side_effect=AssertionError("busy extraction must not contact server"))
+    monkeypatch.setattr("llm.client.requests.post", post)
+    reservation = reserve()
+    try:
+        result = generate_memory_delta([], ["I prefer Python"], model="discord-bot")
+        assert not result.successful
+        assert result.skipped
+        post.assert_not_called()
+    finally:
+        reservation.release()
 
 
 def test_build_birthday_prompt_is_short_and_has_bounded_rules():
@@ -55,6 +89,7 @@ def test_generate_birthday_message_uses_llm_and_normalizes(monkeypatch):
         "model": "birthday-model",
         "timeout": 45,
         "options": {"temperature": 0.8, "max_tokens": 96},
+        "capacity_policy": "background",
     }
 
 

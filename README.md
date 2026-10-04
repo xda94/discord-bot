@@ -79,7 +79,8 @@ LLM_MEMORY_ENABLED=0
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
 | `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm-set`. A single-server setup normally lists one alias. |
 | `NATURAL_LLM_ENABLED` | No | Defaults to disabled. Set `1` only after the deployed model passes the read-only bilingual corpus evaluation; deterministic mention commands remain available. |
-| `LLAMA_CPP_TIMEOUT` | No | Internal HTTP limit for llama.cpp generation calls. Default: `180`. |
+| `LLAMA_CPP_TIMEOUT` | No | Default capacity queue deadline and HTTP generation timeout, in seconds. Default: `180`; the HTTP timeout begins after admission activates. |
+| `LLM_CAPACITY_DIR` | No | Shared POSIX lock directory for bot/API LLM capacity. Defaults to `.llm-capacity` beside `DB_FILE`; Compose uses `/data/.llm-capacity` for both services. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. Set it to `5` so the bot can answer questions about recent messages and pick up the channel's language for very short questions; every extra message makes each reply slower on a CPU-only host. |
@@ -503,7 +504,9 @@ cannot recover history already removed by the 180-day retention policy.
 
 **Text-fallback extraction** — If JSON-LD or meta tags are missing, the scraper strips `<script>` and `<style>` tags to check visible page text for stock status keywords, preventing false "out of stock" readings triggered by hidden JS localization strings.
 
-**AI Fallback Scraping** — If standard HTML metadata is missing, the scraper strips the page text and uses local llama.cpp (`LLAMA_CPP_DEFAULT_MODEL`) to extract price and stock data from unstructured web text.
+**AI Fallback Scraping** — When both price and stock remain unknown, the scraper uses local llama.cpp (`LLAMA_CPP_DEFAULT_MODEL`) to extract them from visible page text, even when a title or currency exists. Usable data requires a finite nonnegative price (including zero) or explicit stock status. Boolean, negative, NaN, and infinite prices are rejected; blank titles/currencies become missing, and unknown availability stays unknown. Fallback fills missing fields, and TLD currency guessing runs afterward.
+
+Manual add/refresh fallback uses interactive LLM capacity. If capacity is unavailable, Discord asks the user to retry and the API returns HTTP 503. Scheduled fallback skips under contention and retries on the next scrape pass. Failed refreshes preserve saved prices, stock, metadata, alert state, and history while recording the check outcome.
 
 **Price-change DMs** include exact old/new prices plus a short llama.cpp-generated reaction. The model randomly varies between funny, mock-corporate, playful, serious, enthusiastic, and melodramatically sad tones, and is told whether the observed price increased or decreased. If generation fails, the factual notification is still delivered.
 
@@ -560,13 +563,30 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 Vision requests accept one directly attached PNG or JPEG up to 8 MiB and 25
 megapixels. URLs, replied-to images, GIF, WebP, and multi-image reasoning are not
 supported. If several images are attached, the first is processed and the bot
-acknowledges the one-image limit. Text and image mentions share one inference
-slot. When that slot is busy, the bot declines the new request instead of
-building a backlog and asks the user to retry shortly. Attachment bytes are
+acknowledges the one-image limit. Text and image mentions share capacity with
+API inference: one active action and at most two interactive waiters, served
+in FIFO order. Further requests receive a retry-later response; each user can
+have only one pending mention. Attachment bytes are
 downloaded only after a job is admitted, are never logged or persisted, and are
 never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
+
+Bot and API coordinate through POSIX file locks in `LLM_CAPACITY_DIR`. The bot
+reserves capacity before queuing a job and holds the same reservation across
+retries and nested natural-command inference. Cancelling an async caller
+retains execution capacity while its HTTP worker thread is still running.
+Teases, ordinary reactions, inactivity nudges, birthday greetings, memory
+synthesis, and optional price-change prose run only when shared capacity is
+idle and take no interactive waiting positions. Birthday, memory, and inactivity
+work remains eligible for its existing scheduler after a skip; deterministic
+price notifications still continue without generated prose.
+
+Coordination supports one macOS/Linux host with a shared local filesystem,
+including the Compose `/data` volume. Both services must use the same lock
+directory. Multi-host and network-filesystem coordination are outside scope.
+Process exit releases kernel locks, but a killed or timed-out HTTP client cannot
+prove that llama-server has stopped its remote computation.
 
 Mention prompts tell the model who it is (the bot's server nickname) and who it
 is replying to (the requester's display name), and ask it to start with the
@@ -660,15 +680,17 @@ After a successful chunk, the entries are saved and that chunk's source
 messages are deleted in the same transaction. Failed synthesis retains the
 chunk for retry so messages are not silently lost. Consecutive failures retry
 after twice the active-chunk rest, then double up to the consolidation interval;
-a successful commit or a job skipped before inference resets this process-local
-backoff. Each scan admits at most one
+a successful commit resets this process-local backoff. Capacity skips preserve
+the existing backoff and extraction progress and do not count as failures.
+Each scan admits at most one
 chunk of up to 10 messages / 3,000 source characters with up to 2,000
 characters of retrieved entries. These are input-character budgets, not exact
 token counts; JSON, escaping, instructions, and the model's chat template add
 overhead. One extraction may return at most five additions and five corrections,
 each limited to 200 characters. Remaining cycle observations are grouped by author, and the oldest
-remaining author group is selected first. Scans skip the database entirely
-while the worker is busy. Successful memory work waits one active-chunk rest;
+remaining author group is selected first. Scans reserve shared background
+capacity before touching the database and skip when bot/API work is pending.
+Successful memory work waits one active-chunk rest;
 failed work follows the backoff above before another chunk is admitted. The
 bot does not persist assistant replies or a raw conversation transcript. At
 prompt time, relevant synthesized entries are ranked by word overlap and
@@ -716,11 +738,18 @@ fails. Refresh never sends a notification. Flight credential setup validates
 the key with SerpApi. This API is an operator interface: `user_id` selects data
 and does not authenticate a Discord user.
 
+SQLite initialization enables WAL before transactional schema migrations;
+connections enforce foreign keys and use an explicit five-second lock wait.
+Initialization failures stop bot startup. The API initializes lazily, returns
+HTTP 503 on failure, and retries initialization on a later request. Keyword
+inserts report success only after commit and invalidate their cache afterward;
+failed writes return a Discord error or API HTTP 500.
+
 ### Keywords
 
 | Method | Path | Body / notes |
 |---|---|---|
-| `POST` | `/keywords/add` | `{ "guild_id", "keyword", "response" }` |
+| `POST` | `/keywords/add` | `{ "guild_id", "keyword", "response" }` — `200` after commit; `500` if saving fails |
 | `DELETE` | `/keywords/delete` | `{ "guild_id", "keyword", "response"? }` — omit `response` to delete all for keyword in that guild |
 | `GET` | `/keywords/get?guild_id=<id>` | Map of keyword → list of responses for one server |
 | `GET` | `/keywords/top?guild_id=<id>&user_id=<id?>&limit=<1-100?>` | Usage counts; `user_id` optionally limits results to one requester |
@@ -793,15 +822,15 @@ in manual mode for inspecting, deleting, or preconfiguring retained data.
 
 | Method | Path | Body / notes |
 |---|---|---|
-| `POST` | `/wishlist/add` | `{ "user_id", "url" }` — **live scrape**; `201` with item fields, or `400` / `409` / `422` / `502` |
+| `POST` | `/wishlist/add` | `{ "user_id", "url" }` — **live scrape**; `201` with item fields; `400` invalid input, `409` duplicate, `422` unsupported page, `500` failed save, `502` blocked/unreachable, `503` temporarily busy |
 | `DELETE` | `/wishlist/remove` | `{ "user_id", "url" }` |
 | `GET` | `/wishlist/all` | All tracked items incl. `last_alert_kind`, `last_alert_price` |
 | `GET` | `/wishlist/preferences?user_id=<id>&url=<url>` | One requester-owned item's current tracking data and preferences |
 | `GET` | `/wishlist/history?user_id=<id>&url=<url>` | Item metadata plus chronological saved price observations; 404 when the item is not owned/found |
 | `PUT` | `/wishlist/preferences` | `{ "user_id", "url", "target_price", "target_currency", "restock_only" }`; use `{ "clear_target": true }` to clear a threshold |
-| `POST` | `/wishlist/refresh` | `{ "user_id", "url" }` — fetches and stores current item data only; no Discord notification |
+| `POST` | `/wishlist/refresh` | `{ "user_id", "url" }` — updates tracking data without notifications; `422` unsupported, `502` blocked/unreachable, `503` temporarily busy; failed checks retain saved data/history |
 
-`POST /wishlist/add` may take up to ~15 s (HTTP timeout). It does not create rows for blocked or unsupported pages.
+Product HTTP fetches have a 15-second timeout; LLM fallback may additionally wait for capacity and generation under `LLAMA_CPP_TIMEOUT`. Add does not create rows for blocked, unsupported, or busy results.
 
 ### Flight tracker
 
@@ -829,9 +858,10 @@ python -m pytest
 
 Coverage highlights: the `db` package (CRUD, migrations, cascades, memory, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, row-level user memory, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
 
-Verification on 2026-10-03 used the repository `.venv` (Python 3.9.6). The
-complete repository suite passed `830 passed, 1 warning`; the warning is the
-existing urllib3/LibreSSL compatibility warning. The reviewed bilingual
+Reliability checks use the repository `.venv` (Python 3.9.6) and cover shared
+capacity across processes, cancellation, background skips, usable scraper
+evidence, SQLite initialization retry/rollback, and truthful write failures.
+The existing urllib3/LibreSSL compatibility warning remains. The reviewed bilingual
 parser corpus passed 148/148 cases (100%) with zero unauthorized actions.
 Tests use isolated databases; no live Discord messages or production services
 were used.

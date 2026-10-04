@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import db
-from wishlist.scraper import FAILURE_BLOCKED, FAILURE_UNSUPPORTED, PriceScraper, ScrapeResult
+from wishlist.scraper import FAILURE_BLOCKED, FAILURE_BUSY, FAILURE_UNSUPPORTED, PriceScraper, ScrapeResult
 
 
 def refresh_item(item, scraper: PriceScraper) -> ScrapeResult:
@@ -12,7 +12,7 @@ def refresh_item(item, scraper: PriceScraper) -> ScrapeResult:
     result = scraper.fetch(url)
     status = result.failure or "ok"
     db.update_scraped_item_check_status(item_id, status)
-    if result.failure == FAILURE_BLOCKED:
+    if result.failure in (FAILURE_BLOCKED, FAILURE_BUSY):
         return result
     if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
         return result

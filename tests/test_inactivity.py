@@ -6,6 +6,7 @@ from discord import app_commands
 
 import db
 from features.inactivity import InactivityFeature, pick_chatter
+from llm.capacity import reserve
 
 
 def _msg(author_id: int, *, is_bot: bool = False):
@@ -90,6 +91,32 @@ def test_failed_generation_keeps_guild_overdue_for_retry(monkeypatch):
 
     assert feature._state[7]["last_time"] == 100.0
     save_activity.assert_not_called()
+
+
+def test_capacity_skip_keeps_guild_overdue_for_retry(monkeypatch):
+    feature = object.__new__(InactivityFeature)
+    feature.client = MagicMock()
+    channel = MagicMock()
+    channel.send = AsyncMock()
+    feature.client.get_channel.return_value = channel
+    feature._pick_recent_chatter = AsyncMock(return_value=None)
+    feature._state = {7: {"last_time": 100.0, "channel_id": 99}}
+    save_activity = MagicMock()
+    post = MagicMock(side_effect=AssertionError("busy nudge must not contact server"))
+    monkeypatch.setattr("llm.client.requests.post", post)
+    monkeypatch.setattr("features.inactivity.resolve_bot_display_name", lambda *args: "Bot")
+    monkeypatch.setattr("features.inactivity.time.time", lambda: 100_000.0)
+    monkeypatch.setattr("features.inactivity.db.is_guild_inactivity_enabled", lambda _: True)
+    monkeypatch.setattr("features.inactivity.db.set_guild_activity", save_activity)
+    reservation = reserve()
+    try:
+        asyncio.run(InactivityFeature._check.coro(feature))
+        assert feature._state[7]["last_time"] == 100.0
+        save_activity.assert_not_called()
+        channel.send.assert_not_awaited()
+        post.assert_not_called()
+    finally:
+        reservation.release()
 
 
 def test_disabled_guild_is_skipped(monkeypatch):

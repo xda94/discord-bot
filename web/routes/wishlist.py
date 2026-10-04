@@ -14,7 +14,7 @@ from web.auth import require_token
 from web.helpers import discord_id as _discord_id
 from wishlist.refresh import refresh_item
 from wishlist.scraper import (
-    FAILURE_BLOCKED, FAILURE_UNSUPPORTED, PriceScraper, _domain,
+    FAILURE_BLOCKED, FAILURE_BUSY, FAILURE_UNSUPPORTED, PriceScraper, _domain,
     _is_valid_http_url,
 )
 from flight_provider import SUPPORTED_CURRENCIES
@@ -83,6 +83,11 @@ def api_add_scrape():
 
     result = _price_scraper.fetch(url)
 
+    if result.failure == FAILURE_BUSY:
+        return jsonify({
+            "error": "busy",
+            "detail": "Price/stock extraction is temporarily busy. Please try again shortly.",
+        }), 503
     if result.failure == FAILURE_BLOCKED:
         logger.warning(f"/wishlist/add rejected (blocked) for {url}")
         return jsonify({
@@ -108,8 +113,10 @@ def api_add_scrape():
         title=result.title, price=result.price,
         stock=result.in_stock, currency=result.currency,
     )
-    if not item_id:
+    if item_id is None:
         return jsonify({"error": "Already tracked"}), 409
+    if item_id is False:
+        return jsonify({"error": "Failed to save wishlist item"}), 500
 
     if result.price is not None:
         add_price_history(item_id, result.price)
@@ -272,7 +279,6 @@ def api_set_wishlist_preferences():
 @blueprint.route("/wishlist/refresh", methods=["POST"])
 @require_token
 def api_refresh_wishlist_item():
-    """Refresh data only; this route never sends a Discord DM or LLM request."""
     data = request.get_json()
     if not isinstance(data, dict) or not isinstance(data.get("url"), str):
         return jsonify({"error": "user_id and url are required"}), 400
@@ -286,6 +292,13 @@ def api_refresh_wishlist_item():
 
     result = refresh_item(item, _price_scraper)
     status = result.failure or "ok"
+    if result.failure == FAILURE_BUSY:
+        return jsonify({
+            "error": "busy",
+            "detail": "Price/stock extraction is temporarily busy. Please try again shortly.",
+            "source": _domain(item[2]),
+            "last_check_status": status,
+        }), 503
     if result.failure == FAILURE_BLOCKED:
         return jsonify(
             {

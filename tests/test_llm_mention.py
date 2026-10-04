@@ -9,6 +9,9 @@ import discord
 from discord import app_commands
 
 from llm.client import LlamaCppError, get_default_model, query_llm
+from llm.capacity import CapacityBusy, busy, reserve
+from llm.memory_extraction import MemoryDeltaResult
+from llm.worker import WorkerResult
 from features.llm_mention import (
     AskJob,
     LLMMentionFeature,
@@ -38,6 +41,11 @@ from llm.responses import build_mention_prompt
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
 JPEG_BYTES = b"\xff\xd8\xffimage"
+
+
+def _admit_memory(*args, reservation):
+    reservation.release()
+    return True
 
 
 def _attachment(
@@ -209,7 +217,7 @@ def test_memory_scheduler_uses_cycle_interval_then_active_chunk_rest(monkeypatch
     feature.memory = SimpleNamespace(
         eligible_batches=MagicMock(side_effect=[[], [batch], []])
     )
-    feature._enqueue_memory = AsyncMock(return_value=True)
+    feature._enqueue_memory = AsyncMock(side_effect=_admit_memory)
     feature._model_busy = MagicMock(return_value=False)
     feature._memory_last_finished = None
     monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "18000")
@@ -249,7 +257,7 @@ def test_memory_scheduler_drains_retained_batch_after_active_rest(monkeypatch):
     feature.memory = SimpleNamespace(
         eligible_batches=MagicMock(side_effect=[[], [batch], [batch]])
     )
-    feature._enqueue_memory = AsyncMock(return_value=True)
+    feature._enqueue_memory = AsyncMock(side_effect=_admit_memory)
     feature._model_busy = MagicMock(return_value=False)
     feature._memory_last_finished = None
     monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "18000")
@@ -322,7 +330,7 @@ def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
     feature.memory = SimpleNamespace(
         eligible_batches=MagicMock(return_value=[first, second])
     )
-    feature._enqueue_memory = AsyncMock(return_value=True)
+    feature._enqueue_memory = AsyncMock(side_effect=_admit_memory)
     feature._model_busy = MagicMock(return_value=False)
     feature._memory_last_finished = None
     monkeypatch.setenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "1")
@@ -334,7 +342,8 @@ def test_memory_scheduler_admits_only_one_batch_per_scan(monkeypatch):
     with pytest.raises(SchedulerStopped):
         asyncio.run(feature._memory_scheduler_loop())
 
-    feature._enqueue_memory.assert_awaited_once_with(first, "discord-bot")
+    feature._enqueue_memory.assert_awaited_once()
+    assert feature._enqueue_memory.await_args.args == (first, "discord-bot")
 
 
 def test_memory_scheduler_waits_only_remaining_rest_interval(monkeypatch):
@@ -358,9 +367,10 @@ def test_memory_scheduler_waits_only_remaining_rest_interval(monkeypatch):
     feature._model_busy = MagicMock(return_value=False)
     feature._memory_last_finished = None
 
-    async def admit(_batch, _model):
+    async def admit(_batch, _model, *, reservation):
         # The worker finishes ten seconds after the first scan admits it.
         feature._memory_last_finished = clock[0] + 10
+        reservation.release()
         return True
 
     feature._enqueue_memory = admit
@@ -379,7 +389,7 @@ def test_memory_scheduler_waits_only_remaining_rest_interval(monkeypatch):
     assert feature.memory.eligible_batches.call_count == 2
 
 
-def test_worker_admission_does_not_build_a_backlog():
+def test_worker_admission_accepts_three_global_reservations():
     async def scenario():
         feature = object.__new__(LLMMentionFeature)
         feature._processing = False
@@ -387,13 +397,20 @@ def test_worker_admission_does_not_build_a_backlog():
         feature._queue_sequence = 0
         feature._ensure_worker = MagicMock()
 
-        first = await feature._put_job(0, "first")
-        second = await feature._put_job(0, "second")
-
-        assert first is True
-        assert second is False
-        assert feature._queue.qsize() == 1
-        assert feature._queue.get_nowait()[2] == "first"
+        jobs = [
+            AskJob(user=SimpleNamespace(id=index), question="hello", model="discord-bot")
+            for index in range(4)
+        ]
+        try:
+            assert [await feature._put_job(0, job) for job in jobs] == [
+                True, True, True, False,
+            ]
+            assert feature._queue.qsize() == 3
+            assert [feature._queue.get_nowait()[2] for _ in range(3)] == jobs[:3]
+        finally:
+            for job in jobs:
+                if job.reservation is not None:
+                    job.reservation.release()
 
     asyncio.run(scenario())
 
@@ -465,6 +482,96 @@ def test_successful_memory_worker_resets_failure_backoff(tmp_db):
             await client.close()
 
     asyncio.run(scenario())
+
+
+def test_memory_admission_skips_api_contention_without_changing_backoff(tmp_db):
+    async def scenario():
+        client = discord.Client(intents=discord.Intents.none())
+        feature = LLMMentionFeature(client, app_commands.CommandTree(client), bot_id=99)
+        feature._memory_consecutive_failures = 2
+        feature._memory_last_finished = 10.0
+        batch = MemoryBatch(100, 7, 100, 10, 0, 1, ("hello",))
+        reservation = reserve()
+        try:
+            assert feature._model_busy()
+            assert not await feature._enqueue_memory(batch, "discord-bot")
+            assert not feature._memory_pending
+            assert feature._memory_last_finished == 10.0
+            assert feature._memory_consecutive_failures == 2
+            assert feature._worker_task is None
+        finally:
+            reservation.release()
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_memory_scheduler_admission_race_skips_scan(monkeypatch):
+    class StopScan(Exception):
+        pass
+
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(eligible_batches=MagicMock())
+    feature._model_busy = MagicMock(return_value=False)
+    feature._memory_last_finished = None
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", AsyncMock(side_effect=[None, StopScan]))
+    monkeypatch.setattr("features.llm_mention.reserve", MagicMock(side_effect=CapacityBusy("busy")))
+
+    with pytest.raises(StopScan):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    feature.memory.eligible_batches.assert_not_called()
+
+
+def test_memory_scheduler_reserves_before_scan_and_releases_empty_scan(monkeypatch):
+    class StopScan(Exception):
+        pass
+
+    def scan(**kwargs):
+        assert busy()
+        with pytest.raises(CapacityBusy):
+            reserve(policy="background")
+        return []
+
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(eligible_batches=MagicMock(side_effect=scan))
+    feature._memory_last_finished = None
+    monkeypatch.setattr("features.llm_mention.asyncio.sleep", AsyncMock(side_effect=[None, StopScan]))
+
+    with pytest.raises(StopScan):
+        asyncio.run(feature._memory_scheduler_loop())
+
+    feature.memory.eligible_batches.assert_called_once()
+    assert not busy()
+
+
+def test_skipped_memory_generation_retains_extraction_state(monkeypatch):
+    feature = object.__new__(LLMMentionFeature)
+    feature.memory = SimpleNamespace(
+        can_process_batch=MagicMock(return_value=True),
+        entries_for_batch=MagicMock(return_value=[]),
+        commit_delta=MagicMock(),
+    )
+    feature._memory_pending = {(100, 123)}
+    feature._memory_consecutive_failures = 2
+    feature._memory_last_finished = 10.0
+    batch = MemoryBatch(100, 123, 100, 10, 0, 1, ("hello",))
+    job = MemoryJob(batch, "discord-bot")
+    record = AsyncMock()
+    monkeypatch.setattr("features.llm_mention.record", record)
+    monkeypatch.setattr(
+        "features.llm_mention.generate_memory_delta",
+        lambda *args, **kwargs: MemoryDeltaResult(False, skipped=True),
+    )
+
+    assert asyncio.run(feature._process_memory_job(job)) is None
+    feature._finish_queued_job(job, WorkerResult("skipped"))
+
+    feature.memory.commit_delta.assert_not_called()
+    record.assert_not_awaited()
+    assert not feature._memory_pending
+    assert feature._memory_consecutive_failures == 2
+    assert feature._memory_last_finished == 10.0
 
 
 def test_stale_stored_model_is_replaced_with_llama_cpp_default(tmp_db):
@@ -544,7 +651,7 @@ def test_image_mention_enqueues_description_or_caption(
     message.reply.assert_not_awaited()
 
 
-def test_busy_multi_image_request_is_not_queued(monkeypatch):
+def test_busy_multi_image_request_can_be_queued(monkeypatch):
     monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
     feature = _handling_feature(processing=True, queue_size=1)
     first = _attachment(filename="first.png")
@@ -553,9 +660,9 @@ def test_busy_multi_image_request_is_not_queued(monkeypatch):
 
     asyncio.run(feature.handle_message(message))
 
-    feature._enqueue_job.assert_not_awaited()
+    feature._enqueue_job.assert_awaited_once()
     notice = message.reply.await_args.args[0]
-    assert "didn't queue" in notice
+    assert "first image" in notice
     assert message.reply.await_args.kwargs["mention_author"] is False
 
 

@@ -14,13 +14,162 @@ Covers the surfaces most likely to silently regress on future refactors:
 """
 
 import sqlite3
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date
+from unittest.mock import Mock
 
 import db
 import pytest
 
 GUILD_A = 111
 GUILD_B = 222
+
+
+def test_connection_enables_foreign_keys_and_bounded_lock_wait(tmp_db):
+    with db._connect() as cursor:
+        cursor.execute("PRAGMA foreign_keys")
+        assert cursor.fetchone() == (1,)
+        cursor.execute("PRAGMA busy_timeout")
+        assert cursor.fetchone() == (5000,)
+
+
+@pytest.mark.parametrize("failure", ["execute", "cursor"])
+def test_connection_closes_after_setup_failure(monkeypatch, failure):
+    connection = Mock()
+    getattr(connection, failure).side_effect = sqlite3.OperationalError("setup failed")
+    monkeypatch.setattr(db.connection.sqlite3, "connect", Mock(return_value=connection))
+
+    with pytest.raises(sqlite3.OperationalError, match="setup failed"):
+        with db._connect():
+            pytest.fail("Connection setup should have failed")
+
+    connection.rollback.assert_called_once_with()
+    connection.close.assert_called_once_with()
+
+
+def test_connection_rolls_back_and_closes_after_commit_failure(monkeypatch):
+    connection = Mock()
+    connection.commit.side_effect = sqlite3.OperationalError("commit failed")
+    monkeypatch.setattr(db.connection.sqlite3, "connect", Mock(return_value=connection))
+
+    with pytest.raises(sqlite3.OperationalError, match="commit failed"):
+        with db._connect(commit=True):
+            pass
+
+    connection.rollback.assert_called_once_with()
+    connection.close.assert_called_once_with()
+
+
+def test_initialization_enables_wal(tmp_db):
+    with db._connect() as cursor:
+        cursor.execute("PRAGMA journal_mode")
+        assert cursor.fetchone() == ("wal",)
+
+
+def test_initialization_rolls_back_migrations_and_reraises(tmp_path, monkeypatch, caplog):
+    from db import experience_schema
+
+    database = tmp_path / "legacy.db"
+    monkeypatch.setattr(db.connection, "DB_FILE", str(database))
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "CREATE TABLE responses (id INTEGER PRIMARY KEY, keyword TEXT, response TEXT)"
+        )
+        connection.execute("INSERT INTO responses VALUES (1, 'hello', 'original')")
+        connection.commit()
+
+    def fail_migration(cursor):
+        cursor.execute("UPDATE responses SET response = 'changed'")
+        raise sqlite3.OperationalError("migration failed")
+
+    monkeypatch.setattr(experience_schema, "migrate", fail_migration)
+
+    with pytest.raises(sqlite3.OperationalError, match="migration failed"):
+        db.init_db()
+
+    assert "Critical error initializing database" in caplog.text
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT * FROM responses").fetchall() == [
+            (1, "hello", "original")
+        ]
+        assert connection.execute("PRAGMA table_info(responses)").fetchall()[-1][1] == "response"
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reminders'"
+        ).fetchall() == []
+
+
+def test_initialization_closes_connection_after_wal_failure(monkeypatch):
+    connection = Mock()
+    connection.cursor.return_value.execute.side_effect = sqlite3.OperationalError("WAL failed")
+    monkeypatch.setattr(db.connection.sqlite3, "connect", Mock(return_value=connection))
+
+    with pytest.raises(sqlite3.OperationalError, match="WAL failed"):
+        db.init_db()
+
+    connection.rollback.assert_called_once_with()
+    connection.close.assert_called_once_with()
+    connection.commit.assert_not_called()
+
+
+def test_initialization_wal_lock_retry_is_bounded(monkeypatch):
+    from db import schema
+
+    connection = Mock()
+    connection.cursor.return_value.execute.side_effect = sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(db.connection.sqlite3, "connect", Mock(return_value=connection))
+    monkeypatch.setattr(schema.time, "monotonic", Mock(side_effect=[0.0, 5.0]))
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        db.init_db()
+
+    connection.rollback.assert_called_once_with()
+    connection.close.assert_called_once_with()
+    connection.commit.assert_not_called()
+
+
+def test_concurrent_initialization_serializes(tmp_path, monkeypatch):
+    database = tmp_path / "concurrent.db"
+    monkeypatch.setattr(db.connection, "DB_FILE", str(database))
+    barrier = threading.Barrier(4)
+
+    def initialize():
+        barrier.wait(timeout=5)
+        db.init_db()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(initialize) for _ in range(4)]
+        for future in futures:
+            future.result(timeout=10)
+
+    with db._connect() as cursor:
+        cursor.execute("PRAGMA integrity_check")
+        assert cursor.fetchone() == ("ok",)
+        cursor.execute("SELECT COUNT(*) FROM analytics_metadata")
+        assert cursor.fetchone() == (1,)
+
+
+def test_connection_lock_contention_times_out(tmp_db):
+    with closing(sqlite3.connect(tmp_db)) as owner:
+        owner.execute("BEGIN IMMEDIATE")
+        started = time.monotonic()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            with db._connect(commit=True) as cursor:
+                cursor.execute("INSERT INTO settings VALUES ('lock-test', 'blocked')")
+        elapsed = time.monotonic() - started
+        owner.rollback()
+
+    assert 4.5 <= elapsed < 8
+    assert db.get_setting("lock-test") is None
+
+
+def test_successful_connection_transaction_commits(tmp_db):
+    with db._connect(commit=True) as cursor:
+        cursor.execute("INSERT INTO settings VALUES ('transaction-test', 'committed')")
+
+    assert db.get_setting("transaction-test") == "committed"
 
 
 def test_memory_entry_schema_migrates_to_all_memory_categories(tmp_path, monkeypatch):
@@ -70,8 +219,8 @@ def test_memory_entry_schema_migrates_to_all_memory_categories(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 def test_responses_add_get_remove(tmp_db):
-    db.add_response("hello", "world", GUILD_A)
-    db.add_response("hello", "earth", GUILD_A)
+    assert db.add_response("hello", "world", GUILD_A) is True
+    assert db.add_response("hello", "earth", GUILD_A) is True
 
     assert db.get_all_responses(GUILD_A) == {"hello": ["world", "earth"]}
 
@@ -191,6 +340,30 @@ def test_cache_invalidated_immediately_on_add(tmp_db):
     db.get_all_responses(GUILD_A)  # warm the cache (empty)
     db.add_response("kw", "value", GUILD_A)
     assert db.get_all_responses(GUILD_A) == {"kw": ["value"]}
+
+
+@pytest.mark.parametrize("failure", ["execute", "commit"])
+def test_failed_response_write_preserves_cache_and_database(tmp_db, monkeypatch, failure):
+    assert db.add_response("kw", "original", GUILD_A) is True
+    cached = db.get_all_responses(GUILD_A)
+    cached_at = db.bot_data._responses_cache_at[GUILD_A]
+    raw_connection = sqlite3.connect(tmp_db)
+    connection = Mock(wraps=raw_connection)
+    cursor = Mock(wraps=raw_connection.cursor())
+    connection.cursor.return_value = cursor
+    target = cursor if failure == "execute" else connection
+    getattr(target, failure).side_effect = sqlite3.OperationalError("write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db.connection.sqlite3, "connect", Mock(return_value=connection))
+        assert db.add_response("kw", "unsaved", GUILD_A) is False
+
+    connection.rollback.assert_called_once_with()
+    connection.close.assert_called_once_with()
+    assert db.get_all_responses(GUILD_A) is cached
+    assert db.bot_data._responses_cache_at[GUILD_A] == cached_at
+    db.bot_data._invalidate_responses_cache(GUILD_A)
+    assert db.get_all_responses(GUILD_A) == {"kw": ["original"]}
 
 
 def test_cache_invalidated_immediately_on_remove(tmp_db):

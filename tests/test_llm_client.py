@@ -396,3 +396,62 @@ def test_query_llm_enables_thinking_only_when_asked(monkeypatch):
     query_llm("hello", thinking=True)
     assert post.call_args.kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": True}
 
+
+def test_action_retries_and_nested_inference_reuse_capacity(monkeypatch):
+    from llm.capacity import CapacityBusy, action_context, reserve
+
+    response = MagicMock(ok=True)
+    response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    post = MagicMock(side_effect=[requests.exceptions.Timeout, response, response])
+    monkeypatch.setattr(requests, "post", post)
+    with action_context() as action:
+        first_waiter = reserve()
+        second_waiter = reserve()
+        try:
+            with pytest.raises(LlamaCppError):
+                query_llm("first")
+            assert query_llm("retry") == "ok"
+            with action_context(policy="background") as nested:
+                assert nested is action
+                assert query_llm("nested", capacity_policy="background") == "ok"
+            with pytest.raises(CapacityBusy):
+                reserve()
+        finally:
+            first_waiter.release()
+            second_waiter.release()
+
+
+@pytest.mark.parametrize("failure", ["invalid", "http", "empty", "json"])
+def test_query_failure_releases_capacity(monkeypatch, failure):
+    from llm.capacity import action_context, busy
+
+    response = MagicMock(ok=True, status_code=503, reason="Unavailable", text="bad")
+    response.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    if failure == "invalid":
+        response.json.return_value = {"choices": []}
+    elif failure == "http":
+        response.ok = False
+    elif failure == "empty":
+        response.json.return_value = {"choices": [{"message": {"content": " "}}]}
+    else:
+        response.json.side_effect = ValueError
+    monkeypatch.setattr(requests, "post", MagicMock(return_value=response))
+    with pytest.raises(LlamaCppError):
+        query_llm("test")
+    assert not busy()
+    with action_context(policy="background"):
+        assert busy()
+
+
+def test_query_background_contention_never_calls_http(monkeypatch):
+    from llm.capacity import CapacityBusy, reserve
+
+    action = reserve()
+    post = MagicMock()
+    monkeypatch.setattr(requests, "post", post)
+    try:
+        with pytest.raises(CapacityBusy):
+            query_llm("test", capacity_policy="background")
+        post.assert_not_called()
+    finally:
+        action.release()

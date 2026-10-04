@@ -8,6 +8,8 @@ import uuid
 
 import requests
 
+from llm.capacity import admitted_request
+
 logger = logging.getLogger("discord_bot")
 
 LLAMA_CPP_BASE_URL = os.getenv(
@@ -163,6 +165,7 @@ def llama_supports_vision(
         ) from exc
 
 
+@admitted_request
 def query_llm(
     prompt: str,
     model: str | None = None,
@@ -175,6 +178,8 @@ def query_llm(
     base_url: str = LLAMA_CPP_BASE_URL,
     timeout: int | None = None,
     thinking: bool = False,
+    capacity_policy: str = "interactive",
+    queue_timeout: float | None = None,
 ) -> str:
     """Call llama-server's OpenAI-compatible chat-completions endpoint.
 
@@ -379,4 +384,3 @@ def query_llm(
         time.monotonic() - started,
     )
     return answer
-

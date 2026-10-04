@@ -69,6 +69,7 @@ responses.db
 responses.db-wal
 responses.db-shm
 backups/
+.llm-capacity/
 
 # Local architecture notes
 bot.md

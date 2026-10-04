@@ -7,7 +7,7 @@ import os
 import threading
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, jsonify
 
 import db
 from web.helpers import format_discord_ids
@@ -43,7 +43,11 @@ def create_app(config: dict | None = None) -> Flask:
             return
         with init_lock:
             if not initialized:
-                db.init_db()
+                try:
+                    db.init_db()
+                except Exception:
+                    logger.exception("Database initialization failed")
+                    return jsonify({"error": "Database is temporarily unavailable"}), 503
                 initialized = True
 
     app.after_request(format_discord_ids)
