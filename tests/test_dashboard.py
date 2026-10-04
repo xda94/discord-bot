@@ -1,6 +1,7 @@
 """Focused coverage for the local dashboard and its supporting API routes."""
 
 import importlib
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -59,6 +60,42 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"birthdayParts" in script.data
     assert b"/sponsors/tiers" in script.data
     assert b"formatChancePercent" in script.data
+
+
+def test_birthday_navigation_uses_decorative_outline_icon(dashboard_client):
+    _api, client = dashboard_client
+    html = client.get("/").get_data(as_text=True)
+    stylesheet = client.get("/static/dashboard.css").get_data(as_text=True)
+    button_content = html.split(
+        '<button class="nav-item" data-page="birthdays">', 1
+    )[1].split("</button>", 1)[0]
+    button = ET.fromstring(f"<button>{button_content}</button>")
+    icon_slot = button.find("span")
+    icon = icon_slot.find("{http://www.w3.org/2000/svg}svg")
+
+    assert "".join(button.itertext()) == "Birthdays"
+    assert "🎂" not in button_content
+    assert icon_slot.attrib["class"] == "birthday-icon"
+    assert icon.attrib["viewBox"] == "0 0 24 24"
+    assert icon.attrib["fill"] == "none"
+    assert icon.attrib["stroke"] == "currentColor"
+    assert icon.attrib["aria-hidden"] == "true"
+    assert icon.attrib["focusable"] == "false"
+    assert icon.find("{http://www.w3.org/2000/svg}rect") is not None
+    assert icon.find("{http://www.w3.org/2000/svg}path") is not None
+    assert ".nav-item .birthday-icon { height: 20px;" in stylesheet
+    assert "flex: 0 0 20px;" in stylesheet
+    assert ".nav-item .birthday-icon svg { display: block; width: 18px; height: 18px; }" in stylesheet
+    navigation_rule = stylesheet.split(".nav-item {", 1)[1].split("}", 1)[0]
+    assert "color: #a7aebe;" in navigation_rule
+    assert ".nav-item:hover { color: var(--text);" in stylesheet
+    assert ".nav-item.active { color: white;" in stylesheet
+    for selector in (".nav-item .birthday-icon {", ".nav-item .birthday-icon svg {"):
+        assert "color:" not in stylesheet.split(selector, 1)[1].split("}", 1)[0]
+    mobile_rules = stylesheet.split("@media (max-width: 780px) {", 1)[1]
+    assert ".sidebar { transform: translateX(-100%);" in mobile_rules
+    assert "body.menu-open .sidebar { transform: translateX(0); }" in mobile_rules
+    assert ".menu-button { display: block; }" in mobile_rules
 
 
 def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
