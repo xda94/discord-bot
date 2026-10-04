@@ -186,15 +186,14 @@ HELP_TEXT = (
     "impressions, preferences, and topics supplement live chat history. One request per user at a time with "
     "a cooldown after completion. "
     "Set `BOT_ID` in `.env` to your bot's user ID.\n\n"
-    "A mentioned bot also recognizes bounded English/Romanian commands for tracking one "
-    "HTTP(S) URL (or replying to a message with exactly one URL), showing flights or your "
-    "wishlist, deleting items, setting or clearing targets, restock-only mode, refreshing, "
-    "and price graphs; self-reminders accept minutes/hours/days. Recognized commands run "
-    "immediately. Successful mutations and private deliveries add ✅ to your message. "
-    "Flight, wishlist, refresh, and graph results are delivered privately by DM with no "
-    "public fallback; enable DMs or use the corresponding slash command if delivery fails. "
-    "The same requester ownership, five-minute refresh cooldown, saved-history graph limits, "
-    "and 1–180-day graph period apply.\n\n"
+    "**/natural-language**\n"
+    "Open a private English/Romanian guide with supported mention-command examples for "
+    "relative, calendar and recurring reminders, reminder management, wishlist tracking, "
+    "targets, restock alerts, refreshes, graphs and listing saved flights. Mention the real "
+    "bot account and give one request. Recognized commands execute immediately; ✅ means "
+    "success. Results are private; blocked DMs name the corresponding slash alternative. "
+    "Calendar/recurring reminders require a confirmed timezone, and clarifications last "
+    "ten minutes. Guide language controls do not change your saved profile.\n\n"
     "The person who asked may manually add 👍 or 👎 to an LLM mention reply. "
     "Contextual emoji reactions are added to human messages, never as seeded feedback "
     "on bot replies. Feedback from anyone else is ignored.\n\n"
@@ -252,7 +251,28 @@ class HelpFeature:
         async def help_cmd(interaction: discord.Interaction):
             logger.info(f"Command /help called by {interaction.user}")
             import db
-            from i18n import language_for,t
+            from i18n import t
             from features.onboarding import HelpView
-            lang=language_for(profile=db.get_assistant_profile(interaction.user.id))
-            await interaction.response.send_message(t('help',lang),view=HelpView(interaction.user.id,lang,self.tree,memory_disabled='/memory-' not in self.help_text),ephemeral=True)
+            from features.natural_language_help import display_language
+            lang = display_language(interaction)
+            bot_mention = getattr(getattr(self.client, "user", None), "mention", None)
+            await interaction.response.send_message(
+                t('help', lang),
+                view=HelpView(interaction.user.id, lang, self.tree,
+                              memory_disabled='/memory-' not in self.help_text,
+                              bot_mention=bot_mention),
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            )
+
+        @self.tree.command(
+            name="natural-language", description="Explore supported English and Romanian mention commands privately"
+        )
+        async def natural_language(interaction: discord.Interaction):
+            from features.natural_language_help import NaturalLanguageHelpView, display_language, guide_content
+            language = display_language(interaction)
+            bot_mention = getattr(getattr(self.client, "user", None), "mention", None)
+            await interaction.response.send_message(
+                guide_content(language, bot_mention=bot_mention),
+                view=NaturalLanguageHelpView(interaction.user.id, language, bot_mention=bot_mention),
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            )

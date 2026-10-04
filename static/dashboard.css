@@ -41,6 +41,8 @@ button { color: inherit; }
 nav { display: grid; gap: 5px; }
 .nav-item { border: 0; background: transparent; color: #a7aebe; display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 10px; text-align: left; cursor: pointer; transition: .18s ease; }
 .nav-item span { width: 20px; text-align: center; font-size: 18px; }
+.nav-item .birthday-icon { height: 20px; display: grid; place-items: center; flex: 0 0 20px; }
+.nav-item .birthday-icon svg { display: block; width: 18px; height: 18px; }
 .nav-item:hover { color: var(--text); background: #171a23; }
 .nav-item.active { color: white; background: #211f36; box-shadow: inset 3px 0 var(--accent); }
 .sidebar-note { margin-top: auto; border: 1px solid var(--line); background: #12151c; border-radius: 12px; padding: 12px; display: flex; gap: 9px; }

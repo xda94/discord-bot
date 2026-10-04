@@ -310,7 +310,8 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 | `/top-keywords [user]` | Most triggered keywords in the server. |
 | `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style and in the triggering message's language. |
 | `/help` | Localized categories and examples, with a complete command reference button. |
-| `/start` | Private language/timezone setup and feature navigation. |
+| `/start` | Guided private language → optional timezone picker → ready flow, with feature navigation. |
+| `/natural-language` | Read-only English/Romanian examples guide for supported mention commands. |
 
 ### Reminders
 
@@ -324,7 +325,32 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 
 ### Assistant profile and natural commands
 
-Romanian commands, calendar reminders, reminder management, flight budgets, durable quiet-hour/digest notifications, bilingual dashboard controls, additive migrations, and rollout verification are documented in [Bilingual commands and delivery](docs/romanian-commands.md). Use `/start` for private language/timezone setup.
+Romanian commands, calendar reminders, reminder management, flight budgets, durable quiet-hour/digest notifications, bilingual dashboard controls, additive migrations, and rollout verification are documented in [Bilingual commands and delivery](docs/romanian-commands.md).
+
+`/start` guides you through English, Română, or Automatic, then a timezone
+dropdown and a ready screen in one private message. Choose a common timezone
+or browse all validated IANA locations by region and page; no typing is needed.
+Timezone setup is optional: Skip preserves any saved timezone and writes
+nothing. Relative reminders work without a confirmed timezone; calendar and
+recurring schedules require one, including when your choice is UTC. Language
+and timezone changes preserve your other preferences, and reopening `/start`
+begins with your current language setting. Controls belong to the requester
+and expire after ten minutes.
+
+`/natural-language` opens a private, read-only guide with English/Romanian
+controls that change only the guide's display language. Its categories cover
+relative/calendar/recurring reminders and their management, wishlist tracking
+and alerts, refreshes and price graphs (1–180 days), and listing saved flight
+trackers. Flight creation and management use the existing slash commands.
+Replace the example URLs and IDs with your own, and select the real bot account
+for every mention request, including DMs and clarification replies. Supported
+actions execute immediately and acknowledge success with ✅; lists and graphs
+arrive privately. If DMs are blocked, use the displayed private slash
+alternative. Missing details open a ten-minute clarification. The same guide
+is available from `/start` and `/help`.
+
+The new command becomes available after the bot's normal startup
+`on_ready` command sync; restart the bot after deploying this change.
 
 The implementation and runtime architecture are also summarized in
 [`bot.md`](bot.md), including event routing, persistence, delivery recovery,
@@ -336,14 +362,16 @@ The repository now includes the deterministic Romanian/English command parser,
 shared localization catalogs, timezone-aware duration/calendar parsing,
 clarification and ownership controls, lifecycle-managed reminders, recurrence,
 retry/reconciliation, durable tracking notifications, wishlist IDs and target
-controls, flight budgets and airport autocomplete, `/start`, categorized help,
+controls, flight budgets and airport autocomplete, guided `/start`, the
+read-only bilingual `/natural-language` guide, categorized help,
 the independent bilingual dashboard selector, and aggregate natural-command
 analytics. SQLite changes are additive and existing slash/API contracts remain
 compatible.
 
 The reviewed parser corpus contains 148 English/Romanian cases and currently
-passes at 100% with zero unauthorized actions. The full automated suite passes
-830 tests. `NATURAL_LLM_ENABLED` remains disabled by default until a deployed
+passes at 100% with zero unauthorized actions. Regression coverage includes
+guided setup and every concrete example published in the natural-language
+guide. `NATURAL_LLM_ENABLED` remains disabled by default until a deployed
 model passes the read-only 100-case evaluation gate; the live model endpoint
 and a Discord test server still need to be exercised before enabling generated
 action execution.
@@ -855,4 +883,6 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
 | `user_memory.py` | `UserMemoryFeature` | Discord commands and event adapter for the shared memory store |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
-| `help_feature.py` | `HelpFeature` | `/help` |
+| `onboarding.py` | `OnboardingFeature`, `OnboardingView`, `HelpView` | Guided private `/start`, timezone selectors, and feature navigation |
+| `natural_language_help.py` | `NaturalLanguageHelpView` | Reusable read-only bilingual mention-command examples |
+| `help_feature.py` | `HelpFeature` | `/help` and `/natural-language` |
