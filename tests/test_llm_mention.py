@@ -1,4 +1,5 @@
 import asyncio
+import io
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -7,6 +8,7 @@ import pytest
 import requests
 import discord
 from discord import app_commands
+from PIL import Image, ImageFile, features
 
 from llm.client import LlamaCppError, get_default_model, query_llm
 from llm.capacity import CapacityBusy, busy, reserve
@@ -25,13 +27,13 @@ from features.llm_mention import (
     VISION_MEMORY_MENTION_PROMPT_VERSION,
     VISION_MENTION_PROMPT_VERSION,
     budget_reference_context,
-    detect_image_mime,
+    prepare_image,
     get_ask_cooldown_seconds,
     get_memory_active_chunk_rest_seconds,
     get_memory_consolidation_interval_seconds,
     get_memory_failure_backoff_seconds,
     get_selected_model,
-    select_image_attachment,
+    select_image_attachments,
     split_discord_messages,
     trim_profile,
 )
@@ -39,8 +41,14 @@ from features.user_memory import MemoryBatch
 from llm.responses import build_mention_prompt
 
 
-PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
-JPEG_BYTES = b"\xff\xd8\xffimage"
+def _image_bytes(image_format, *, mode="RGB", color="red", size=(3, 2), **save_kwargs):
+    output = io.BytesIO()
+    Image.new(mode, size, color).save(output, format=image_format, **save_kwargs)
+    return output.getvalue()
+
+
+PNG_BYTES = _image_bytes("PNG")
+JPEG_BYTES = _image_bytes("JPEG")
 
 
 def _admit_memory(*args, reservation):
@@ -583,45 +591,237 @@ def test_stale_stored_model_is_replaced_with_llama_cpp_default(tmp_db):
     assert db.get_setting("mention_model") == "discord-bot"
 
 
-def test_image_signature_detection():
-    assert detect_image_mime(PNG_BYTES) == "image/png"
-    assert detect_image_mime(JPEG_BYTES) == "image/jpeg"
-    assert detect_image_mime(b"RIFF-webp") is None
+@pytest.mark.parametrize(
+    ("data", "mime"), [(PNG_BYTES, "image/png"), (JPEG_BYTES, "image/jpeg")]
+)
+def test_prepare_image_preserves_valid_png_and_jpeg(data, mime):
+    prepared, actual_mime = prepare_image(data)
+
+    assert prepared is data
+    assert actual_mime == mime
+    with Image.open(io.BytesIO(prepared)) as image:
+        image.load()
+        assert image.size == (3, 2)
 
 
-def test_image_selection_uses_first_supported_direct_image():
-    first = _attachment(filename="first.jpg", content_type="image/jpeg")
-    second = _attachment(filename="second.png")
+@pytest.mark.parametrize("image_format", ["GIF", "WEBP", "BMP", "TIFF"])
+def test_prepare_image_normalizes_other_supported_formats(image_format):
+    data = _image_bytes(image_format)
 
-    attachment, mime, count, error = select_image_attachment([first, second])
+    prepared, mime = prepare_image(data)
 
-    assert attachment is first
-    assert mime == "image/jpeg"
+    assert mime == "image/png"
+    with Image.open(io.BytesIO(prepared)) as image:
+        image.load()
+        assert image.format == "PNG"
+        assert image.mode == "RGB"
+        assert image.size == (3, 2)
+        red, green, blue = image.getpixel((0, 0))
+        assert red > 240 and green < 10 and blue < 10
+
+
+def test_prepare_image_supports_webp_decoder():
+    assert features.check("webp")
+    assert prepare_image(_image_bytes("WEBP"))[1] == "image/png"
+
+
+@pytest.mark.parametrize("image_format", ["GIF", "WEBP", "TIFF"])
+def test_prepare_image_preserves_transparency(image_format):
+    data = _image_bytes(image_format, mode="RGBA", color=(255, 0, 0, 0))
+
+    prepared, mime = prepare_image(data)
+
+    assert mime == "image/png"
+    with Image.open(io.BytesIO(prepared)) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0))[3] == 0
+
+
+@pytest.mark.parametrize("image_format", ["GIF", "WEBP", "TIFF", "PNG"])
+def test_prepare_image_uses_first_animation_frame_or_page(image_format):
+    data = _image_bytes(
+        image_format,
+        save_all=True,
+        append_images=[Image.new("RGB", (3, 2), "blue")],
+        duration=100,
+        loop=0,
+        lossless=True,
+    )
+
+    prepared, mime = prepare_image(data)
+
+    assert mime == "image/png"
+    with Image.open(io.BytesIO(prepared)) as image:
+        image.load()
+        assert image.n_frames == 1
+        assert image.getpixel((0, 0)) == (255, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"not an image",
+        b"\x89PNG\r\n\x1a\nimage",
+        b"\xff\xd8\xffimage",
+        b"GIF89aimage",
+        b"RIFF-webp",
+        PNG_BYTES[:50],
+        JPEG_BYTES[:-10],
+    ],
+)
+def test_prepare_image_rejects_corrupt_or_signature_only_data(data):
+    with pytest.raises(ValueError):
+        prepare_image(data)
+    assert not ImageFile.LOAD_TRUNCATED_IMAGES
+
+
+def test_prepare_image_rejects_png_with_corrupt_checksum():
+    data = bytearray(PNG_BYTES)
+    crc_offset = data.index(b"IDAT") + 4
+    data[crc_offset] ^= 1
+
+    with pytest.raises(ValueError):
+        prepare_image(bytes(data))
+
+
+def test_prepare_image_rejects_unsupported_decodable_format():
+    with pytest.raises(ValueError, match="JPEG, PNG, GIF, WebP, BMP, or TIFF"):
+        prepare_image(_image_bytes("PPM"))
+
+
+@pytest.mark.parametrize("data", [b"", b"x" * (MAX_IMAGE_BYTES + 1)])
+def test_prepare_image_enforces_input_byte_limit(data):
+    with pytest.raises(ValueError, match="8 MiB"):
+        prepare_image(data)
+
+
+def test_prepare_image_enforces_decoded_pixel_limit(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.MAX_IMAGE_PIXELS", 5)
+
+    with pytest.raises(ValueError, match="25 megapixels"):
+        prepare_image(PNG_BYTES)
+
+
+def test_prepare_image_enforces_normalized_byte_limit(monkeypatch):
+    data = _image_bytes("GIF")
+    expected_png_size = len(_image_bytes("PNG"))
+    assert len(data) < expected_png_size
+    monkeypatch.setattr("features.llm_mention.MAX_IMAGE_BYTES", expected_png_size - 1)
+
+    with pytest.raises(ValueError, match="8 MiB limit after conversion"):
+        prepare_image(data)
+
+
+@pytest.mark.parametrize("pillow_limit", [5, 2])
+def test_prepare_image_keeps_pillow_decompression_safety(monkeypatch, pillow_limit):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", pillow_limit)
+
+    with pytest.raises(ValueError, match="25 megapixels"):
+        prepare_image(PNG_BYTES)
+    assert Image.MAX_IMAGE_PIXELS == pillow_limit
+
+
+def test_image_selection_preserves_candidate_order_and_ignores_other_files():
+    other = _attachment(filename="notes.txt", content_type="text/plain")
+    first = _attachment(filename="first.heic", content_type="image/heic")
+    second = _attachment(filename="second.png", content_type="image/jpeg")
+
+    candidates, count, error = select_image_attachments([other, first, second])
+
+    assert candidates == (first, second)
     assert count == 2
     assert error is None
+    for attachment in [other, first, second]:
+        attachment.read.assert_not_awaited()
+
+
+@pytest.mark.parametrize("suffix", ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff"])
+def test_image_selection_accepts_known_extensions_without_image_mime(suffix):
+    attachment = _attachment(filename=f"image.{suffix.upper()}", content_type="application/octet-stream")
+
+    candidates, count, error = select_image_attachments([attachment])
+
+    assert candidates == (attachment,)
+    assert count == 1
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type"),
+    [("image.jpg", "image/png; charset=binary"), ("image.bin", " IMAGE/GIF ")],
+)
+def test_image_selection_accepts_conflicting_metadata(filename, content_type):
+    attachment = _attachment(filename=filename, content_type=content_type)
+
+    candidates, count, error = select_image_attachments([attachment])
+
+    assert candidates == (attachment,)
+    assert count == 1
+    assert error is None
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [{"width": None}, {"height": None}, {"width": 0}, {"height": True}, {"size": None}],
+)
+def test_image_selection_defers_missing_or_invalid_metadata(metadata):
+    attachment = _attachment(**metadata)
+
+    candidates, count, error = select_image_attachments([attachment])
+
+    assert candidates == (attachment,)
+    assert count == 1
+    assert error is None
+
+
+def test_image_selection_skips_known_oversize_candidates():
+    oversized_bytes = _attachment(size=MAX_IMAGE_BYTES + 1)
+    oversized_pixels = _attachment(width=5001, height=5001)
+    valid = _attachment()
+
+    candidates, count, error = select_image_attachments(
+        [oversized_bytes, oversized_pixels, valid]
+    )
+
+    assert candidates == (valid,)
+    assert count == 3
+    assert error is None
+    for attachment in [oversized_bytes, oversized_pixels, valid]:
+        attachment.read.assert_not_awaited()
+
+
+def test_image_selection_without_candidates_returns_text_path():
+    attachment = _attachment(filename="notes.txt", content_type="text/plain")
+
+    assert select_image_attachments([attachment]) == ((), 0, None)
 
 
 @pytest.mark.parametrize(
     ("attachment", "message"),
     [
-        (
-            _attachment(filename="image.webp", content_type="image/webp"),
-            "only PNG or JPEG",
-        ),
         (_attachment(size=MAX_IMAGE_BYTES + 1), "under 8 MiB"),
         (_attachment(width=5001, height=5001), "under 25 megapixels"),
-        (_attachment(width=None), "validate that image's dimensions"),
     ],
 )
-def test_image_selection_rejects_unsupported_or_excessive_images(
+def test_image_selection_rejects_known_excessive_images(
     attachment, message
 ):
-    selected, mime, count, error = select_image_attachment([attachment])
+    candidates, count, error = select_image_attachments([attachment])
 
-    assert selected is None
-    assert mime is None
+    assert candidates == ()
     assert count == 1
     assert message in error
+
+
+def test_image_selection_mixed_limit_failures_names_both_limits():
+    candidates, count, error = select_image_attachments([
+        _attachment(size=MAX_IMAGE_BYTES + 1),
+        _attachment(width=5001, height=5001),
+    ])
+
+    assert candidates == ()
+    assert count == 2
+    assert "under 8 MiB and 25 megapixels" in error
 
 
 @pytest.mark.parametrize(
@@ -644,8 +844,7 @@ def test_image_mention_enqueues_description_or_caption(
     job = feature._enqueue_job.await_args.args[0]
     assert job.question == expected_question
     assert job.summon_only is False
-    assert job.image_attachment is attachment
-    assert job.image_mime == "image/png"
+    assert job.image_attachments == (attachment,)
     assert job.prompt_version == VISION_MENTION_PROMPT_VERSION
     attachment.read.assert_not_awaited()
     message.reply.assert_not_awaited()
@@ -661,9 +860,44 @@ def test_busy_multi_image_request_can_be_queued(monkeypatch):
     asyncio.run(feature.handle_message(message))
 
     feature._enqueue_job.assert_awaited_once()
+    assert feature._enqueue_job.await_args.args[0].image_attachments == (first, second)
     notice = message.reply.await_args.args[0]
-    assert "first image" in notice
+    assert "first image I can process" in notice
     assert message.reply.await_args.kwargs["mention_author"] is False
+    first.read.assert_not_awaited()
+    second.read.assert_not_awaited()
+
+
+def test_image_mention_queues_candidates_after_known_oversize_image(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    oversized = _attachment(size=MAX_IMAGE_BYTES + 1)
+    candidate = _attachment(filename="image.tiff", width=None, height=None)
+    message = _mention_message(attachments=[oversized, candidate])
+
+    assert asyncio.run(feature.handle_message(message)) is True
+
+    assert feature._enqueue_job.await_args.args[0].image_attachments == (candidate,)
+    assert "first image I can process" in message.reply.await_args.args[0]
+    oversized.read.assert_not_awaited()
+    candidate.read.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", ["", "hello"])
+def test_non_image_attachment_preserves_text_and_summon_paths(monkeypatch, text):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    attachment = _attachment(filename="notes.txt", content_type="text/plain")
+    message = _mention_message(text=text, attachments=[attachment])
+
+    assert asyncio.run(feature.handle_message(message)) is True
+
+    job = feature._enqueue_job.await_args.args[0]
+    assert job.image_attachments == ()
+    assert job.summon_only is (not text)
+    assert job.question == text
+    attachment.read.assert_not_awaited()
+    message.reply.assert_not_awaited()
 
 
 def test_mention_losing_admission_race_is_not_queued(monkeypatch):
@@ -720,13 +954,14 @@ def test_image_mention_uses_vision_memory_feedback_version(monkeypatch):
 def test_invalid_image_is_rejected_before_queueing(monkeypatch):
     feature = _handling_feature()
     message = _mention_message(
-        attachments=[_attachment(filename="image.webp", content_type="image/webp")]
+        attachments=[_attachment(size=MAX_IMAGE_BYTES + 1)]
     )
 
     asyncio.run(feature.handle_message(message))
 
     feature._enqueue_job.assert_not_awaited()
-    assert "only PNG or JPEG" in message.reply.await_args.args[0]
+    assert "under 8 MiB" in message.reply.await_args.args[0]
+    message.attachments[0].read.assert_not_awaited()
 
 
 def test_reference_budget_prioritizes_memory_and_newest_history():
@@ -900,19 +1135,33 @@ def test_vision_job_downloads_only_in_worker_without_early_memory_synthesis(monk
         question="Please describe this",
         model="discord-bot",
         reply_to=SimpleNamespace(reply=AsyncMock()),
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment,),
         memory_batch=batch,
     )
     reply = MagicMock(
         return_value=SimpleNamespace(text="A blue diagram.", reaction=None)
     )
-    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+    supports_vision = MagicMock(return_value=True)
+    prepare = MagicMock(wraps=prepare_image)
+    threaded_calls = []
+    to_thread = asyncio.to_thread
+
+    async def track_thread(function, *args, **kwargs):
+        threaded_calls.append(function)
+        return await to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", supports_vision)
+    monkeypatch.setattr("features.llm_mention.prepare_image", prepare)
+    monkeypatch.setattr("features.llm_mention.asyncio.to_thread", track_thread)
     monkeypatch.setattr("features.llm_mention.generate_mention_result", reply)
 
     asyncio.run(feature._process_job(job))
 
     attachment.read.assert_awaited_once_with()
+    supports_vision.assert_called_once_with()
+    prepare.assert_called_once_with(PNG_BYTES)
+    reply.assert_called_once()
+    assert threaded_calls == [supports_vision, prepare, reply]
     assert reply.call_args.kwargs["image_bytes"] == PNG_BYTES
     assert reply.call_args.kwargs["image_mime"] == "image/png"
     feature._reply_mention.assert_awaited_once_with(job, "A blue diagram.")
@@ -924,18 +1173,24 @@ def test_vision_job_stops_before_download_when_projector_is_disabled(monkeypatch
     feature = object.__new__(LLMMentionFeature)
     feature._reply_job_error = AsyncMock()
     attachment = _attachment()
+    later = _attachment(data=JPEG_BYTES)
     job = AskJob(
         user=SimpleNamespace(id=123, display_name="Alice"),
         question=IMAGE_DESCRIPTION_REQUEST,
         model="discord-bot",
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment, later),
     )
-    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: False)
+    supports_vision = MagicMock(return_value=False)
+    generate = MagicMock()
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", supports_vision)
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", generate)
 
     asyncio.run(feature._process_job(job))
 
     attachment.read.assert_not_awaited()
+    later.read.assert_not_awaited()
+    supports_vision.assert_called_once_with()
+    generate.assert_not_called()
     assert "vision support is disabled" in feature._reply_job_error.await_args.args[1]
 
 
@@ -947,8 +1202,7 @@ def test_vision_job_stops_before_download_when_capability_check_fails(monkeypatc
         user=SimpleNamespace(id=123, display_name="Alice"),
         question=IMAGE_DESCRIPTION_REQUEST,
         model="discord-bot",
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment,),
     )
 
     def unavailable():
@@ -970,8 +1224,7 @@ def test_vision_job_rechecks_downloaded_size(monkeypatch):
         user=SimpleNamespace(id=123, display_name="Alice"),
         question=IMAGE_DESCRIPTION_REQUEST,
         model="discord-bot",
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment,),
     )
     monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
 
@@ -989,8 +1242,7 @@ def test_vision_job_reports_deleted_attachment(monkeypatch):
         user=SimpleNamespace(id=123, display_name="Alice"),
         question=IMAGE_DESCRIPTION_REQUEST,
         model="discord-bot",
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment,),
     )
     monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
 
@@ -1007,14 +1259,194 @@ def test_vision_job_rejects_spoofed_image_bytes(monkeypatch):
         user=SimpleNamespace(id=123, display_name="Alice"),
         question=IMAGE_DESCRIPTION_REQUEST,
         model="discord-bot",
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment,),
     )
     monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
 
     asyncio.run(feature._process_job(job))
 
-    assert "not a valid PNG or JPEG" in feature._reply_job_error.await_args.args[1]
+    assert "could not decode" in feature._reply_job_error.await_args.args[1]
+
+
+@pytest.mark.parametrize(
+    "failure", ["download", "decode", "bytes", "format", "pixels", "converted_bytes"]
+)
+def test_vision_job_falls_back_to_first_usable_image(monkeypatch, failure):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_mention = AsyncMock()
+    feature._reply_job_error = AsyncMock()
+    events = []
+    rejected_data = {
+        "download": PNG_BYTES,
+        "decode": b"not an image",
+        "bytes": b"x" * (MAX_IMAGE_BYTES + 1),
+        "format": _image_bytes("PPM"),
+        "pixels": _image_bytes("PNG", size=(4, 4)),
+        "converted_bytes": _image_bytes("WEBP", size=(128, 128), lossless=True),
+    }[failure]
+    selected_data = PNG_BYTES if failure == "converted_bytes" else JPEG_BYTES
+    first = _attachment(data=rejected_data)
+    second = _attachment(data=selected_data)
+    later = _attachment()
+
+    async def read_first():
+        events.append("first")
+        if failure == "download":
+            raise RuntimeError("deleted")
+        return rejected_data
+
+    async def read_second():
+        events.append("second")
+        return selected_data
+
+    first.read.side_effect = read_first
+    second.read.side_effect = read_second
+    if failure == "pixels":
+        monkeypatch.setattr("features.llm_mention.MAX_IMAGE_PIXELS", 12)
+    elif failure == "converted_bytes":
+        limit = max(len(rejected_data), len(PNG_BYTES))
+        monkeypatch.setattr("features.llm_mention.MAX_IMAGE_BYTES", limit)
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachments=(first, second, later),
+    )
+    supports_vision = MagicMock(return_value=True)
+
+    def generate(*args, **kwargs):
+        events.append("inference")
+        return SimpleNamespace(text="A red image.", reaction=None)
+
+    inference = MagicMock(side_effect=generate)
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", supports_vision)
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", inference)
+
+    asyncio.run(feature._process_job(job))
+
+    assert events == ["first", "second", "inference"]
+    first.read.assert_awaited_once_with()
+    second.read.assert_awaited_once_with()
+    later.read.assert_not_awaited()
+    supports_vision.assert_called_once_with()
+    inference.assert_called_once()
+    assert inference.call_args.kwargs["image_bytes"] == selected_data
+    assert inference.call_args.kwargs["image_mime"] == (
+        "image/png" if failure == "converted_bytes" else "image/jpeg"
+    )
+    feature._reply_job_error.assert_not_awaited()
+    feature._reply_mention.assert_awaited_once_with(job, "A red image.")
+
+
+@pytest.mark.parametrize(
+    "data, filename, content_type, expected_mime",
+    [
+        (JPEG_BYTES, "image.png", "image/png", "image/jpeg"),
+        (PNG_BYTES, "image.jpg", "image/jpeg", "image/png"),
+        (PNG_BYTES, "image.tiff", "application/octet-stream", "image/png"),
+    ],
+)
+def test_vision_job_uses_actual_image_mime(
+    monkeypatch, data, filename, content_type, expected_mime
+):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_mention = AsyncMock()
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment(data=data, filename=filename, content_type=content_type)
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachments=(attachment,),
+    )
+    inference = MagicMock(
+        return_value=SimpleNamespace(text="A red image.", reaction=None)
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", inference)
+
+    asyncio.run(feature._process_job(job))
+
+    inference.assert_called_once()
+    assert inference.call_args.kwargs["image_bytes"] == data
+    assert inference.call_args.kwargs["image_mime"] == expected_mime
+    feature._reply_job_error.assert_not_awaited()
+
+
+@pytest.mark.parametrize("image_format", ["GIF", "WEBP", "BMP", "TIFF"])
+def test_vision_job_sends_normalized_formats_as_png(monkeypatch, image_format):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_mention = AsyncMock()
+    feature._reply_job_error = AsyncMock()
+    data = (
+        _image_bytes(image_format, lossless=True)
+        if image_format == "WEBP"
+        else _image_bytes(image_format)
+    )
+    attachment = _attachment(data=data)
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachments=(attachment,),
+    )
+    inference = MagicMock(
+        return_value=SimpleNamespace(text="A red image.", reaction=None)
+    )
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", inference)
+
+    asyncio.run(feature._process_job(job))
+
+    inference.assert_called_once()
+    assert inference.call_args.kwargs["image_mime"] == "image/png"
+    with Image.open(io.BytesIO(inference.call_args.kwargs["image_bytes"])) as image:
+        assert image.format == "PNG"
+        assert image.mode == "RGB"
+        assert image.size == (3, 2)
+        assert image.getpixel((0, 0)) == (255, 0, 0)
+    feature._reply_job_error.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_vision_job_all_failures_get_deterministic_error_without_inference(
+    monkeypatch, reverse_order
+):
+    feature = object.__new__(LLMMentionFeature)
+    feature._reply_mention = AsyncMock()
+    feature._reply_job_error = AsyncMock()
+    deleted = _attachment()
+    deleted.read.side_effect = RuntimeError("deleted")
+    attachments = (
+        deleted,
+        _attachment(data=b"not an image"),
+        _attachment(data=b"x" * (MAX_IMAGE_BYTES + 1)),
+        _attachment(data=_image_bytes("PPM")),
+    )
+    job = AskJob(
+        user=SimpleNamespace(id=123, display_name="Alice"),
+        question=IMAGE_DESCRIPTION_REQUEST,
+        model="discord-bot",
+        image_attachments=attachments[::-1] if reverse_order else attachments,
+    )
+    supports_vision = MagicMock(return_value=True)
+    inference = MagicMock()
+    monkeypatch.setattr("features.llm_mention.llama_supports_vision", supports_vision)
+    monkeypatch.setattr("features.llm_mention.generate_mention_result", inference)
+
+    asyncio.run(feature._process_job(job))
+
+    for attachment in attachments:
+        attachment.read.assert_awaited_once_with()
+    supports_vision.assert_called_once_with()
+    inference.assert_not_called()
+    feature._reply_mention.assert_not_awaited()
+    feature._reply_job_error.assert_awaited_once_with(
+        job,
+        "I couldn't inspect any of the attached images. Please upload a valid "
+        "JPEG, PNG, GIF, WebP, BMP, or TIFF image under 8 MiB and 25 megapixels. "
+        "If an image was deleted or could not be downloaded, please upload it again.",
+    )
 
 
 def test_vision_inference_failure_gets_user_facing_reply(monkeypatch):
@@ -1026,8 +1458,7 @@ def test_vision_inference_failure_gets_user_facing_reply(monkeypatch):
         user=SimpleNamespace(id=123, display_name="Alice"),
         question=IMAGE_DESCRIPTION_REQUEST,
         model="discord-bot",
-        image_attachment=attachment,
-        image_mime="image/png",
+        image_attachments=(attachment,),
     )
     monkeypatch.setattr("features.llm_mention.llama_supports_vision", lambda: True)
     monkeypatch.setattr(
