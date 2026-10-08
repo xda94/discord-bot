@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
 import logging
 import os
 import random
 import time
+import warnings
 from dataclasses import dataclass, field
 
 import discord
 from discord import app_commands
+from PIL import Image
 
 import db
 from i18n import t, language_for, localize
@@ -129,17 +132,10 @@ MAX_IMAGE_PIXELS = 25_000_000
 IMAGE_DESCRIPTION_REQUEST = (
     "Describe the visible contents of the attached image accurately and concisely."
 )
-_IMAGE_EXTENSIONS = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-}
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 _KNOWN_IMAGE_EXTENSIONS = set(_IMAGE_EXTENSIONS) | {
-    ".bmp",
-    ".gif",
     ".heic",
     ".heif",
-    ".webp",
 }
 
 
@@ -154,72 +150,99 @@ def _is_image_attachment(attachment: discord.Attachment) -> bool:
     return content_type.startswith("image/") or suffix in _KNOWN_IMAGE_EXTENSIONS
 
 
-def _expected_image_mime(attachment: discord.Attachment) -> str | None:
-    content_type = _normalized_content_type(attachment)
-    if content_type in {"image/jpeg", "image/jpg"}:
-        return "image/jpeg"
-    if content_type == "image/png":
-        return "image/png"
-    if content_type.startswith("image/"):
-        return None
-    suffix = os.path.splitext(getattr(attachment, "filename", ""))[1].lower()
-    return _IMAGE_EXTENSIONS.get(suffix)
-
-
-def select_image_attachment(
+def select_image_attachments(
     attachments: list[discord.Attachment],
-) -> tuple[discord.Attachment | None, str | None, int, str | None]:
-    """Select and validate the first direct image using Discord metadata."""
+) -> tuple[tuple[discord.Attachment, ...], int, str | None]:
     images = [
         attachment for attachment in attachments if _is_image_attachment(attachment)
     ]
     if not images:
-        return None, None, 0, None
+        return (), 0, None
 
-    attachment = images[0]
-    mime = _expected_image_mime(attachment)
-    if mime is None:
-        return (
-            None,
-            None,
-            len(images),
-            "I can currently inspect only PNG or JPEG images.",
+    candidates = []
+    errors = set()
+    for attachment in images:
+        size = getattr(attachment, "size", None)
+        if isinstance(size, int) and not isinstance(size, bool) and size > MAX_IMAGE_BYTES:
+            errors.add("bytes")
+            continue
+        width = getattr(attachment, "width", None)
+        height = getattr(attachment, "height", None)
+        if (
+            isinstance(width, int)
+            and not isinstance(width, bool)
+            and width > 0
+            and isinstance(height, int)
+            and not isinstance(height, bool)
+            and height > 0
+            and width * height > MAX_IMAGE_PIXELS
+        ):
+            errors.add("pixels")
+            continue
+        candidates.append(attachment)
+    if candidates:
+        return tuple(candidates), len(images), None
+    if errors == {"bytes"}:
+        error = "The attached images are too large. Please use an image under 8 MiB."
+    elif errors == {"pixels"}:
+        error = (
+            "The attached images have too many pixels. "
+            "Please use an image under 25 megapixels."
         )
-    size = getattr(attachment, "size", None)
-    if not isinstance(size, int) or size < 1 or size > MAX_IMAGE_BYTES:
-        return (
-            None,
-            None,
-            len(images),
-            "That image is too large. Please use a PNG or JPEG under 8 MiB.",
+    else:
+        error = (
+            "None of the attached images fits the limits. "
+            "Please use an image under 8 MiB and 25 megapixels."
         )
-    width = getattr(attachment, "width", None)
-    height = getattr(attachment, "height", None)
-    if (
-        not isinstance(width, int)
-        or isinstance(width, bool)
-        or width < 1
-        or not isinstance(height, int)
-        or isinstance(height, bool)
-        or height < 1
-    ):
-        return None, None, len(images), "I could not validate that image's dimensions."
-    if width * height > MAX_IMAGE_PIXELS:
-        return (
-            None,
-            None,
-            len(images),
-            "That image has too many pixels. Please use an image under 25 megapixels.",
-        )
-    return attachment, mime, len(images), None
+    return (), len(images), error
 
 
-def detect_image_mime(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    return None
+def prepare_image(data: bytes) -> tuple[bytes, str]:
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise ValueError("That image is empty or exceeds the 8 MiB limit.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                image_format = image.format
+                if image_format not in {"JPEG", "PNG", "GIF", "WEBP", "BMP", "TIFF"}:
+                    raise ValueError(
+                        "I can inspect JPEG, PNG, GIF, WebP, BMP, or TIFF images."
+                    )
+                width, height = image.size
+                if width < 1 or height < 1:
+                    raise ValueError("I could not validate that image's dimensions.")
+                if width * height > MAX_IMAGE_PIXELS:
+                    raise ValueError(
+                        "That image has too many pixels. Please use an image under 25 megapixels."
+                    )
+                image.verify()
+            with Image.open(io.BytesIO(data)) as image:
+                image.seek(0)
+                image.load()
+                if image_format == "JPEG":
+                    return data, "image/jpeg"
+                if image_format == "PNG" and not image.is_animated:
+                    return data, "image/png"
+                mode = (
+                    "RGBA"
+                    if "A" in image.getbands() or "transparency" in image.info
+                    else "RGB"
+                )
+                output = io.BytesIO()
+                image.convert(mode).save(output, format="PNG")
+                normalized = output.getvalue()
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+        raise ValueError(
+            "That image has too many pixels. Please use an image under 25 megapixels."
+        ) from exc
+    except (OSError, SyntaxError, EOFError) as exc:
+        raise ValueError(
+            "I could not decode that image. Please attach a valid JPEG, PNG, GIF, WebP, BMP, or TIFF image."
+        ) from exc
+    if len(normalized) > MAX_IMAGE_BYTES:
+        raise ValueError("That image exceeds the 8 MiB limit after conversion.")
+    return normalized, "image/png"
 
 
 def budget_reference_context(
@@ -334,8 +357,7 @@ class AskJob:
     user_memory: str = ""
     memory_enabled: bool = False
     memory_batch: MemoryBatch | None = None
-    image_attachment: discord.Attachment | None = None
-    image_mime: str | None = None
+    image_attachments: tuple[discord.Attachment, ...] = ()
     prompt_version: str = MENTION_PROMPT_VERSION
     replied_message: str = ""
     bot_names: tuple[str, ...] = ()
@@ -666,7 +688,8 @@ class LLMMentionFeature:
 
     async def _process_job(self, job: AskJob) -> None:
         image_bytes = None
-        if job.image_attachment is not None:
+        image_mime = None
+        if job.image_attachments:
             try:
                 vision_enabled = await asyncio.to_thread(llama_supports_vision)
             except LlamaCppError as exc:
@@ -682,29 +705,37 @@ class LLMMentionFeature:
                     "I can't inspect images because llama.cpp vision support is disabled.",
                 )
                 return
-            try:
-                image_bytes = await job.image_attachment.read()
-            except Exception as exc:
-                logger.warning(
-                    "Discord image download failed (%s)", type(exc).__name__
+            image_errors = []
+            for attachment in job.image_attachments:
+                try:
+                    downloaded = await attachment.read()
+                except Exception as exc:
+                    logger.warning(
+                        "Discord image download failed (%s)", type(exc).__name__
+                    )
+                    image_errors.append(
+                        "I couldn't download that image. It may have been deleted; please upload it again."
+                    )
+                    continue
+                try:
+                    image_bytes, image_mime = await asyncio.to_thread(
+                        prepare_image, downloaded
+                    )
+                except ValueError as exc:
+                    image_errors.append(str(exc))
+                    continue
+                break
+            if image_bytes is None:
+                error = (
+                    image_errors[0]
+                    if len(image_errors) == 1
+                    else (
+                        "I couldn't inspect any of the attached images. Please upload a valid "
+                        "JPEG, PNG, GIF, WebP, BMP, or TIFF image under 8 MiB and 25 megapixels. "
+                        "If an image was deleted or could not be downloaded, please upload it again."
+                    )
                 )
-                await self._reply_job_error(
-                    job,
-                    "I couldn't download that image. It may have been deleted; please upload it again.",
-                )
-                return
-            if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
-                await self._reply_job_error(
-                    job,
-                    "The downloaded image is empty or exceeds the 8 MiB limit.",
-                )
-                return
-            detected_mime = detect_image_mime(image_bytes)
-            if detected_mime is None or detected_mime != job.image_mime:
-                await self._reply_job_error(
-                    job,
-                    "That attachment is not a valid PNG or JPEG image.",
-                )
+                await self._reply_job_error(job, error)
                 return
 
         bot_name = job.bot_names[0] if job.bot_names else ""
@@ -726,7 +757,7 @@ class LLMMentionFeature:
                     "user_memory": job.user_memory,
                     "memory_enabled": job.memory_enabled,
                     "image_bytes": image_bytes,
-                    "image_mime": job.image_mime,
+                    "image_mime": image_mime,
                     "replied_message": job.replied_message,
                     "requester_id": job.user.id,
                     "reply_names": (getattr(job.user, "name", ""), *job.bot_names),
@@ -745,7 +776,7 @@ class LLMMentionFeature:
             await self._reply_job_error(
                 job,
                 "I couldn't process that image. Please try again in a moment."
-                if job.image_attachment is not None
+                if job.image_attachments
                 else "I couldn't generate a reliable answer. Please try again.",
             )
             return
@@ -763,7 +794,7 @@ class LLMMentionFeature:
             await self._reply_job_error(
                 job,
                 "I couldn't process that image. Please try again in a moment."
-                if job.image_attachment is not None
+                if job.image_attachments
                 else "I couldn't generate a reliable answer. Please try again.",
             )
             return
@@ -1064,8 +1095,8 @@ class LLMMentionFeature:
         if text is None:
             return False
 
-        image_attachment, image_mime, image_count, image_error = (
-            select_image_attachment(list(getattr(message, "attachments", [])))
+        image_attachments, image_count, image_error = (
+            select_image_attachments(list(getattr(message, "attachments", [])))
         )
         if image_error is not None:
             await message.reply(
@@ -1089,7 +1120,7 @@ class LLMMentionFeature:
             await message.reply(t(key,lang,seconds=seconds[1] if seconds else 1),mention_author=False)
             return True
 
-        has_image = image_attachment is not None
+        has_image = bool(image_attachments)
         summon_only = not text and not has_image
         question = text or (IMAGE_DESCRIPTION_REQUEST if has_image else "")
         logger.info(
@@ -1182,8 +1213,7 @@ class LLMMentionFeature:
             user_memory=user_memory,
             memory_enabled=memory_enabled,
             memory_batch=memory_batch,
-            image_attachment=image_attachment,
-            image_mime=image_mime,
+            image_attachments=image_attachments,
             replied_message=replied_message,
             bot_names=tuple(bot_names),
             assistant_profile=assistant_profile,
@@ -1218,7 +1248,7 @@ class LLMMentionFeature:
         notices = []
         if image_count > 1:
             notices.append(
-                "I can inspect one image per request, so I'll use the first image."
+                "I can inspect one image per request, so I'll use the first image I can process."
             )
         if notices:
             await message.reply(

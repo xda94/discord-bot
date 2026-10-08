@@ -557,13 +557,19 @@ The free SerpApi plan currently includes 250 searches per month. To stay below t
 | `/memory-opt-in` | Automatic mode only. Re-enable memory for you; required before automatic memory can operate in DMs. |
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
-| `@bot` + image | Inspects the first directly attached PNG/JPEG. With a caption it answers that request; without one it gives a concise description. |
+| `@bot` + image | Inspects the first processable directly attached JPEG, PNG, GIF, WebP, BMP, or TIFF. With a caption it answers that request; without one it gives a concise description. |
 | `/llm-feedback-summary` | Manage Server only; compare this server’s rated reply configurations. |
 
-Vision requests accept one directly attached PNG or JPEG up to 8 MiB and 25
-megapixels. URLs, replied-to images, GIF, WebP, and multi-image reasoning are not
-supported. If several images are attached, the first is processed and the bot
-acknowledges the one-image limit. Text and image mentions share capacity with
+Vision requests accept JPEG, PNG, GIF, WebP, BMP, and TIFF directly attached to
+the mention, using the first image that can be processed in attachment order.
+Animated images and multipage TIFFs use only the first frame or page. The actual
+image bytes determine the format; valid static JPEG/PNG files are preserved, and the
+other supported formats are normalized locally to RGB/RGBA PNG. Input and
+prepared output are each limited to 8 MiB, with at most 25 megapixels. Invalid,
+unsupported, oversized, or unavailable images are skipped so a later valid
+attachment can be used. URLs, replied-to images, and multi-image reasoning are
+not supported. If several images are attached, the bot acknowledges the
+one-image limit. Text and image mentions share capacity with
 API inference: one active action and at most two interactive waiters, served
 in FIFO order. Further requests receive a retry-later response; each user can
 have only one pending mention. Attachment bytes are
