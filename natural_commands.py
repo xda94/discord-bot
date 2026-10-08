@@ -472,6 +472,44 @@ def _clean_request(text: str) -> str:
     return value.strip()
 
 
+def suggest_natural_command(text: str, *, replied_text: str = "") -> str | None:
+    from i18n import fold
+    value = _clean_request(text)
+    tokens = list(re.finditer(r"\S+", value))
+    key = ' '.join(fold(token[0]) for token in tokens)
+    wrapper = re.match(r'(?:(?:can|could|would) you |poti (?:sa )?|ai putea (?:sa )?)', key)
+    if wrapper:
+        count = len(wrapper[0].split())
+        if count >= len(tokens):
+            return None
+        canonical = value[tokens[count].start():]
+        parsed = parse_natural_command(canonical, replied_text=replied_text)
+        return canonical if parsed is not None and not isinstance(parsed, NaturalCommandError) else None
+    key = key.rstrip('.!? ')
+    wishlist = r'(?:list(?:a|ei) (?:mea )?de dorinte(?: mea)?|wishlist(?:-ul|ul| ul)?(?: meu)?)'
+    graph_suffix = r'((?: in \S+)?(?: (?:for|pentru) \d+ (?:days?|zile?))?)'
+    list_suffix = r'((?: in \S+)?)'
+    patterns = (
+        (r'(?:arata-mi |afiseaza-mi )?grafic(?:ul)? ' + wishlist + graph_suffix, 'grafic pentru wishlist-ul meu', WishlistGraphAction),
+        (r'show me the graph of my (?:wishlist|wish list)' + graph_suffix, 'graph my wishlist', WishlistGraphAction),
+        (r'(?:arata-mi |afiseaza-mi )?lista (?:mea )?(?:de )?dorinte(?: mea)?' + list_suffix, 'arată-mi lista de dorințe', ShowWishlistAction),
+        (r'(?:show me my )?wish list' + list_suffix, 'show my wishlist', ShowWishlistAction),
+    )
+    for pattern, command, kind in patterns:
+        match = re.fullmatch(pattern, key)
+        if not match:
+            continue
+        suffix = ''
+        if match[1]:
+            count = len(key[:match.start(1)].split())
+            suffix = ' ' + value[tokens[count].start():]
+        canonical = command + suffix
+        parsed = parse_natural_command(canonical, replied_text=replied_text)
+        if isinstance(parsed, kind) and (not isinstance(parsed, WishlistGraphAction) or parsed.url is None):
+            return canonical
+    return None
+
+
 def parse_natural_command(text: str, *, replied_text: str = "") -> NaturalRequestResult:
     """Fast bilingual recognition. Original text/URLs remain untouched."""
     from i18n import fold, language_for, t

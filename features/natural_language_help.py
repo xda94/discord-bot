@@ -81,7 +81,9 @@ PAGE_TEXT = {
     "en": {
         "overview": (
             "Mention the real bot account in Discord, then write one request in English or Romanian. "
-            "Supported commands execute immediately; ✅ on your message means success. "
+            "Recognized commands execute immediately; ✅ on your message means success. "
+            "Supported near misses suggest a command for you to confirm with Yes or cancel with No "
+            "within ten minutes. Only you can use those controls. "
             "Other conversation goes to the normal assistant.\n\n"
             "Lists, product choices, refresh results and graphs arrive privately by DM. "
             "If DMs are blocked, use the private slash alternatives on each page. "
@@ -116,8 +118,10 @@ PAGE_TEXT = {
     "ro": {
         "overview": (
             "Menționează contul real al botului în Discord, apoi scrie o singură cerere în "
-            "română sau engleză. Comenzile acceptate se execută imediat; ✅ pe mesajul tău "
-            "înseamnă succes. Alte conversații ajung la asistentul obișnuit.\n\n"
+            "română sau engleză. Comenzile recunoscute se execută imediat; ✅ pe mesajul tău "
+            "înseamnă succes. Formulările apropiate acceptate propun o comandă: confirmă cu Da "
+            "sau anulează cu Nu în zece minute. Doar tu poți folosi aceste controale. "
+            "Alte conversații ajung la asistentul obișnuit.\n\n"
             "Listele, selecțiile de produse, rezultatele actualizărilor și graficele vin "
             "privat prin DM. Dacă DM-urile sunt blocate, folosește alternativele slash "
             "private de pe fiecare pagină. Reminderele folosesc destinația salvată.\n\n"

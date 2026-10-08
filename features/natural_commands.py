@@ -33,7 +33,59 @@ from natural_commands import (
     WishlistRestockAction,
     WishlistTargetAction,
     parse_natural_command,
+    suggest_natural_command,
 )
+
+
+class NaturalCommandSuggestionView(discord.ui.View):
+    def __init__(self, feature, message, canonical, replied_text, language):
+        super().__init__(timeout=600)
+        self.feature = feature
+        self.message = message
+        self.canonical = canonical
+        self.replied_text = replied_text
+        self.language = language
+        self.deadline = time.monotonic() + 600
+        self.consumed = False
+        yes = discord.ui.Button(label=t('natural_suggestion_yes', language), style=discord.ButtonStyle.primary)
+        no = discord.ui.Button(label=t('natural_suggestion_no', language), style=discord.ButtonStyle.secondary)
+        yes.callback = self.confirm
+        no.callback = self.cancel
+        self.add_item(yes)
+        self.add_item(no)
+
+    async def _consume(self, interaction):
+        if interaction.user.id != self.message.author.id:
+            await interaction.response.send_message(t('not_owner', self.language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return False
+        if self.consumed or time.monotonic() >= self.deadline:
+            await interaction.response.send_message(t('expired', self.language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return False
+        self.consumed = True
+        self.stop()
+        self.clear_items()
+        return True
+
+    async def confirm(self, interaction):
+        if not await self._consume(interaction):
+            return
+        await interaction.response.edit_message(view=None)
+        parsed = parse_natural_command(self.canonical, replied_text=self.replied_text)
+        if parsed is None or isinstance(parsed, NaturalCommandError):
+            await self.feature._reply_error(self.message, t('invalid', self.language))
+            return
+        await self.feature.execute_parsed(self.message, parsed, language=self.language)
+
+    async def cancel(self, interaction):
+        if not await self._consume(interaction):
+            return
+        await interaction.response.edit_message(content=t('natural_suggestion_cancelled', self.language), view=None, allowed_mentions=discord.AllowedMentions.none())
+        await self.feature._outcome(self.message, 'unknown', self.language, 'parser', 'abandoned')
+
+    async def on_timeout(self):
+        self.consumed = True
+        self.stop()
+        self.clear_items()
 
 
 class NaturalCommandsFeature:
@@ -96,6 +148,20 @@ class NaturalCommandsFeature:
         result = await self.wishlist.add_item_for_user(user_id, url, language=language)
         return result.status
 
+    async def _suggest_or_fall_through(self, message, text, replied_text, language):
+        canonical = suggest_natural_command(text, replied_text=replied_text)
+        if canonical is None:
+            return False
+        prompt = t('natural_suggestion', language, command=canonical)
+        kwargs = {}
+        if len(prompt.encode('utf-16-le')) // 2 > 2000:
+            prompt = t('natural_suggestion_long', language)
+        else:
+            kwargs['view'] = NaturalCommandSuggestionView(self, message, canonical, replied_text, language)
+        await message.reply(prompt, mention_author=False, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True, **kwargs)
+        await self._outcome(message, 'unknown', language, 'parser', 'clarification')
+        return True
+
     async def handle_message(self, message: discord.Message) -> bool:
         text = extract_mention_text(message, self.bot_id)
         if text is None:
@@ -130,7 +196,7 @@ class NaturalCommandsFeature:
                 try:
                     zone = validate_timezone(text)
                 except ValueError:
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 if db.set_assistant_profile(message.author.id, timezone=zone) is None:
                     await self._reply_error(message,t('failed',lang))
                     return True
@@ -138,42 +204,42 @@ class NaturalCommandsFeature:
             elif request.field == 'currency':
                 currency = CURRENCY_ALIASES.get(fold(text).strip())
                 if currency is None:
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 slots['currency'] = currency
             elif request.field == 'price':
                 words = text.split()
                 if not 1 <= len(words) <= 2:
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 if len(words) == 2 and fold(words[1]) not in CURRENCY_ALIASES:
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 price = number(words[0],lang) if words else None
                 if price is None or price<=0:
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 slots['price']=price
                 if len(words)==2:
                     slots['currency']=CURRENCY_ALIASES.get(fold(words[1]))
             elif request.field == 'reference':
                 if len(text) > 300:
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 if request.intent == 'track':
                     from wishlist.scraper import _is_valid_http_url
                     if not _is_valid_http_url(text):
-                        return False
+                        return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 else:
                     with _connect() as c:
                         choices = c.execute('SELECT id,title FROM scraped_items WHERE user_id=?', (message.author.id,)).fetchall()
                     if not any(str(r[0]) == text.lstrip('#') or fold(text) in fold(r[1] or '') for r in choices):
-                        return False
+                        return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 slots['reference'] = text
             elif request.field == 'when':
                 if not (duration(text) or reminder_time(text,profile.timezone,recurrence=slots.get('recurrence'))):
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 slots['when']=text
             elif request.field == 'text':
                 reply_id = getattr(getattr(message, 'reference', None), 'message_id', None)
                 explicit = text.startswith(('text:', 'mesaj:', 'message:'))
                 if not explicit and (len(waiting) < 3 or not waiting[2] or reply_id != waiting[2]):
-                    return False
+                    return await self._suggest_or_fall_through(message, text, replied_text, lang)
                 slots['text'] = text.split(':', 1)[1].strip() if explicit else text
             self.pending.pop(pending_key,None)
             try:
@@ -181,7 +247,7 @@ class NaturalCommandsFeature:
             except ValueError:
                 parsed=NaturalCommandError(t('invalid',lang))
         if parsed is None:
-            return False
+            return await self._suggest_or_fall_through(message, text, replied_text, lang)
         return await self.execute_parsed(message, parsed, profile=profile, language=lang)
 
     async def _outcome(self,message,intent,language,route,outcome):
