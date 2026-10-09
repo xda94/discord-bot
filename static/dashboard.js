@@ -10,6 +10,7 @@
     wishlist: [],
     flights: [],
     sponsorTiers: [],
+    sponsorSettingSaving: false,
     selectedWishlist: null,
     selectedFlight: null,
     ranges: { wishlist: 30, flight: 90 },
@@ -92,7 +93,9 @@
     }
     if (!response.ok) {
       const message = payload?.detail ? `${payload.error}: ${payload.detail}` : payload?.error;
-      throw new Error(message || `Request failed (${response.status})`);
+      const error = new Error(message || `Request failed (${response.status})`);
+      error.status = response.status;
+      throw error;
     }
     return payload;
   }
@@ -386,9 +389,62 @@
     } catch (error) { if (ticket.current()) { summaryTarget.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; entriesTarget.innerHTML = '<div class="empty">Could not load entries.</div>'; transcriptTarget.innerHTML = '<div class="empty">Could not load conversation.</div>'; } }
   }
 
+  const sponsorSettings = {
+    sponsor: { label: "Sponsor name", help: "The name shown in sponsored messages. Leave blank to remove the saved name.", type: "text" },
+    sponsor_tier: { label: "Sponsor tier", help: "Choose the tier used by the current sponsor. Manage available tiers above.", type: "tier" },
+    sponsor_custom_message: { label: "Custom sponsor message", help: "The sponsor’s own message, used only with the Ultra tier. Leave blank to use the default message.", type: "message" },
+  };
+
+  async function loadSponsorSetting() {
+    if (state.sponsorSettingSaving) return;
+    const form = $("#setting-form");
+    const key = $("#setting-select").value;
+    const setting = sponsorSettings[key];
+    if (!setting) return;
+    const ticket = version("sponsor-setting");
+    const status = $("#setting-status");
+    const save = $("button[type='submit']", form);
+    const control = $("#setting-control");
+    save.disabled = true;
+    form.dataset.loadedKey = "";
+    $("#setting-help").textContent = tr(setting.help);
+    control.innerHTML = `<label>${escapeHtml(tr(setting.label))}${setting.type === "tier"
+      ? '<select name="value" disabled aria-describedby="setting-help setting-status"></select>'
+      : setting.type === "message"
+        ? '<textarea name="value" rows="3" disabled aria-describedby="setting-help setting-status"></textarea>'
+        : '<input name="value" disabled aria-describedby="setting-help setting-status">'}</label>`;
+    status.textContent = tr("Loading saved value…");
+    try {
+      const valueRequest = api(`/settings/${encodeURIComponent(key)}`).catch((error) => {
+        if (error.status === 404) return { value: null };
+        throw error;
+      });
+      const [saved, tiers] = await Promise.all([valueRequest, setting.type === "tier" ? api("/sponsors/tiers") : Promise.resolve([])]);
+      if (!ticket.current()) return;
+      const input = $("[name='value']", control);
+      const value = saved.value ?? "";
+      if (setting.type === "tier") {
+        input.innerHTML = `<option value="">${escapeHtml(tr("Use default tier"))}</option>${tiers.map((tier) => `<option value="${escapeHtml(tier.id)}">${escapeHtml(tier.name)}</option>`).join("")}`;
+        if (value && !tiers.some((tier) => tier.id === value)) {
+          status.textContent = tr("The saved tier is unavailable. Choose an available tier before saving.");
+          input.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(value)}" disabled>${escapeHtml(tr("Unavailable saved tier"))}</option>`);
+        } else status.textContent = tr(value ? "Saved value loaded." : "No value saved. The default will be used.");
+      } else status.textContent = tr(value ? "Saved value loaded." : "No value saved yet.");
+      input.value = value;
+      input.disabled = false;
+      form.dataset.loadedKey = key;
+      const updateSave = () => { save.disabled = input.selectedOptions?.[0]?.disabled === true; };
+      input.addEventListener("change", updateSave);
+      updateSave();
+    } catch (error) {
+      if (ticket.current()) status.textContent = tr("Could not load this setting. Reload to try again.");
+    }
+  }
+
   async function loadSettings() {
     const ticket = version("settings");
     const tiers = loadSponsorTiers();
+    const sponsor = loadSponsorSetting();
     try {
       const model = await api("/llm/mention-model"); if (!ticket.current()) return;
       $("#model-select").innerHTML = model.allowed_models.map((name) => `<option ${name === model.model ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
@@ -401,7 +457,7 @@
         $("#settings-feedback").innerHTML = '<div class="empty">Enter a server ID to load feedback.</div>';
       }
     } catch (error) { if (ticket.current()) toast(error.message, "error"); }
-    await tiers;
+    await Promise.all([tiers, sponsor]);
   }
 
   function renderAnalyticsCommands() {
@@ -515,7 +571,30 @@
     $("#credential-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/flights/credentials", { method: "POST", body: JSON.stringify({ user_id: requireUser(), api_key: data.get("api_key") }) }); form.reset(); await loadFlights(); }, "Credentials validated and saved."); });
     $("#flight-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/flights/trackers", { method: "POST", body: JSON.stringify({ user_id: requireUser(), origin: data.get("origin"), destination: data.get("destination"), start_date: data.get("start_date"), end_date: data.get("end_date"), adults: Number(data.get("adults")), currency: data.get("currency"), budget: data.get("budget") ? Number(data.get("budget")) : null }) }); form.reset(); await loadFlights(); }, "Flight tracker added."); });
     $("#model-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/llm/mention-model", { method: "PUT", body: JSON.stringify({ model: data.get("model") }) }); await loadSettings(); }, "Mention model updated."); });
-    $("#setting-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api(`/settings/${encodeURIComponent(data.get("key"))}`, { method: "PUT", body: JSON.stringify({ value: data.get("value") }) }); }, "Setting saved."); });
+    $("#setting-select").addEventListener("change", loadSponsorSetting);
+    $("#setting-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      submit(form, async (data) => {
+        const key = data.get("key");
+        if (!sponsorSettings[key] || form.dataset.loadedKey !== key) throw new Error("Reload this setting before saving.");
+        const selector = $("#setting-select");
+        const reload = $("[data-action='read-setting']", form);
+        const input = $("[name='value']", form);
+        state.sponsorSettingSaving = true;
+        selector.disabled = reload.disabled = input.disabled = true;
+        try {
+          await api(`/settings/${encodeURIComponent(key)}`, { method: "PUT", body: JSON.stringify({ value: data.get("value") }) });
+          $("#setting-status").textContent = tr("Changes saved. Restart the bot to apply them.");
+        } catch (error) {
+          $("#setting-status").textContent = tr("Changes could not be saved. Try again.");
+          throw error;
+        } finally {
+          state.sponsorSettingSaving = false;
+          selector.disabled = reload.disabled = input.disabled = false;
+        }
+      }, "Sponsor details saved. Restart the bot to apply changes.");
+    });
     $("#sponsor-tier-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => {
       const percent = Number(data.get("chance_percent"));
       if (!Number.isFinite(percent) || percent < 0 || percent > 100) throw new Error("Chance must be between 0 and 100 percent.");
@@ -527,6 +606,7 @@
       $("#sponsor-tier-form button[type='submit']").textContent = "Create tier";
       $("[data-action='new-sponsor-tier']").hidden = true;
       await loadSponsorTiers();
+      if ($("#setting-select").value === "sponsor_tier") await loadSponsorSetting();
     }, "Sponsor tier saved."); });
   }
 
@@ -615,7 +695,7 @@
       if (action === "forget-memory-user") { if (!confirm("Erase this user's saved memory and pending observations in the selected scope? Their opt-in preference will stay unchanged.")) return; await api(`/memory/users/${requireUser()}`, { method: "DELETE", body: JSON.stringify({ scope_id: selectedMemoryScope() }) }); toast("User memory erased."); return loadMemory(); }
       if (action === "purge-memory-guild") { const confirmation = prompt("Type PURGE to erase every user's saved memory in the selected server."); if (confirmation === null) return; await api(`/memory/guilds/${requireGuild()}`, { method: "DELETE", body: JSON.stringify({ confirmation }) }); toast("Server memory purged."); return loadMemory(); }
       if (action === "set-inactivity") { await api(`/inactivity/guilds/${requireGuild()}`, { method: "PUT", body: JSON.stringify({ enabled: button.dataset.enabled === "true" }) }); toast("Inactivity setting updated."); return loadSettings(); }
-      if (action === "read-setting") { const form = $("#setting-form"); const key = new FormData(form).get("key"); if (!key) throw new Error("Enter a setting key."); const data = await api(`/settings/${encodeURIComponent(key)}`); $("[name='value']", form).value = data.value; return toast("Setting loaded."); }
+      if (action === "read-setting") return loadSponsorSetting();
       if (action === "chart-range") { state.ranges[button.dataset.chart] = Number(button.dataset.days); return button.dataset.chart === "wishlist" ? loadWishlistDetail(state.selectedWishlist) : loadFlightDetail(state.selectedFlight); }
     } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }

@@ -101,6 +101,9 @@ textarea { min-height: 92px; resize: vertical; }
 .two-column.narrow-first { grid-template-columns: .7fr 1.6fr; }
 .three-column { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
 .form-stack { display: grid; gap: 14px; }
+.setting-help, .setting-status, .setting-note { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 0; }
+.setting-status { min-height: 1.55em; }
+.setting-note { margin-top: 14px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
 .span-all { grid-column: 1 / -1; }
 .inline-form { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 12px; }
