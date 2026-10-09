@@ -70,7 +70,7 @@ LLM_MEMORY_ENABLED=0
 | `BOT_ID` | Yes (bot) | Your bot's Discord user ID (Developer Mode → right-click bot → Copy User ID). Used to recognize @mentions addressed to the bot. |
 | `HOST` | Yes (API) | Bind address. Use `0.0.0.0` for LAN/Tailscale or **Docker** (published ports). Use `127.0.0.1` only if the API should be local to the host (e.g. PM2, no remote access). |
 | `PORT` | Yes (API) | e.g. `9999`. |
-| `API_TOKEN` | Strongly recommended | Every API route expects `Authorization: Bearer <token>`. If unset, the API runs **unauthenticated** and logs a CRITICAL warning. |
+| `API_TOKEN` | Required (API data routes) | Data/configuration routes require `Authorization: Bearer <token>` and return HTTP 503 when unset. Dashboard/static assets and `/health` are public. |
 | `SPONSOR_PASSWORD` | No (bot) | Password required by the `/sponsor-set` and `/sponsor-set-tiers` Discord modals. Dashboard tier writes use `API_TOKEN` instead. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
 | `LOG_LEVEL` | No | Logging verbosity for console and rotating files. Default: `INFO`; use `DEBUG` to include per-observation memory capture metadata. |
@@ -506,7 +506,7 @@ cannot recover history already removed by the 180-day retention policy.
 
 **AI Fallback Scraping** — When both price and stock remain unknown, the scraper uses local llama.cpp (`LLAMA_CPP_DEFAULT_MODEL`) to extract them from visible page text, even when a title or currency exists. Usable data requires a finite nonnegative price (including zero) or explicit stock status. Boolean, negative, NaN, and infinite prices are rejected; blank titles/currencies become missing, and unknown availability stays unknown. Fallback fills missing fields, and TLD currency guessing runs afterward.
 
-Manual add/refresh fallback uses interactive LLM capacity. If capacity is unavailable, Discord asks the user to retry and the API returns HTTP 503. Scheduled fallback skips under contention and retries on the next scrape pass. Failed refreshes preserve saved prices, stock, metadata, alert state, and history while recording the check outcome.
+Manual add/refresh fallback uses interactive LLM capacity. If capacity is unavailable, Discord asks the user to retry and the API returns HTTP 503. Scheduled fallback skips under contention and retries on the next scrape pass. Failed refreshes preserve saved prices, stock, metadata, alert state, and history while recording the check outcome. Successful snapshots, check state, and history commit together; database failures are reported as failures. Target/restock preference changes are validated together and saved in one write. Currency conversion loads a shared rate snapshot once per minute instead of reading SQLite for every conversion.
 
 **Price-change DMs** include exact old/new prices plus a short llama.cpp-generated reaction. The model randomly varies between funny, mock-corporate, playful, serious, enthusiastic, and melodramatically sad tones, and is told whether the observed price increased or decreased. If generation fails, the factual notification is still delivered.
 
@@ -538,7 +538,9 @@ Only fixed departure and return dates are supported. Flexible date windows were 
 
 Each Discord user supplies one **SerpApi API Key**. If no login exists when `/flight-tracker-add` is used, the bot opens a modal, validates the key through SerpApi's Account API, saves it, and then creates the tracker. Later adds reuse that same user's key and quota. Keys are stored in the local SQLite database and are never shown by commands or written to logs. Because SQLite storage is not encrypted, filesystem/database access must be restricted to the bot operator; use `/flight-tracker-logout` to remove a user's key.
 
-The free SerpApi plan currently includes 250 searches per month. To stay below that, each five-hour scheduled pass checks at most one tracker per user/API key, selecting the least-recently checked one. This caps scheduled usage at about 144 successful searches per user in a 30-day month regardless of how many trackers are saved; multiple trackers rotate and are therefore checked less often individually. Immediate searches performed by `/flight-tracker-add` use additional credits from the remaining headroom. See the [SerpApi Google Flights documentation](https://serpapi.com/google-flights-api) and [pricing](https://serpapi.com/pricing).
+The free SerpApi plan currently includes 250 searches per month. To stay below that, each five-hour scheduled pass checks at most one tracker per user/API key, selecting the least-recently checked active tracker. Departed and retired flexible trackers are excluded before selection. This caps scheduled usage at about 144 successful searches per user in a 30-day month regardless of how many trackers are saved; multiple trackers rotate and are therefore checked less often individually. Immediate searches performed by `/flight-tracker-add` use additional credits from the remaining headroom. See the [SerpApi Google Flights documentation](https://serpapi.com/google-flights-api) and [pricing](https://serpapi.com/pricing).
+
+Successful flight observations, price history, budget crossing state, and any new notification commit in one SQLite transaction. An enqueue failure leaves the previous observation intact for retry. Accepted notifications survive temporary DM or database failures in the durable outbox.
 
 ### System
 
@@ -708,7 +710,7 @@ to another user.
 
 ## REST API
 
-All routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set. Base URL: `http://<HOST>:<PORT>` (from `.env`). In Postman, set that value as a Bearer Token at collection level and send JSON request bodies with `Content-Type: application/json`.
+Data and configuration routes require `Authorization: Bearer <API_TOKEN>`. If `API_TOKEN` is missing, those routes return HTTP 503. Dashboard assets and `/health` are public. Base URL: `http://<HOST>:<PORT>` (from `.env`). In Postman, set that value as a Bearer Token at collection level and send JSON request bodies with `Content-Type: application/json`.
 
 JSON bodies accept Discord IDs as integers or decimal strings. Browser clients
 can send `X-Discord-ID-Format: string` to receive `guild_id`, `user_id`, and
@@ -720,6 +722,7 @@ IDs such as reminder, joke, item, and tracker IDs remain numeric.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/` | Local dashboard HTML; CSS and JavaScript are served below `/static/` |
+| `GET` | `/health` | Public API/database probe: `{ "status": "ok", "database": "ok" }` with HTTP 200; unavailable database returns HTTP 503. |
 | `GET` | `/system/stats` | CPU, temperature in Celsius, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
 ### Sponsor tiers
 
@@ -729,12 +732,14 @@ IDs such as reminder, joke, item, and tracker IDs remain numeric.
 | `POST` | `/sponsors/tiers` | Create a tier from exactly `{ "name", "price_per_year", "chance" }`; returns the saved stable ID with HTTP 201. |
 | `PUT` | `/sponsors/tiers/<tier_id>` | Replace the three editable fields of an existing tier; returns HTTP 200. Unknown IDs return 404; duplicate normalized names return 409; malformed values return 400. |
 
-These typed routes are bearer-protected whenever `API_TOKEN` is configured.
+These typed routes require the configured bearer token.
 `PUT /settings/sponsor_tiers` is intentionally rejected so a generic setting
 write cannot bypass tier validation. `GET /settings/sponsor_tiers` remains
 available for diagnosis. A corrupt catalog or SQLite failure returns an
 explicit server error rather than silently presenting or saving built-in
 defaults.
+
+Mutation requests reject non-object JSON and non-finite numbers. Generic settings cannot bypass the typed sponsor-tier or mention-model routes. Provider errors and application log output redact API keys and bearer credentials.
 
 The API manages stored data and configuration. It does not post to Discord,
 emulate Discord interactions, or run shell commands. `POST /wishlist/add` and
@@ -743,6 +748,8 @@ the shared scraper can invoke local LLM extraction when ordinary extraction
 fails. Refresh never sends a notification. Flight credential setup validates
 the key with SerpApi. This API is an operator interface: `user_id` selects data
 and does not authenticate a Discord user.
+
+Startup isolates command sync and each background feature so one failure does not prevent other loops from starting. Frequent message/admission and tracking database operations run in worker threads to keep Discord responsive during SQLite lock waits. The notification loop contains transient database errors and retries on later ticks. Recovered recurring reminders clear terminal timestamps, and cleanup retains pending reminders.
 
 SQLite initialization enables WAL before transactional schema migrations;
 connections enforce foreign keys and use an explicit five-second lock wait.
@@ -834,7 +841,9 @@ in manual mode for inspecting, deleting, or preconfiguring retained data.
 | `GET` | `/wishlist/preferences?user_id=<id>&url=<url>` | One requester-owned item's current tracking data and preferences |
 | `GET` | `/wishlist/history?user_id=<id>&url=<url>` | Item metadata plus chronological saved price observations; 404 when the item is not owned/found |
 | `PUT` | `/wishlist/preferences` | `{ "user_id", "url", "target_price", "target_currency", "restock_only" }`; use `{ "clear_target": true }` to clear a threshold |
-| `POST` | `/wishlist/refresh` | `{ "user_id", "url" }` — updates tracking data without notifications; `422` unsupported, `502` blocked/unreachable, `503` temporarily busy; failed checks retain saved data/history |
+| `POST` | `/wishlist/refresh` | `{ "user_id", "url" }` — updates tracking data without notifications; `422` unsupported, `502` blocked/unreachable, `503` temporarily busy, `500` failed save; failed checks retain saved data/history |
+
+Product fetches accept public HTTP(S) URLs only. Credentials in URLs, internal hostnames, private/reserved addresses, and redirects to them are rejected. DNS addresses are checked and pinned for each redirect hop, environment proxies are bypassed, downloads are limited to 5 MiB, and at most six requests follow a redirect chain.
 
 Product HTTP fetches have a 15-second timeout; LLM fallback may additionally wait for capacity and generation under `LLAMA_CPP_TIMEOUT`. Add does not create rows for blocked, unsupported, or busy results.
 
@@ -871,6 +880,8 @@ The existing urllib3/LibreSSL compatibility warning remains. The reviewed biling
 parser corpus passed 148/148 cases (100%) with zero unauthorized actions.
 Tests use isolated databases; no live Discord messages or production services
 were used.
+
+On 2026-10-09, the integrated targeted run passed 601 tests and the full suite passed all 1,323 tests. New regressions cover public-only bounded scraping, transactional writes, auth/health/redaction, reminder recovery, durable flight alerts, quota selection, and isolated startup. Diff and Python syntax checks passed. Docker validation was unavailable locally because Docker is not installed.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 

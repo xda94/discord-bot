@@ -13,6 +13,20 @@ from llm.client import (
 )
 
 
+@pytest.mark.parametrize("operation", [query_llm, llama_supports_vision])
+def test_provider_exceptions_redact_keys_and_url_credentials(monkeypatch, operation):
+    monkeypatch.setenv("LLAMA_CPP_API_KEY", "private-llama-key")
+    failure = requests.RequestException(
+        "failed https://private-user:private-password@provider.example/?api_key=private-llama-key"
+    )
+    monkeypatch.setattr(requests, "post", MagicMock(side_effect=failure))
+    monkeypatch.setattr(requests, "get", MagicMock(side_effect=failure))
+    with pytest.raises(LlamaCppError) as error:
+        operation("hello") if operation is query_llm else operation()
+    assert "private" not in str(error.value)
+    assert "provider.example" in str(error.value)
+
+
 def test_get_allowed_models_from_env(monkeypatch):
     monkeypatch.setenv(
         "LLAMA_CPP_ALLOWED_MODELS",

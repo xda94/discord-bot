@@ -16,12 +16,13 @@ import db
 @pytest.fixture
 def client(tmp_db, monkeypatch):
     # api.py validates process settings at import time. Build a fresh test app
-    # with auth disabled so each test can focus on the route contract.
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9999")
     api = importlib.import_module("api")
-    app = api.create_app({"TESTING": True, "API_TOKEN": None})
-    return app.test_client()
+    app = api.create_app({"TESTING": True, "API_TOKEN": "test-token"})
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+    return client
 
 
 def test_keyword_add_success_is_visible(client):
@@ -110,16 +111,14 @@ def test_wishlist_add_database_failure_is_server_error_without_history(client, m
     url = "https://shop.example/item"
     monkeypatch.setattr(wishlist._price_scraper, "fetch", Mock(return_value=ScrapeResult(price=10)))
     add_item = Mock(return_value=False)
-    add_history = Mock()
     monkeypatch.setattr(wishlist, "add_scraped_item", add_item)
-    monkeypatch.setattr(wishlist, "add_price_history", add_history)
 
     response = client.post("/wishlist/add", json={"user_id": 7, "url": url})
 
     assert response.status_code == 500
     assert response.get_json() == {"error": "Failed to save wishlist item"}
     add_item.assert_called_once()
-    add_history.assert_not_called()
+    assert add_item.call_args.kwargs["record_history"] is True
     assert db.get_scraped_item(7, url) is None
 
 

@@ -9,6 +9,7 @@ import uuid
 import requests
 
 from llm.capacity import admitted_request
+from logger import redact_sensitive
 
 logger = logging.getLogger("discord_bot")
 
@@ -125,15 +126,15 @@ def llama_supports_vision(
             type(exc).__name__,
         )
         raise LlamaCppError(
-            f"Could not reach llama.cpp at {base_url} while checking vision support."
-        ) from exc
+            redact_sensitive(f"Could not reach llama.cpp at {base_url} while checking vision support.")
+        ) from None
     except requests.exceptions.RequestException as exc:
         logger.warning(
             "LLM vision capability request failed elapsed=%.2fs error=%s",
             time.monotonic() - started,
             type(exc).__name__,
         )
-        raise LlamaCppError(f"Could not check llama.cpp vision support: {exc}") from exc
+        raise LlamaCppError(redact_sensitive(f"Could not check llama.cpp vision support: {exc}")) from None
 
     if not response.ok:
         logger.warning(
@@ -142,8 +143,8 @@ def llama_supports_vision(
             time.monotonic() - started,
         )
         raise LlamaCppError(
-            f"llama.cpp vision check returned HTTP {response.status_code} "
-            f"({response.reason})."
+            redact_sensitive(f"llama.cpp vision check returned HTTP {response.status_code} "
+            f"({response.reason}).")
         )
     try:
         data = response.json()
@@ -290,9 +291,9 @@ def query_llm(
             type(exc).__name__,
         )
         raise LlamaCppError(
-            f"Could not reach llama.cpp at {base_url}. Check that llama-server "
-            "is running and LLAMA_CPP_BASE_URL is set correctly."
-        ) from exc
+            redact_sensitive(f"Could not reach llama.cpp at {base_url}. Check that llama-server "
+            "is running and LLAMA_CPP_BASE_URL is set correctly.")
+        ) from None
     except requests.exceptions.RequestException as exc:
         logger.warning(
             "LLM HTTP request failed request=%s model=%s elapsed=%.2fs error=%s",
@@ -301,7 +302,7 @@ def query_llm(
             time.monotonic() - started,
             type(exc).__name__,
         )
-        raise LlamaCppError(f"llama.cpp request failed: {exc}") from exc
+        raise LlamaCppError(redact_sensitive(f"llama.cpp request failed: {exc}")) from None
     finally:
         logger.info(
             "LLM HTTP wait ended request=%s model=%s elapsed=%.2fs",
@@ -320,7 +321,7 @@ def query_llm(
             time.monotonic() - started,
         )
         raise LlamaCppError(
-            f"llama.cpp returned HTTP {response.status_code} ({response.reason})."
+            redact_sensitive(f"llama.cpp returned HTTP {response.status_code} ({response.reason}).")
         )
 
     try:

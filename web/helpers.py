@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from flask import request
 
@@ -20,6 +21,19 @@ DISCORD_ID_FIELDS = {
 
 def is_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def valid_json_value(value) -> bool:
+    if isinstance(value, (int, float)):
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+    if isinstance(value, dict):
+        return all(valid_json_value(item) for item in value.values())
+    if isinstance(value, list):
+        return all(valid_json_value(item) for item in value)
+    return True
 
 
 def discord_id(value, field_name):

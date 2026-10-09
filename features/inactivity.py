@@ -104,10 +104,7 @@ class InactivityFeature:
                 "last_time": now,
                 "channel_id": message.channel.id,
             }
-            # Cheap UPSERT on the hot path: every guild message goes through
-            # this. SQLite handles ~10k of these per second on a Pi, well
-            # above any Discord guild's chat rate.
-            db.set_guild_activity(message.guild.id, now, message.channel.id)
+            await asyncio.to_thread(db.set_guild_activity,message.guild.id, now, message.channel.id)
         return False
 
     async def start_tasks(self) -> None:
@@ -121,7 +118,7 @@ class InactivityFeature:
             # Snapshot: _send_nudge awaits, during which handle_message may add
             # a new guild to _state — iterating the live dict would then raise.
             for guild_id, guild_state in list(self._state.items()):
-                if not db.is_guild_inactivity_enabled(guild_id):
+                if not await asyncio.to_thread(db.is_guild_inactivity_enabled,guild_id):
                     continue
                 if now - guild_state["last_time"] < INACTIVITY_THRESHOLD:
                     continue
@@ -136,7 +133,7 @@ class InactivityFeature:
                 guild_state["last_time"] = now
                 # Mirror the in-memory reset so a restart right after a nudge
                 # doesn't fire it again from the stale DB row.
-                db.set_guild_activity(guild_id, now, guild_state["channel_id"])
+                await asyncio.to_thread(db.set_guild_activity,guild_id, now, guild_state["channel_id"])
                 logger.info(f"Inactivity nudge sent in #{channel} (guild {guild_id})")
         except Exception:
             logger.exception("Error in check_inactivity loop")

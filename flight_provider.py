@@ -7,12 +7,15 @@ small ``FlightOffer`` value that is easy to persist and test.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
 from datetime import date
 
 import requests
+
+from logger import redact_sensitive
 
 
 IATA_RE = re.compile(r"^[A-Z]{3}$")
@@ -48,7 +51,7 @@ class FlightOffer:
 
 def normalize_iata(value: str) -> str:
     """Return an upper-case three-letter IATA city/airport code."""
-    code = (value or "").strip().upper()
+    code = value.strip().upper() if isinstance(value, str) else ""
     if not IATA_RE.fullmatch(code):
         raise ValueError("Use a 3-letter IATA city/airport code, for example OTP or BKK.")
     return code
@@ -56,8 +59,8 @@ def normalize_iata(value: str) -> str:
 
 def parse_iso_date(value: str) -> date:
     try:
-        return date.fromisoformat((value or "").strip())
-    except ValueError as exc:
+        return date.fromisoformat(value.strip())
+    except (AttributeError, TypeError, ValueError) as exc:
         raise ValueError("Dates must use YYYY-MM-DD, for example 2026-12-30.") from exc
 
 
@@ -97,7 +100,9 @@ class SerpApiFlightProvider:
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
         except requests.RequestException as exc:
-            raise FlightProviderError(f"Could not reach SerpApi: {exc}") from exc
+            raise FlightProviderError(
+                redact_sensitive(f"Could not reach SerpApi: {exc}", (self.api_key,))
+            ) from None
 
         payload = None
         try:
@@ -106,9 +111,10 @@ class SerpApiFlightProvider:
             pass
 
         error = payload.get("error") if isinstance(payload, dict) else None
-        error_text = str(error or "")
+        raw_error_text = str(error or "")
+        error_text = redact_sensitive(raw_error_text, (self.api_key,))
         if response.status_code == 429 or any(
-            token in error_text.lower() for token in ("quota", "limit", "searches")
+            token in raw_error_text.lower() for token in ("quota", "limit", "searches")
         ):
             raise FlightProviderQuotaError(error_text or "SerpApi search quota reached.")
         if response.status_code >= 400:
@@ -116,7 +122,7 @@ class SerpApiFlightProvider:
         if not isinstance(payload, dict):
             raise FlightProviderError(f"{context} returned invalid JSON.")
         if error:
-            raise FlightProviderError(f"{context} failed: {error}")
+            raise FlightProviderError(f"{context} failed: {error_text}")
         return payload
 
     def validate_credentials(self) -> bool:
@@ -184,9 +190,15 @@ class SerpApiFlightProvider:
     def _parse_offer(
         row: dict, currency: str, departure_date: str, return_date: str
     ) -> FlightOffer | None:
+        if not isinstance(row, dict):
+            return None
         try:
+            if isinstance(row["price"], bool):
+                return None
             price = float(row["price"])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(price) or price < 0:
             return None
 
         segments = row.get("flights") or []

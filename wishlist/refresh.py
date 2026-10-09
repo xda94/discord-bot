@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import db
-from wishlist.scraper import FAILURE_BLOCKED, FAILURE_BUSY, FAILURE_UNSUPPORTED, PriceScraper, ScrapeResult
+from db.wishlist import persist_scraped_item_refresh
+from wishlist.scraper import FAILURE_BLOCKED, FAILURE_BUSY, FAILURE_DATABASE, FAILURE_UNSUPPORTED, PriceScraper, ScrapeResult
 
 
 def refresh_item(item, scraper: PriceScraper) -> ScrapeResult:
@@ -11,15 +12,10 @@ def refresh_item(item, scraper: PriceScraper) -> ScrapeResult:
     item_id, _user_id, url, old_price, *_rest = item
     result = scraper.fetch(url)
     status = result.failure or "ok"
-    db.update_scraped_item_check_status(item_id, status)
-    if result.failure in (FAILURE_BLOCKED, FAILURE_BUSY):
+    if result.failure in (FAILURE_BLOCKED, FAILURE_BUSY) or (result.failure == FAILURE_UNSUPPORTED and not result.has_data):
+        if not db.update_scraped_item_check_status(item_id, status):
+            result.failure = FAILURE_DATABASE
         return result
-    if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
-        return result
-    if result.price is not None and result.price != old_price:
-        db.add_price_history(item_id, result.price)
-    db.update_scraped_item_status(
-        item_id, result.price, result.in_stock, result.title, result.currency
-    )
+    if not persist_scraped_item_refresh(item_id, result.price, result.in_stock, result.title, result.currency, status, record_history=True, changed_only=True):
+        result.failure = FAILURE_DATABASE
     return result
-

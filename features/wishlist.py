@@ -25,6 +25,7 @@ from wishlist.refresh import refresh_item
 from wishlist.scraper import (
     FAILURE_BLOCKED,
     FAILURE_BUSY,
+    FAILURE_DATABASE,
     FAILURE_UNSUPPORTED,
     PriceScraper,
     ScrapeResult,
@@ -155,7 +156,7 @@ class WishlistFeature:
                     ephemeral=True,
                 )
                 return
-            price_str = feature.converter.format_with_conversions(result.price, result.currency)
+            price_str = await asyncio.to_thread(feature.converter.format_with_conversions, result.price, result.currency)
             stock_label = (
                 "Unknown" if result.in_stock is None
                 else ("Yes" if result.in_stock else "No")
@@ -173,7 +174,7 @@ class WishlistFeature:
         async def scrape_item_delete(interaction: discord.Interaction, url: str):
             interaction = localized_interaction(interaction)
             logger.info(f"Command /wishlist-item-delete called by {interaction.user} for {url}")
-            if feature.delete_item_for_user(interaction.user.id, url):
+            if await asyncio.to_thread(feature.delete_item_for_user, interaction.user.id, url):
                 await interaction.response.send_message("Link removed and data cleared.", ephemeral=True)
             else:
                 await interaction.response.send_message("Link not found in your list.", ephemeral=True)
@@ -196,7 +197,7 @@ class WishlistFeature:
         ):
             interaction = localized_interaction(interaction)
             try:
-                success = feature.set_target_for_user(
+                success = await asyncio.to_thread(feature.set_target_for_user,
                     interaction.user.id, url, price, currency.value
                 )
             except ValueError:
@@ -222,7 +223,7 @@ class WishlistFeature:
         @app_commands.describe(url="The tracked item URL")
         async def wishlist_target_clear(interaction: discord.Interaction, url: str):
             interaction = localized_interaction(interaction)
-            if feature.clear_target_for_user(interaction.user.id, url):
+            if await asyncio.to_thread(feature.clear_target_for_user, interaction.user.id, url):
                 await interaction.response.send_message(
                     "Target-price alert removed.", ephemeral=True
                 )
@@ -243,7 +244,7 @@ class WishlistFeature:
             interaction: discord.Interaction, url: str, enabled: bool
         ):
             interaction = localized_interaction(interaction)
-            if feature.set_restock_only_for_user(interaction.user.id, url, enabled):
+            if await asyncio.to_thread(feature.set_restock_only_for_user, interaction.user.id, url, enabled):
                 text = (
                     "Restock-only mode enabled. Price history still updates, "
                     "but only a back-in-stock notification will be sent."
@@ -269,9 +270,9 @@ class WishlistFeature:
             # the shared requester-scoped helper below.
             interaction = localized_interaction(interaction)
             if url is not None:
-                has_items = db.get_scraped_item(interaction.user.id, url) is not None
+                has_items = await asyncio.to_thread(db.get_scraped_item, interaction.user.id, url) is not None
             else:
-                has_items = bool(db.get_user_scraped_items_for_refresh(interaction.user.id))
+                has_items = bool(await asyncio.to_thread(db.get_user_scraped_items_for_refresh, interaction.user.id))
             if not has_items:
                 await interaction.response.send_message(
                     "That URL is not in your tracking list."
@@ -303,11 +304,11 @@ class WishlistFeature:
                 f"(currency={currency.value if currency else 'native'})"
             )
             await interaction.response.defer(ephemeral=True)
-            chunks = feature.format_items_for_user(
+            chunks = await asyncio.to_thread(feature.format_items_for_user,
                 interaction.user.id, currency.value if currency else None
             )
             from features.wishlist_controls import WishlistManageView
-            view = WishlistManageView(interaction.user.id)
+            view = await WishlistManageView.create(interaction.user.id, language=interaction._language)
             for index, chunk in enumerate(chunks):
                 await interaction.followup.send(chunk, ephemeral=True, suppress_embeds=True, view=view if view.children and index == len(chunks)-1 else discord.utils.MISSING)
 
@@ -327,7 +328,7 @@ class WishlistFeature:
             days: app_commands.Range[int, 1, GRAPH_MAX_DAYS] = GRAPH_MAX_DAYS,
         ):
             interaction = localized_interaction(interaction)
-            target_currency = feature.graph_currency_for_user(
+            target_currency = await asyncio.to_thread(feature.graph_currency_for_user,
                 interaction.user.id, url=url, currency=currency.value if currency else None
             )
             await send_graph(
@@ -353,7 +354,7 @@ class WishlistFeature:
             percentage: bool = False,
         ):
             interaction = localized_interaction(interaction)
-            target_currency = feature.graph_currency_for_user(
+            target_currency = await asyncio.to_thread(feature.graph_currency_for_user,
                 interaction.user.id, currency=currency.value if currency else None
             )
             await send_graph(
@@ -370,11 +371,12 @@ class WishlistFeature:
     def _validate_target(price: float, currency: str) -> tuple[float, str]:
         try:
             normalized_price = float(price)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValueError("Target price must be greater than zero.")
         normalized_currency = str(currency or "").upper()
         if (
-            not math.isfinite(normalized_price)
+            isinstance(price, bool)
+            or not math.isfinite(normalized_price)
             or normalized_price <= 0
             or normalized_currency not in CurrencyConverter.SUPPORTED_DISPLAY_CURRENCIES
         ):
@@ -399,10 +401,12 @@ class WishlistFeature:
 
     def format_items_for_user(self, user_id: int, currency: str | None = None, *, language: str | None = None) -> list[str]:
         """Return private, requester-scoped wishlist display chunks."""
-        target_currency = currency or _profile_currency(user_id)
+        profile = db.get_assistant_profile(user_id)
+        lang = language or language_for(profile=profile)
+        target_currency = currency or (profile.get("currency") if profile else None)
         items = db.get_user_scraped_items_with_settings(user_id)
         if not items:
-            return [localize("You are not tracking any items.", language or language_for(profile=db.get_assistant_profile(user_id)))]
+            return [localize("You are not tracking any items.", lang)]
 
         from db.connection import _connect
         with _connect() as c:
@@ -451,7 +455,6 @@ class WishlistFeature:
                 current += block + "\n\n"
         if current.strip():
             chunks.append(current.strip())
-        lang=language or language_for(profile=db.get_assistant_profile(user_id))
         return [localize(chunk,lang, protected=[value for item in items for value in (item[0], f"**#{ids.get(item[0], '?')} {item[3]}**")]) for chunk in chunks]
 
     async def refresh_items_for_user(
@@ -460,10 +463,10 @@ class WishlistFeature:
         """Refresh owned items, reserving each cooldown before scraping."""
         single_item = url is not None
         if single_item:
-            item = db.get_scraped_item(user_id, url)
+            item = await asyncio.to_thread(db.get_scraped_item, user_id, url)
             items = [item] if item is not None else []
         else:
-            items = db.get_user_scraped_items_for_refresh(user_id)
+            items = await asyncio.to_thread(db.get_user_scraped_items_for_refresh, user_id)
         if not items:
             return [
                 "That URL is not in your tracking list."
@@ -483,8 +486,6 @@ class WishlistFeature:
             if remaining > 0:
                 cooldowns.append(remaining)
                 continue
-            # Reserve before the first await so concurrent callers cannot
-            # launch duplicate scrapes for the same item.
             self._manual_refresh_at[key] = now
             eligible_items.append(item)
 
@@ -508,10 +509,10 @@ class WishlistFeature:
             if index < len(eligible_items) - 1:
                 await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
 
+        succeeded = sum(result.startswith("Refreshed:") for result in results)
         header = (
-            "Refreshed the requested item."
-            if single_item
-            else f"Refreshed {len(eligible_items)} of {len(items)} tracked item(s)."
+            ("Refreshed the requested item." if succeeded else "Refresh of the requested item failed.")
+            if single_item else f"Refreshed {succeeded} of {len(items)} tracked item(s)."
         )
         if cooldowns:
             header += (
@@ -555,7 +556,7 @@ class WishlistFeature:
         self, user, *, url: str | None = None, currency: str | None = None,
         days: int = GRAPH_MAX_DAYS, percentage: bool = False, language: str | None = None,
     ) -> None:
-        target_currency = self.graph_currency_for_user(
+        target_currency = await asyncio.to_thread(self.graph_currency_for_user,
             user.id, url=url, currency=currency
         )
         await send_graph_to_user(
@@ -575,15 +576,16 @@ class WishlistFeature:
             return WishlistAddResult("blocked", url)
         if result.failure == FAILURE_UNSUPPORTED:
             return WishlistAddResult("unsupported", url)
-        item_id = db.add_scraped_item(
-            user_id, url, result.title, result.price, result.in_stock, result.currency, language=language or language_for(profile=db.get_assistant_profile(user_id))
+        if language is None:
+            profile = await asyncio.to_thread(db.get_assistant_profile, user_id)
+            language = language_for(profile=profile)
+        item_id = await asyncio.to_thread(db.add_scraped_item,
+            user_id, url, result.title, result.price, result.in_stock, result.currency, language=language, record_history=True
         )
         if item_id is None:
             return WishlistAddResult("exists", url)
         if item_id is False:
             return WishlistAddResult("database-error", url)
-        if result.price is not None:
-            db.add_price_history(item_id, result.price)
         return WishlistAddResult(
             "added", url, result.title, result.price, result.currency, result.in_stock
         )
@@ -667,6 +669,9 @@ class WishlistFeature:
                 f"Refresh temporarily busy: {_domain(url)}. Please try again shortly.\n"
                 f"{self._format_check_status(time.time(), status)}"
             )
+        if result.failure == FAILURE_DATABASE:
+            await record("failure", "wishlist-check", scope_type="global")
+            return "Refresh failed: the database could not save the result. Please try again."
         if result.failure == FAILURE_BLOCKED:
             await record("failure", "wishlist-check", scope_type="global")
             return (
@@ -697,7 +702,7 @@ class WishlistFeature:
             f"Source: {_domain(url)}",
             f"Price: {price_display} | {stock_label}",
         ]
-        reached, converted = self._target_price_reached(
+        reached, converted = await asyncio.to_thread(self._target_price_reached,
             result.price if result.price is not None else old_price,
             source_currency,
             target_price,
@@ -767,7 +772,7 @@ class WishlistFeature:
         # thread keeps the bot responsive to slash commands and messages
         # during the scrape pass.
         result = await asyncio.to_thread(self.scraper.fetch, url, capacity_policy="background")
-        db.update_scraped_item_check_status(item_id, result.failure or "ok")
+        await asyncio.to_thread(db.update_scraped_item_check_status, item_id, result.failure or "ok")
         await record("processing", "wishlist-check", scope_type="global")
 
         if result.failure == FAILURE_BUSY:
@@ -804,7 +809,7 @@ class WishlistFeature:
         # fresh row. `_classify_price` excludes `current` from its input on
         # the caller's behalf, so feeding it the not-yet-updated history is
         # the cleanest way to compare against actually-prior values.
-        prior_history = db.get_price_history(user_id, url)
+        prior_history = await asyncio.to_thread(db.get_price_history, user_id, url)
         prior_prices = [row[0] for row in prior_history]
         decision = _classify_price(
             current=result.price,
@@ -813,7 +818,7 @@ class WishlistFeature:
             last_alert_price=old_alert_price,
         )
         source_currency = _effective_currency(result.currency or old_currency, url)
-        target_reached, converted_target_price = self._target_price_reached(
+        target_reached, converted_target_price = await asyncio.to_thread(self._target_price_reached,
             result.price,
             source_currency,
             target_price,
@@ -822,7 +827,7 @@ class WishlistFeature:
         target_alert = target_reached is True and not target_alerted
 
         if result.price is not None:
-            db.add_price_history(item_id, result.price)
+            await asyncio.to_thread(db.add_price_history, item_id, result.price)
 
         should_notify = (
             back_in_stock
@@ -831,7 +836,8 @@ class WishlistFeature:
         )
         if should_notify:
             try:
-                stored_profile = db.get_assistant_profile(user_id)
+                await asyncio.to_thread(self.converter._rate_snapshot)
+                stored_profile = await asyncio.to_thread(db.get_assistant_profile, user_id)
                 profile_currency = (
                     stored_profile.get("currency") if stored_profile else None
                 )
@@ -861,6 +867,7 @@ class WishlistFeature:
                     )
                     msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                     try:
+                        language = await asyncio.to_thread(tracking_language, user_id, "wishlist", item_id)
                         llm_msg = await asyncio.to_thread(
                             generate_price_change_message,
                             disp_name,
@@ -868,7 +875,7 @@ class WishlistFeature:
                             result.price,
                             old_str,
                             new_str,
-                            language=tracking_language(user_id,"wishlist",item_id),
+                            language=language,
                         )
                         if llm_msg:
                             msg += f"🤖 *{llm_msg}*\n"
@@ -914,14 +921,14 @@ class WishlistFeature:
                 return  # Keep previous state so a failed enqueue can be retried.
 
         if target_reached is not None and target_reached != target_alerted:
-            db.update_scraped_item_target_state(item_id, target_reached)
+            await asyncio.to_thread(db.update_scraped_item_target_state, item_id, target_reached)
 
         # Persist the latest price / stock / title / currency snapshot. COALESCE
         # inside the SQL means passing None for any field leaves the previous
         # value intact — so a price-less stock-only scrape doesn't wipe the
         # last-known price, and an unknown stock read doesn't flip the status
         # to OOS.
-        db.update_scraped_item_status(
+        await asyncio.to_thread(db.update_scraped_item_status,
             item_id, result.price, result.in_stock, result.title, result.currency,
         )
 
@@ -933,7 +940,7 @@ class WishlistFeature:
             decision.new_state != old_alert_kind
             or decision.new_state_price != old_alert_price
         ):
-            db.update_item_alert_state(
+            await asyncio.to_thread(db.update_item_alert_state,
                 item_id, decision.new_state, decision.new_state_price,
             )
     def _format_alert_section(self, decision: "AlertDecision", source_currency: str | None) -> str:
@@ -983,7 +990,7 @@ class WishlistFeature:
     @tasks.loop(hours=12)
     async def _scrape_loop(self):
         logger.info("Starting scheduled price scrape task...")
-        items = db.get_all_scraped_items()
+        items = await asyncio.to_thread(db.get_all_scraped_items)
 
         for item in items:
             try:
@@ -1000,7 +1007,7 @@ class WishlistFeature:
             # await regardless.
             await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
 
-        db.clean_old_price_history(days=PRICE_HISTORY_RETENTION_DAYS)
+        await asyncio.to_thread(db.clean_old_price_history, days=PRICE_HISTORY_RETENTION_DAYS)
         logger.info(
             f"Finished price scrape task and cleaned history "
             f"(retention: {PRICE_HISTORY_RETENTION_DAYS} days)."
