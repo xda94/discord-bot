@@ -400,9 +400,11 @@ def test_flight_budget_crossing_and_failed_dm_keep_durable_alert(tmp_db):
     asyncio.run(feature._process_tracker(db.get_flight_tracker(rid,1)))
     assert feature.client.fetch_user.await_count == 1
     offer.total_price = 550
+    db.update_flight_tracker_result(rid,checked_at=0)
     asyncio.run(feature._process_tracker(db.get_flight_tracker(rid,1)))
     assert not db.get_flight_tracker(rid,1)['budget_alerted']
     offer.total_price = 480
+    db.update_flight_tracker_result(rid,checked_at=0)
     asyncio.run(feature._process_tracker(db.get_flight_tracker(rid,1)))
     assert db.get_flight_tracker(rid,1)['budget_alerted']
 

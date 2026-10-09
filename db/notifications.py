@@ -5,16 +5,27 @@ import json
 from db.connection import _connect
 
 
-def enqueue(user_id,source,item_key,event_kind,body,language,due_at,*,observed_at=None,protected=()):
+def enqueue(user_id,source,item_key,event_kind,body,language,due_at,*,observed_at=None,protected=(),cursor=None):
     observed=time.time() if observed_at is None else observed_at
+    if cursor is not None:
+        return _enqueue(cursor,user_id,source,item_key,event_kind,body,language,due_at,observed,protected)
     with _connect(commit=True) as c:
         c.execute('BEGIN IMMEDIATE')
-        existing=c.execute("SELECT id FROM notification_outbox WHERE user_id=? AND source=? AND item_key=? AND event_kind=? AND state='pending' AND sent_parts=0",(user_id,source,str(item_key),event_kind)).fetchone()
-        if existing:
-            c.execute('UPDATE notification_outbox SET delivery_body=NULL,body=?,language=?,observed_at=?,due_at=MIN(due_at,?),protected_json=? WHERE id=?',(body,language,observed,due_at,json.dumps(list(protected)),existing[0]))
-            return existing[0]
-        c.execute('INSERT INTO notification_outbox(user_id,source,item_key,event_kind,body,language,observed_at,due_at,protected_json) VALUES(?,?,?,?,?,?,?,?,?)',(user_id,source,str(item_key),event_kind,body,language,observed,due_at,json.dumps(list(protected))))
-        return c.lastrowid
+        return _enqueue(c,user_id,source,item_key,event_kind,body,language,due_at,observed,protected)
+
+
+def _enqueue(c,user_id,source,item_key,event_kind,body,language,due_at,observed,protected):
+    existing=c.execute("SELECT id FROM notification_outbox WHERE user_id=? AND source=? AND item_key=? AND event_kind=? AND state='pending' AND sent_parts=0",(user_id,source,str(item_key),event_kind)).fetchone()
+    if existing:
+        c.execute('UPDATE notification_outbox SET delivery_body=NULL,body=?,language=?,observed_at=?,due_at=MIN(due_at,?),protected_json=? WHERE id=?',(body,language,observed,due_at,json.dumps(list(protected)),existing[0]))
+        return existing[0]
+    c.execute('INSERT INTO notification_outbox(user_id,source,item_key,event_kind,body,language,observed_at,due_at,protected_json) VALUES(?,?,?,?,?,?,?,?,?)',(user_id,source,str(item_key),event_kind,body,language,observed,due_at,json.dumps(list(protected))))
+    return c.lastrowid
+
+
+def defer(rows,due_at):
+    with _connect(commit=True) as c:
+        c.executemany("UPDATE notification_outbox SET state='pending',due_at=? WHERE id=? AND state='sending'",[(due_at,row['id']) for row in rows])
 
 
 def claim(now=None,user_id=None):

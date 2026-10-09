@@ -240,3 +240,18 @@ def set_flight_budget(tracker_id,user_id,budget):
 def mark_budget_alerted(tracker_id,alerted):
     with _connect(commit=True) as c:
         c.execute('UPDATE flight_trackers SET budget_alerted=? WHERE id=?',(int(alerted),tracker_id))
+
+
+def persist_flight_offer(tracker_id,offer,*,notification=None,budget_alerted=None):
+    from db import notifications
+    now=time.time()
+    with _connect(commit=True) as c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('UPDATE flight_trackers SET last_price=?,currency=?,last_departure_date=?,last_return_date=?,last_checked_at=?,last_error=NULL,budget_alerted=COALESCE(?,budget_alerted) WHERE id=?',
+                  (offer.total_price,offer.currency,offer.departure_date,offer.return_date,now,budget_alerted,tracker_id))
+        if not c.rowcount:
+            raise ValueError('Flight tracker no longer exists')
+        c.execute('INSERT INTO flight_price_history(tracker_id,price,currency,departure_date,return_date,checked_at) VALUES(?,?,?,?,?,?)',
+                  (tracker_id,offer.total_price,offer.currency,offer.departure_date,offer.return_date,now))
+        if notification is not None:
+            notifications.enqueue(**notification,cursor=c,observed_at=now)

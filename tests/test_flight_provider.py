@@ -2,9 +2,11 @@ import pytest
 
 from flight_provider import (
     FlightProviderConfigError,
+    FlightProviderError,
     FlightProviderQuotaError,
     SerpApiFlightProvider,
     normalize_iata,
+    parse_iso_date,
 )
 
 
@@ -25,6 +27,28 @@ class FakeSession:
     def get(self, url, **kwargs):
         self.gets.append((url, kwargs))
         return self.responses.pop(0)
+
+
+@pytest.mark.parametrize("value", [None, 123, [], {}])
+def test_malformed_route_and_date_values_are_validation_errors(value):
+    with pytest.raises(ValueError):
+        normalize_iata(value)
+    with pytest.raises(ValueError):
+        parse_iso_date(value)
+
+
+@pytest.mark.parametrize("price", [True, float("nan"), float("inf"), -1, "NaN"])
+def test_invalid_offer_prices_are_ignored(price):
+    assert SerpApiFlightProvider._parse_offer({"price": price}, "EUR", "2027-01-01", "2027-01-02") is None
+
+
+def test_provider_response_does_not_expose_api_key():
+    session = FakeSession([FakeResponse({"error": "Invalid private-user-key"}, status_code=401)])
+    provider = SerpApiFlightProvider(api_key="private-user-key", session=session)
+    with pytest.raises(FlightProviderError) as error:
+        provider.validate_credentials()
+    assert "private-user-key" not in str(error.value)
+    assert "Invalid" in str(error.value)
 
 
 def _flights_payload():

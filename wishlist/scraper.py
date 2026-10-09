@@ -15,10 +15,13 @@ to fetch a page, parse HTML, and decide whether the result is useful.
 import json
 import logging
 import math
+import ipaddress
+import socket
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin, urlunparse
 
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 
 from llm.client import query_llm
@@ -63,6 +66,7 @@ except ImportError:
 FAILURE_BLOCKED = "blocked"          # transport-level: timeout, conn refused, 4xx/5xx
 FAILURE_UNSUPPORTED = "unsupported"  # HTML fetched OK but no structured data
 FAILURE_BUSY = "busy"
+FAILURE_DATABASE = "database-error"
 
 
 def _normalize_price(value):
@@ -150,9 +154,52 @@ def _is_valid_http_url(url: str) -> bool:
         return False
     try:
         parsed = urlparse(url.strip())
-    except Exception:
+        host = parsed.hostname
+        port = parsed.port
+        if parsed.scheme not in ("http", "https") or not host:
+            return False
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        if any(ord(character) < 33 for character in url.strip()) or "\\" in url:
+            return False
+        if port is not None and not 0 < port <= 65535:
+            return False
+        host = host.rstrip(".").lower()
+        if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+            return False
+        try:
+            return _is_public_address(host)
+        except ValueError:
+            return "." in host and "%" not in host and ":" not in host
+    except (ValueError, TypeError):
         return False
-    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+def _is_public_address(value):
+    address = ipaddress.ip_address(value)
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        address = mapped
+    if address.version == 4 and address in ipaddress.ip_network("192.0.0.0/24"):
+        return address in (ipaddress.ip_address("192.0.0.9"), ipaddress.ip_address("192.0.0.10"))
+    embedded = getattr(address, "sixtofour", None)
+    if embedded is not None and not _is_public_address(str(embedded)):
+        return False
+    return address.is_global and not address.is_multicast and not address.is_reserved
+
+
+def _resolve_public_url(url):
+    if not _is_valid_http_url(url):
+        raise ValueError("Only public HTTP(S) URLs are allowed")
+    parsed = urlparse(url.strip())
+    host = parsed.hostname.encode("idna").decode("ascii")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    addresses = list(dict.fromkeys(
+        entry[4][0] for entry in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    ))
+    if not addresses or any(not _is_public_address(address) for address in addresses):
+        raise ValueError("URL resolves to a non-public address")
+    return parsed, host, port, addresses
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +223,7 @@ class PriceScraper:
     # Chrome version to impersonate via curl_cffi. Bumping this occasionally
     # keeps the fingerprint fresh.
     IMPERSONATE_TARGET = "chrome124"
+    MAX_PAGE_BYTES = 5 * 1024 * 1024
     # These Romanian phrases are intentional — they're matched against the
     # page HTML to detect stock status on RO e-commerce sites that don't
     # provide structured data. Do not translate; add more languages instead.
@@ -271,11 +319,60 @@ class PriceScraper:
         """Perform the HTTP GET. Prefer curl_cffi's Chrome impersonation so we
         can pass bot-detection on protected sites; fall back to plain requests
         when curl_cffi is unavailable."""
-        if _IMPERSONATION_AVAILABLE:
-            return impersonated_http.get(
-                url, impersonate=self.IMPERSONATE_TARGET, timeout=15
-            )
-        return requests.get(url, headers={"User-Agent": self.USER_AGENT}, timeout=15)
+        current = url.strip()
+        for _ in range(6):
+            parsed, host, port, addresses = _resolve_public_url(current)
+            current = urlunparse(parsed._replace(fragment=""))
+            if _IMPERSONATION_AVAILABLE:
+                from curl_cffi.const import CurlOpt
+                from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+                address = addresses[0]
+                pinned = f"[{address}]" if ":" in address else address
+                curl_options = {CurlOpt.PROXY: ""}
+                try:
+                    ipaddress.ip_address(host)
+                except ValueError:
+                    curl_options[CurlOpt.RESOLVE] = [f"{host}:{port}:{pinned}"]
+                body = bytearray()
+                def receive(chunk):
+                    if len(body) + len(chunk) > self.MAX_PAGE_BYTES:
+                        return CURL_WRITEFUNC_ERROR
+                    body.extend(chunk)
+                    return len(chunk)
+                response = impersonated_http.get(
+                    current, impersonate=self.IMPERSONATE_TARGET, timeout=15,
+                    allow_redirects=False, proxy="",
+                    curl_options=curl_options, content_callback=receive,
+                )
+                response.content = bytes(body)
+            else:
+                headers = {"User-Agent": self.USER_AGENT, "Host": parsed.netloc}
+                pool_type = urllib3.HTTPSConnectionPool if parsed.scheme == "https" else urllib3.HTTPConnectionPool
+                options = {"server_hostname": host, "assert_hostname": host, "ca_certs": requests.certs.where()} if parsed.scheme == "https" else {}
+                with pool_type(addresses[0], port, **options) as pool:
+                    path = urlunparse(("", "", parsed.path or "/", parsed.params, parsed.query, ""))
+                    raw = pool.request("GET", path, headers=headers, redirect=False, retries=False, timeout=15, preload_content=False)
+                    try:
+                        body = raw.read(self.MAX_PAGE_BYTES + 1, decode_content=True)
+                        if len(body) > self.MAX_PAGE_BYTES:
+                            raise ValueError("Page exceeds download limit")
+                        response = requests.Response()
+                        response.status_code = raw.status
+                        response.headers.update(raw.headers)
+                        response._content = body
+                        response._content_consumed = True
+                        response.encoding = requests.utils.get_encoding_from_headers(response.headers)
+                        response.url = current
+                    finally:
+                        raw.close()
+            if response.status_code not in (301, 302, 303, 307, 308):
+                return response
+            location = response.headers.get("Location")
+            if not location:
+                return response
+            current = urljoin(current, location)
+            response.close()
+        raise ValueError("Too many redirects")
 
     @staticmethod
     def _extract_from_json_ld(soup, price, title, currency, in_stock):

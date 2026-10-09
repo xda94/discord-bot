@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 from db.connection import _connect
 
 logger = logging.getLogger("database")
 
-def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=None, *, language="en"):
+def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=None, *, language="en", record_history=False):
     """Insert a new tracked item.
 
     `stock` is tri-state: True/1 → in stock, False/0 → out of stock,
@@ -17,6 +18,8 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
     `None` don't get conflated with "definitely out of stock".
     """
     try:
+        if price is not None and not _valid_number(price):
+            return False
         stock_int = None if stock is None else (1 if stock else 0)
         with _connect(commit=True) as c:
             c.execute(
@@ -25,6 +28,11 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
             )
             if c.rowcount > 0:
                 item_id = c.lastrowid
+                if record_history and price is not None:
+                    c.execute(
+                        "INSERT INTO price_history (item_id, price, timestamp) VALUES (?, ?, ?)",
+                        (item_id, price, time.time()),
+                    )
                 return item_id
         return None
     except Exception:
@@ -154,29 +162,81 @@ def set_scraped_item_target(user_id, url, price, currency):
     Changing a target always re-arms it. This avoids a previous target's alert
     state suppressing an alert for the newly configured threshold.
     """
-    try:
-        with _connect(commit=True) as c:
-            c.execute(
-                "UPDATE scraped_items SET target_price = ?, target_currency = ?, "
-                "target_alerted = 0 WHERE user_id = ? AND url = ?",
-                (price, currency.upper() if currency else None, user_id, url),
-            )
-            return c.rowcount > 0
-    except Exception:
-        logger.exception(f"Failed to set target price for {url}")
-        return False
+    return update_scraped_item_preferences(user_id, url, target_price=price, target_currency=currency)
 
 
 def set_scraped_item_restock_only(user_id, url, enabled):
+    return update_scraped_item_preferences(user_id, url, restock_only=enabled)
+
+
+def _valid_number(value, *, positive=False):
     try:
+        return not isinstance(value, bool) and math.isfinite(float(value)) and (float(value) > 0 if positive else float(value) >= 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def update_scraped_item_preferences(user_id, url, *, target_price=..., target_currency=..., restock_only=...):
+    try:
+        fields = []
+        values = []
+        if target_price is not ...:
+            if target_price is not None and (not _valid_number(target_price, positive=True) or not isinstance(target_currency, str) or not target_currency.strip()):
+                return False
+            fields.extend(("target_price = ?", "target_currency = ?", "target_alerted = 0"))
+            values.extend((target_price, target_currency.upper() if target_price is not None else None))
+        elif target_currency is not ...:
+            return False
+        if restock_only is not ...:
+            if not isinstance(restock_only, (bool, int)) or restock_only not in (0, 1):
+                return False
+            fields.append("restock_only = ?")
+            values.append(1 if restock_only else 0)
+        if not fields:
+            return False
         with _connect(commit=True) as c:
             c.execute(
-                "UPDATE scraped_items SET restock_only = ? WHERE user_id = ? AND url = ?",
-                (1 if enabled else 0, user_id, url),
+                "UPDATE scraped_items SET " + ", ".join(fields) + " WHERE user_id = ? AND url = ?",
+                (*values, user_id, url),
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to set restock-only mode for {url}")
+        logger.exception(f"Failed to set wishlist preferences for {url}")
+        return False
+
+
+def toggle_scraped_item_restock_only(user_id, url):
+    try:
+        with _connect(commit=True) as c:
+            c.execute("UPDATE scraped_items SET restock_only = CASE WHEN restock_only THEN 0 ELSE 1 END WHERE user_id = ? AND url = ?", (user_id, url))
+            return c.rowcount > 0
+    except Exception:
+        logger.exception(f"Failed to toggle restock-only mode for {url}")
+        return False
+
+
+def persist_scraped_item_refresh(item_id, price, in_stock, title, currency, status, *, record_history=False, changed_only=False):
+    try:
+        if price is not None and not _valid_number(price):
+            return False
+        with _connect(commit=True) as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("SELECT last_price FROM scraped_items WHERE id = ?", (item_id,))
+            row = c.fetchone()
+            if row is None:
+                return False
+            if record_history and price is not None and (not changed_only or price != row[0]):
+                c.execute("INSERT INTO price_history (item_id, price, timestamp) VALUES (?, ?, ?)", (item_id, price, time.time()))
+            stock = None if in_stock is None else int(bool(in_stock))
+            c.execute(
+                "UPDATE scraped_items SET last_price = COALESCE(?, last_price), "
+                "last_stock_status = COALESCE(?, last_stock_status), title = COALESCE(?, title), "
+                "currency = COALESCE(?, currency), last_checked_at = ?, last_check_status = ? WHERE id = ?",
+                (price, stock, title, currency, time.time(), status, item_id),
+            )
+        return True
+    except Exception:
+        logger.exception(f"Failed to persist refresh for item {item_id}")
         return False
 
 
@@ -189,8 +249,10 @@ def update_scraped_item_check_status(item_id, status):
                 "WHERE id = ?",
                 (time.time(), status, item_id),
             )
+            return c.rowcount > 0
     except Exception:
         logger.exception(f"Failed to update scrape check status for ID {item_id}")
+        return False
 
 
 def update_scraped_item_target_state(item_id, alerted):
@@ -213,6 +275,8 @@ def update_scraped_item_status(item_id, price, in_stock, title=None, currency=No
     scraper couldn't determine stock status on this pass.
     """
     try:
+        if price is not None and not _valid_number(price):
+            return False
         stock_int = None if in_stock is None else (1 if in_stock else 0)
         with _connect(commit=True) as c:
             c.execute(
@@ -224,8 +288,10 @@ def update_scraped_item_status(item_id, price, in_stock, title=None, currency=No
                 "WHERE id = ?",
                 (price, stock_int, title, currency, item_id)
             )
+            return c.rowcount > 0
     except Exception:
         logger.exception(f"Failed to update scraped item status for ID {item_id}")
+        return False
 
 def update_item_alert_state(item_id, kind, price):
     """Persist the LOW/HIGH alert state for an item.
@@ -249,13 +315,17 @@ def update_item_alert_state(item_id, kind, price):
 
 def add_price_history(item_id, price):
     try:
+        if not _valid_number(price):
+            return False
         with _connect(commit=True) as c:
             c.execute(
                 "INSERT INTO price_history (item_id, price, timestamp) VALUES (?, ?, ?)",
                 (item_id, price, time.time())
             )
+        return True
     except Exception:
         logger.exception(f"Failed to add price history for item {item_id}")
+        return False
 
 def clean_old_price_history(days=180):
     """Trim `price_history` to a rolling `days`-long window per item.
@@ -295,14 +365,29 @@ def clean_old_price_history(days=180):
 def set_exchange_rate(currency, rate_to_eur):
     """Persist `rate_to_eur` for `currency` (the API's native format:
     "how many units of `currency` are in 1 EUR")."""
+    return set_exchange_rates({currency: rate_to_eur})
+
+
+def set_exchange_rates(rates):
     try:
+        if not rates or any(not _valid_number(rate, positive=True) for rate in rates.values()):
+            return False
+        now = time.time()
         with _connect(commit=True) as c:
-            c.execute(
+            c.executemany(
                 "INSERT OR REPLACE INTO exchange_rates (currency, rate_to_eur, last_updated) VALUES (?, ?, ?)",
-                (currency.upper(), rate_to_eur, time.time())
+                [(currency.upper(), float(rate), now) for currency, rate in rates.items()],
             )
+        return True
     except Exception:
-        logger.exception(f"Failed to set exchange rate for {currency}")
+        logger.exception("Failed to save exchange rates")
+        return False
+
+
+def get_exchange_rates():
+    with _connect() as c:
+        c.execute("SELECT currency, rate_to_eur FROM exchange_rates")
+        return dict(c.fetchall())
 
 def get_exchange_rate(currency):
     """Return how many units of `currency` make 1 EUR, or None if we

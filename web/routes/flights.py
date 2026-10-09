@@ -23,7 +23,7 @@ blueprint = Blueprint("flights", __name__)
 
 def _validate_flight_tracker_payload(data):
     required = ("user_id", "origin", "destination", "start_date", "end_date")
-    if not data or any(name not in data for name in required):
+    if not isinstance(data, dict) or any(name not in data for name in required):
         raise ValueError("Missing user_id, origin, destination, start_date, or end_date")
     user_id = _discord_id(data["user_id"], "user_id")
     origin = normalize_iata(data["origin"])
@@ -49,7 +49,7 @@ def _validate_flight_tracker_payload(data):
     if budget is not None and (isinstance(budget,bool) or not isinstance(budget,(int,float)) or not math.isfinite(budget) or budget<=0):
         raise ValueError("Budget must be positive and finite")
     return {
-        "budget":budget,
+        "budget":float(budget) if budget is not None else None,
         "user_id": user_id,
         "origin": origin,
         "destination": destination,

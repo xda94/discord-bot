@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import asyncio
 import time
 from typing import Optional
 from datetime import datetime
@@ -81,7 +82,7 @@ class RemindersFeature:
         self.tree=tree
         self._register_commands()
     async def start_tasks(self):
-        for row in store.list_for():
+        for row in await asyncio.to_thread(store.list_for):
             self.client.add_view(ReminderControls(row['id'],row['language'],failed=True))
             self.client.add_view(ReminderControls(row['id'],row['language'],delivered=True))
         if not self._check.is_running():
@@ -129,7 +130,7 @@ class RemindersFeature:
             if not at:
                 await interaction.response.send_message(t('time',lang),ephemeral=True)
                 return
-            rid=self.create_reminder_at(who.id,interaction.channel_id,at,what,creator_id=interaction.user.id,timezone=p.timezone,language=lang,recurrence=recurrence)
+            rid=await asyncio.to_thread(self.create_reminder_at,who.id,interaction.channel_id,at,what,creator_id=interaction.user.id,timezone=p.timezone,language=lang,recurrence=recurrence)
             await interaction.response.send_message(t('saved' if rid else 'failed',lang),ephemeral=True)
         @self.tree.command(name='reminder-list',description='Show and manage your reminders privately')
         async def reminder_list(interaction:discord.Interaction):
@@ -162,7 +163,7 @@ class RemindersFeature:
     async def _check(self):
         try:
             # Reconcile uncertain sends using an occurrence marker in the embed.
-            for row in store.list_for():
+            for row in await asyncio.to_thread(store.list_for):
                 if row['state']=='failed' and row['last_error']=='uncertain-delivery':
                     reconciled = getattr(self,'_reconciled',{})
                     if reconciled.get(row['id'],0) > time.monotonic():
@@ -180,33 +181,33 @@ class RemindersFeature:
                             marker=f"reminder:{row['id']}:{int(row['remind_at'])}"
                             async for msg in channel.history(limit=100):
                                 if msg.author.id==self.client.user.id and any(e.footer.text==marker for e in msg.embeds):
-                                    store.complete(row,msg.id)
+                                    await asyncio.to_thread(store.complete,row,msg.id)
                                     break
                         except discord.HTTPException:
                             pass
-            for row in store.claim_due():
+            for row in await asyncio.to_thread(store.claim_due):
                 channel=self.client.get_channel(row['channel_id'])
                 try:
                     if channel is None:
                         channel=await self.client.fetch_channel(row['channel_id'])
                     embed=discord.Embed(description=row['message'])
                     embed.set_footer(text=f"reminder:{row['id']}:{int(row['remind_at'])}")
-                    profile=db.get_assistant_profile(row['user_id'])
+                    profile=await asyncio.to_thread(db.get_assistant_profile,row['user_id'])
                     lang=language_for(profile=profile,fallback=row['language'])
                     sent=await channel.send(t('reminder_delivery',lang,user_id=row['user_id'],message=row['message']),embed=embed,view=ReminderControls(row['id'],lang,delivered=True),suppress_embeds=False,allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=row['user_id'])],roles=False,everyone=False))
-                    store.complete(row,getattr(sent,'id',None))
+                    await asyncio.to_thread(store.complete,row,getattr(sent,'id',None))
                     await record_for('scheduled','reminder-delivery',channel)
                 except (discord.Forbidden,discord.NotFound) as exc:
-                    store.fail(row,type(exc).__name__,permanent=True)
+                    await asyncio.to_thread(store.fail,row,type(exc).__name__,permanent=True)
                     if channel:
                         await record_for("failure","reminder-delivery",channel)
                 except Exception as exc:
                     # Network errors after send are uncertain. Reconcile rather than
                     # automatically duplicating a potentially delivered message.
                     uncertain=isinstance(exc,(TimeoutError,ConnectionError))
-                    store.fail(row,'uncertain-delivery' if uncertain else type(exc).__name__,permanent=uncertain)
+                    await asyncio.to_thread(store.fail,row,'uncertain-delivery' if uncertain else type(exc).__name__,permanent=uncertain)
                     if channel:
                         await record_for('failure','reminder-delivery',channel)
-            store.cleanup()
+            await asyncio.to_thread(store.cleanup)
         except Exception:
             logger.exception('Reminder delivery loop failed')

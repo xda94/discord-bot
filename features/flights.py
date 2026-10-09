@@ -14,8 +14,8 @@ from discord import app_commands
 from discord.ext import tasks
 
 from i18n import localized_interaction, language_for,localize
-from notifications import deliver_tracking
-from db.flights import mark_budget_alerted, set_flight_budget
+from notifications import drain, prepare_tracking
+from db.flights import persist_flight_offer, set_flight_budget
 import db
 from analytics import record, record_for
 from flight_provider import (
@@ -151,7 +151,16 @@ def _select_trackers_for_pass(trackers: list[dict]) -> list[dict]:
     free plan for immediate searches when trackers are added.
     """
     selected: dict[int, dict] = {}
+    today = date.today()
     for tracker in trackers:
+        if tracker["trip_days"]:
+            continue
+        try:
+            if parse_iso_date(tracker["start_date"]) < today:
+                continue
+        except ValueError:
+            logger.warning("Skipping flight tracker %s with an invalid departure date",tracker['id'])
+            continue
         user_id = tracker["user_id"]
         current = selected.get(user_id)
         checked_at = tracker["last_checked_at"]
@@ -405,20 +414,20 @@ class FlightTrackerFeature:
 
     async def _add_tracker(self, interaction: discord.Interaction, values: dict) -> None:
         interaction = localized_interaction(interaction)
-        tracker_id = db.add_flight_tracker(interaction.user.id, **values, language=interaction._language)
+        tracker_id = await asyncio.to_thread(db.add_flight_tracker,interaction.user.id, **values, language=interaction._language)
         if not tracker_id:
             await interaction.followup.send(
                 "That exact flight tracker is already in your list.", ephemeral=True
             )
             return
 
-        tracker = db.get_flight_tracker(tracker_id, interaction.user.id)
+        tracker = await asyncio.to_thread(db.get_flight_tracker,tracker_id, interaction.user.id)
         logger.info(
             f"Command /flight-tracker-add by user {interaction.user.id}: "
             f"tracker {tracker_id} {values['origin']}-{values['destination']}"
         )
         try:
-            offer = await self._search_and_persist(tracker)
+            offer = await self._search_and_persist(tracker,persist=False)
         except FlightProviderError as exc:
             await interaction.followup.send(
                 f"Tracker **#{tracker_id}** was added and will retry every "
@@ -427,9 +436,17 @@ class FlightTrackerFeature:
             )
             return
 
+        notification=None
+        alerted=None
         if tracker.get('budget') is not None and offer.total_price <= tracker['budget']:
-            await deliver_tracking(self.client,tracker['user_id'],'flight',tracker['id'],'budget',f"Flight tracker **#{tracker['id']}**\nBudget reached: {tracker['budget']:.2f} {tracker['currency']}\n{_format_offer(offer)}")
-            mark_budget_alerted(tracker['id'],True)
+            notification=await asyncio.to_thread(prepare_tracking,tracker['user_id'],'flight',tracker['id'],'budget',f"Flight tracker **#{tracker['id']}**\nBudget reached: {tracker['budget']:.2f} {tracker['currency']}\n{_format_offer(offer)}")
+            alerted=True
+        await asyncio.to_thread(persist_flight_offer,tracker['id'],offer,notification=notification,budget_alerted=alerted)
+        if notification is not None:
+            try:
+                await drain(self.client,user_id=tracker['user_id'])
+            except Exception:
+                logger.exception("Could not drain queued flight notification")
 
         await interaction.followup.send(
             f"Added flight tracker **#{tracker_id}** for **{values['origin']} -> "
@@ -438,14 +455,14 @@ class FlightTrackerFeature:
             ephemeral=True,
         )
 
-    async def _search_and_persist(self, tracker: dict) -> FlightOffer:
+    async def _search_and_persist(self, tracker: dict, *, persist=True) -> FlightOffer:
         try:
             if tracker["trip_days"]:
                 raise FlightProviderError(
                     "Flexible-date tracking is no longer supported. Delete this tracker "
                     "and add one with fixed departure and return dates."
                 )
-            provider = self._provider_for_user(tracker["user_id"])
+            provider = await asyncio.to_thread(self._provider_for_user,tracker["user_id"])
             offer = await asyncio.to_thread(
                 provider.search_exact,
                 tracker["origin"], tracker["destination"],
@@ -453,17 +470,11 @@ class FlightTrackerFeature:
                 tracker["adults"], tracker["currency"],
             )
         except FlightProviderError as exc:
-            db.update_flight_tracker_result(tracker["id"], error=str(exc)[:500])
+            await asyncio.to_thread(db.update_flight_tracker_result,tracker["id"], error=str(exc)[:500])
             raise
 
-        db.add_flight_price_history(
-            tracker["id"], offer.total_price, offer.currency,
-            offer.departure_date, offer.return_date,
-        )
-        db.update_flight_tracker_result(
-            tracker["id"], offer.total_price, offer.currency,
-            offer.departure_date, offer.return_date, error=None,
-        )
+        if persist:
+            await asyncio.to_thread(persist_flight_offer,tracker['id'],offer)
         return offer
 
     async def _process_tracker(self, tracker: dict) -> None:
@@ -478,7 +489,7 @@ class FlightTrackerFeature:
             # guard prevents restarts from consuming searches ahead of cadence.
             return
         if tracker["trip_days"]:
-            db.update_flight_tracker_result(
+            await asyncio.to_thread(db.update_flight_tracker_result,
                 tracker["id"],
                 error=(
                     "Flexible-date tracking was retired to protect the SerpApi quota; "
@@ -488,13 +499,13 @@ class FlightTrackerFeature:
             return
         latest_departure = parse_iso_date(tracker["start_date"])
         if latest_departure < date.today():
-            db.update_flight_tracker_result(
+            await asyncio.to_thread(db.update_flight_tracker_result,
                 tracker["id"], error="Tracking period has ended; delete this tracker when done."
             )
             return
         old_price = tracker["last_price"]
         try:
-            offer = await self._search_and_persist(tracker)
+            offer = await self._search_and_persist(tracker,persist=False)
         except NoFlightOffers as exc:
             logger.info(f"No offer for flight tracker {tracker['id']}: {exc}")
             await record("failure", "flight-check", scope_type="global")
@@ -506,25 +517,17 @@ class FlightTrackerFeature:
         finally:
             await record("processing", "flight-check", scope_type="global")
 
-        # A first successful result after previous failures is useful, as is a
-        # strict price drop. Equal/higher prices stay quiet to avoid DM spam.
         budget=tracker.get('budget')
-        if budget is not None:
-            under=offer.total_price<=budget
-            if not under:
-                mark_budget_alerted(tracker['id'],False)
-                return
-            if tracker.get('budget_alerted'):
-                return
-        elif old_price is not None and offer.total_price >= old_price:
-            return
-        try:
+        under=budget is not None and offer.total_price<=budget
+        should_alert=(under and not tracker.get('budget_alerted')) if budget is not None else (old_price is None or offer.total_price<old_price)
+        notification=None
+        if should_alert:
             label = "First price found" if old_price is None else (
                 f"Price dropped from {old_price:.2f} {tracker['currency']}"
             )
             if budget is not None:
                 label = f"Budget reached: {budget:.2f} {tracker['currency']}"
-            stored_profile = db.get_assistant_profile(tracker["user_id"])
+            stored_profile = await asyncio.to_thread(db.get_assistant_profile,tracker["user_id"])
             compact = bool(
                 stored_profile and stored_profile.get("notification_style") == "compact"
             )
@@ -535,18 +538,18 @@ class FlightTrackerFeature:
                 f"Flight tracker **#{tracker['id']}**: **{tracker['origin']} -> "
                 f"{tracker['destination']}**\n{label}.\n{_format_offer(offer)}"
             )
-            await deliver_tracking(self.client,tracker["user_id"],"flight",tracker["id"],"budget" if budget is not None else "price",message)
-            if budget is not None:
-                mark_budget_alerted(tracker["id"],True)
-        except Exception as exc:
-            logger.error(
-                f"Could not send flight tracker DM to user {tracker['user_id']}: {exc}"
-            )
-            await record("failure", "flight-notification", scope_type="dm")
+            notification=await asyncio.to_thread(prepare_tracking,tracker['user_id'],'flight',tracker['id'],'budget' if budget is not None else 'price',message)
+        await asyncio.to_thread(persist_flight_offer,tracker['id'],offer,notification=notification,budget_alerted=under if budget is not None else None)
+        if notification is not None:
+            try:
+                await drain(self.client,user_id=tracker['user_id'])
+            except Exception:
+                logger.exception("Could not drain queued flight tracker notification")
+                await record("failure", "flight-notification", scope_type="dm")
 
     @tasks.loop(hours=FLIGHT_CHECK_INTERVAL_HOURS)
     async def _check_loop(self):
-        all_trackers = db.get_all_flight_trackers()
+        all_trackers = await asyncio.to_thread(db.get_all_flight_trackers)
         trackers = _select_trackers_for_pass(all_trackers)
         logger.info(
             f"Starting scheduled flight check for {len(trackers)} tracker(s) "

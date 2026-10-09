@@ -167,12 +167,18 @@ BACKGROUND_FEATURES = (
 async def on_ready():
     try:
         await tree.sync()
-        await refresh_command_catalog(tree)
-        for feature in BACKGROUND_FEATURES:
-            await feature.start_tasks()
-        logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
     except Exception:
-        logger.exception("Error during on_ready startup sequence")
+        logger.exception("Could not synchronize slash commands")
+    try:
+        await refresh_command_catalog(tree)
+    except Exception:
+        logger.exception("Could not refresh slash command catalog")
+    for feature in BACKGROUND_FEATURES:
+        try:
+            await feature.start_tasks()
+        except Exception:
+            logger.exception("Could not start background feature %s",type(feature).__name__)
+    logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
 
 
 @client.event

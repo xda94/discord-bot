@@ -7,7 +7,7 @@ import os
 import threading
 from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 import db
 from web.helpers import format_discord_ids
@@ -29,8 +29,8 @@ def create_app(config: dict | None = None) -> Flask:
 
     if not app.config.get("API_TOKEN"):
         logger.critical(
-            "API_TOKEN is not set — the Flask API is running UNAUTHENTICATED. "
-            "Set API_TOKEN in .env to require a bearer token on every request."
+            "API_TOKEN is not set. Protected API routes are unavailable until "
+            "a bearer token is configured."
         )
 
     initialized = False
@@ -47,8 +47,21 @@ def create_app(config: dict | None = None) -> Flask:
                     db.init_db()
                 except Exception:
                     logger.exception("Database initialization failed")
+                    if request.endpoint == "health":
+                        return jsonify({"status": "unavailable", "database": "unavailable"}), 503
                     return jsonify({"error": "Database is temporarily unavailable"}), 503
                 initialized = True
+
+    @app.get("/health")
+    def health():
+        try:
+            with db.connection._connect() as cursor:
+                cursor.execute("SELECT 1 FROM settings LIMIT 1")
+                cursor.fetchone()
+        except Exception:
+            logger.exception("Database health check failed")
+            return jsonify({"status": "unavailable", "database": "unavailable"}), 503
+        return jsonify({"status": "ok", "database": "ok"})
 
     app.after_request(format_discord_ids)
 

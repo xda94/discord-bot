@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import asyncio
 from dataclasses import replace
 
 import db
@@ -123,7 +124,7 @@ class NaturalCommandsFeature:
 
     async def _reply_error(self, message, text: str) -> None:
         return await message.reply(
-            localize(text, language_for(extract_mention_text(message, self.bot_id) or "", db.get_assistant_profile(message.author.id))),
+            localize(text, language_for(extract_mention_text(message, self.bot_id) or "", await asyncio.to_thread(db.get_assistant_profile,message.author.id))),
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
             suppress_embeds=True,
@@ -173,7 +174,7 @@ class NaturalCommandsFeature:
                 getattr(resolved, "clean_content", None)
                 or getattr(resolved, "content", "")
             )
-        profile = effective_profile(db.get_assistant_profile(message.author.id))
+        profile = effective_profile(await asyncio.to_thread(db.get_assistant_profile,message.author.id))
         lang = language_for(text, profile)
         pending_key = (message.author.id, message.channel.id)
         waiting = self.pending.get(pending_key)
@@ -197,10 +198,10 @@ class NaturalCommandsFeature:
                     zone = validate_timezone(text)
                 except ValueError:
                     return await self._suggest_or_fall_through(message, text, replied_text, lang)
-                if db.set_assistant_profile(message.author.id, timezone=zone) is None:
+                if await asyncio.to_thread(db.set_assistant_profile,message.author.id, timezone=zone) is None:
                     await self._reply_error(message,t('failed',lang))
                     return True
-                profile = effective_profile(db.get_assistant_profile(message.author.id))
+                profile = effective_profile(await asyncio.to_thread(db.get_assistant_profile,message.author.id))
             elif request.field == 'currency':
                 currency = CURRENCY_ALIASES.get(fold(text).strip())
                 if currency is None:
@@ -254,7 +255,7 @@ class NaturalCommandsFeature:
         await record_for('control',f'natural/{intent}/{language}/{route}/{outcome}',message)
 
     async def execute_proposal(self,message,proposal):
-        lang=language_for(extract_mention_text(message,self.bot_id) or '',db.get_assistant_profile(message.author.id))
+        lang=language_for(extract_mention_text(message,self.bot_id) or '',await asyncio.to_thread(db.get_assistant_profile,message.author.id))
         try:
             parsed=validate_proposal(proposal)
             authorize_proposal(proposal,extract_mention_text(message,self.bot_id) or "",getattr(getattr(getattr(message,"reference",None),"resolved",None),"content",""))
@@ -265,7 +266,7 @@ class NaturalCommandsFeature:
         return await self.execute_parsed(message,parsed,language=lang,route='llm')
 
     async def execute_parsed(self,message,parsed,*,profile=None,language=None,route='parser'):
-        profile=profile or effective_profile(db.get_assistant_profile(message.author.id))
+        profile=profile or effective_profile(await asyncio.to_thread(db.get_assistant_profile,message.author.id))
         lang=language or language_for(extract_mention_text(message,self.bot_id) or '',profile)
         intent = ({'TrackURLAction':'track','ShowWishlistAction':'wishlist','ShowFlightsAction':'flights','ReminderAction':'reminder','CalendarReminderAction':'reminder','DeleteWishlistAction':'delete_item','WishlistTargetAction':'target','ClearWishlistTargetAction':'clear_target','WishlistRestockAction':'restock','RefreshWishlistAction':'refresh','WishlistGraphAction':'graph'}.get(type(parsed).__name__, 'unknown'))
         if isinstance(parsed, ReminderManageAction):
@@ -348,17 +349,17 @@ class NaturalCommandsFeature:
                 await self._outcome(message,intent,lang,route,'invalid')
                 return True
         event_id=getattr(message,'id',None)
-        if event_id is not None and not reminder_store.claim_action(event_id):
+        if event_id is not None and not await asyncio.to_thread(reminder_store.claim_action,event_id):
             return True
         try:
             result=await self._execute(message,parsed,profile,lang)
             if event_id is not None:
-                reminder_store.finish_action(event_id,bool(result))
+                await asyncio.to_thread(reminder_store.finish_action,event_id,bool(result))
             await self._outcome(message,intent,lang,route,'executed' if result else 'execution_failed')
             return True
         except Exception:
             if event_id is not None:
-                reminder_store.finish_action(event_id,False)
+                await asyncio.to_thread(reminder_store.finish_action,event_id,False)
             await self._reply_error(message,t('failed',lang))
             await self._outcome(message,intent,lang,route,'execution_failed')
             return True
@@ -373,7 +374,7 @@ class NaturalCommandsFeature:
                     await self._acknowledge(message)
                     return True
                 if parsed.operation=='edit':
-                    row=reminder_store.get(parsed.reminder_id,author_id)
+                    row=await asyncio.to_thread(reminder_store.get,parsed.reminder_id,author_id)
                     when=time.time()+duration(parsed.when) if parsed.when and duration(parsed.when) else calendar_time(parsed.when,profile.timezone) if parsed.when and profile.timezone_configured else None
                     updates = {}
                     if when:
@@ -382,11 +383,11 @@ class NaturalCommandsFeature:
                             updates['timezone'] = profile.timezone
                     if parsed.text:
                         updates['message'] = parsed.text
-                    ok = bool(row and updates and reminder_store.edit(parsed.reminder_id,author_id,**updates))
+                    ok = bool(row and updates and await asyncio.to_thread(reminder_store.edit,parsed.reminder_id,author_id,**updates))
                 elif parsed.operation=='cancel':
-                    ok=reminder_store.cancel(parsed.reminder_id,author_id)
+                    ok=await asyncio.to_thread(reminder_store.cancel,parsed.reminder_id,author_id)
                 else:
-                    ok=reminder_store.snooze(parsed.reminder_id,author_id)
+                    ok=await asyncio.to_thread(reminder_store.snooze,parsed.reminder_id,author_id)
                 if ok:
                     await self._acknowledge(message)
                 else:
@@ -394,7 +395,7 @@ class NaturalCommandsFeature:
                 return bool(ok)
             if isinstance(parsed, CalendarReminderAction):
                 at=reminder_time(parsed.when,profile.timezone,recurrence=parsed.recurrence)
-                rid=self.reminders.create_reminder_at(author_id,message.channel.id,at,parsed.text,creator_id=author_id,timezone=profile.timezone,language=lang,recurrence=parsed.recurrence)
+                rid=await asyncio.to_thread(self.reminders.create_reminder_at,author_id,message.channel.id,at,parsed.text,creator_id=author_id,timezone=profile.timezone,language=lang,recurrence=parsed.recurrence)
                 if rid:
                     await self._acknowledge(message)
                 else:
@@ -402,7 +403,7 @@ class NaturalCommandsFeature:
                 return bool(rid)
             if isinstance(parsed, ReminderAction):
                 remind_at = time.time() + parsed.seconds
-                reminder_id = self.reminders.create_reminder_at(
+                reminder_id = await asyncio.to_thread(self.reminders.create_reminder_at,
                     author_id, message.channel.id, remind_at, parsed.text,
                     creator_id=author_id, timezone=profile.timezone, language=lang
                 )
@@ -432,7 +433,7 @@ class NaturalCommandsFeature:
 
             if isinstance(parsed, ShowFlightsAction):
                 delivered = await self._send_private(
-                    message, format_user_flight_trackers(author_id, language=lang)
+                    message, await asyncio.to_thread(format_user_flight_trackers,author_id, language=lang)
                 )
                 if delivered:
                     await self._acknowledge(message)
@@ -444,11 +445,11 @@ class NaturalCommandsFeature:
                 return delivered
 
             if isinstance(parsed, ShowWishlistAction):
-                chunks = self.wishlist.format_items_for_user(author_id, parsed.currency, language=lang)
+                chunks = await asyncio.to_thread(self.wishlist.format_items_for_user,author_id, parsed.currency, language=lang)
                 delivered = await self._send_private(message, chunks)
                 if delivered:
                     from features.wishlist_controls import WishlistManageView
-                    view=WishlistManageView(author_id, language=lang)
+                    view=await WishlistManageView.create(author_id, language=lang)
                     if view.children:
                         await message.author.send(t('select',lang),view=view)
                     from db.connection import _connect
@@ -466,7 +467,7 @@ class NaturalCommandsFeature:
                 return delivered
 
             if isinstance(parsed, DeleteWishlistAction):
-                if self.wishlist.delete_item_for_user(author_id, parsed.url):
+                if await asyncio.to_thread(self.wishlist.delete_item_for_user,author_id, parsed.url):
                     await self._acknowledge(message)
                 else:
                     await self._reply_error(message, "That wishlist change could not be applied.")
@@ -474,7 +475,7 @@ class NaturalCommandsFeature:
                 return True
 
             if isinstance(parsed, WishlistTargetAction):
-                if self.wishlist.set_target_for_user(
+                if await asyncio.to_thread(self.wishlist.set_target_for_user,
                     author_id, parsed.url, parsed.price, parsed.currency
                 ):
                     await self._acknowledge(message)
@@ -484,7 +485,7 @@ class NaturalCommandsFeature:
                 return True
 
             if isinstance(parsed, ClearWishlistTargetAction):
-                if self.wishlist.clear_target_for_user(author_id, parsed.url):
+                if await asyncio.to_thread(self.wishlist.clear_target_for_user,author_id, parsed.url):
                     await self._acknowledge(message)
                 else:
                     await self._reply_error(message, "That wishlist change could not be applied.")
@@ -492,7 +493,7 @@ class NaturalCommandsFeature:
                 return True
 
             if isinstance(parsed, WishlistRestockAction):
-                if self.wishlist.set_restock_only_for_user(
+                if await asyncio.to_thread(self.wishlist.set_restock_only_for_user,
                     author_id, parsed.url, parsed.enabled
                 ):
                     await self._acknowledge(message)
@@ -503,7 +504,7 @@ class NaturalCommandsFeature:
 
             if isinstance(parsed, RefreshWishlistAction):
                 chunks = await self.wishlist.refresh_items_for_user(author_id, parsed.url)
-                protected = [value for row in db.get_user_scraped_items(author_id) for value in (row[0], f"**{row[3]}**" if row[3] else None)]
+                protected = [value for row in await asyncio.to_thread(db.get_user_scraped_items,author_id) for value in (row[0], f"**{row[3]}**" if row[3] else None)]
                 chunks = [localize(chunk, lang, protected=protected) for chunk in chunks]
                 delivered = await self._send_private(message, chunks)
                 if delivered:

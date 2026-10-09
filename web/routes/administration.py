@@ -1,6 +1,7 @@
 """Dashboard and core administration routes."""
 
 import logging
+import math
 import platform
 import sqlite3
 import time
@@ -641,11 +642,35 @@ def api_get_setting(key):
 def api_set_setting(key):
     if key == "sponsor_tiers":
         return jsonify({"error": "Use the typed /sponsors/tiers routes for sponsor tier changes"}), 400
+    if key == "mention_model":
+        return jsonify({"error": "Use /llm/mention-model for model changes"}), 400
     data = request.get_json()
-    if not data or "value" not in data:
+    if not isinstance(data, dict) or "value" not in data:
         return jsonify({"error": "Missing 'value' field"}), 400
-
-    set_setting(key, data["value"])
+    value = data["value"]
+    if not isinstance(value, (str, int, float, bool)):
+        return jsonify({"error": "value must be a string, number, or boolean"}), 400
+    try:
+        if key == "sponsor_set_at" and value != "":
+            timestamp = float(value)
+            if isinstance(value, bool) or not math.isfinite(timestamp) or timestamp < 0:
+                raise ValueError("sponsor_set_at must be a finite non-negative timestamp")
+        elif key == "sponsor_warned" and str(value) not in {"0", "1"}:
+            raise ValueError("sponsor_warned must be 0 or 1")
+        elif key == "joke_channel_id" and value != "":
+            _discord_id(value, "joke_channel_id")
+        elif key == "joke_send_time" and value != "":
+            datetime.strptime(value, "%H:%M")
+        elif key == "joke_last_sent_date" and value != "":
+            date.fromisoformat(value)
+        elif key == "sponsor_tier" and value != "":
+            if value not in get_sponsor_tiers():
+                raise ValueError("Unknown sponsor tier")
+        elif key in {"sponsor", "sponsor_custom_message"} and not isinstance(value, str):
+            raise ValueError(f"{key} must be a string")
+    except (TypeError, ValueError, OverflowError):
+        return jsonify({"error": f"Invalid value for {key}"}), 400
+    set_setting(key, value)
     logger.info(f"Setting '{key}' updated via API from {request.remote_addr}")
     return jsonify({"status": "updated", "key": key, "value": data["value"]})
 

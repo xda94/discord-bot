@@ -1,15 +1,15 @@
 """Wishlist administration routes."""
 
 import logging
+import math
 
 from flask import Blueprint, jsonify, request
 
 from db import (
-    add_price_history, add_scraped_item, delete_scraped_item,
+    add_scraped_item, delete_scraped_item,
     get_all_scraped_items, get_price_history, get_scraped_item,
-    set_scraped_item_restock_only, set_scraped_item_target,
-    update_scraped_item_check_status, update_scraped_item_status,
 )
+from db.wishlist import update_scraped_item_preferences
 from web.auth import require_token
 from web.helpers import discord_id as _discord_id
 from wishlist.refresh import refresh_item
@@ -112,14 +112,12 @@ def api_add_scrape():
         user_id, url,
         title=result.title, price=result.price,
         stock=result.in_stock, currency=result.currency,
+        record_history=True,
     )
     if item_id is None:
         return jsonify({"error": "Already tracked"}), 409
     if item_id is False:
         return jsonify({"error": "Failed to save wishlist item"}), 500
-
-    if result.price is not None:
-        add_price_history(item_id, result.price)
 
     logger.info(
         f"Scrape item added via API for User {user_id}: {url} "
@@ -236,20 +234,21 @@ def api_set_wishlist_preferences():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     url = data["url"]
+    if "restock_only" in data and not isinstance(data["restock_only"], bool):
+        return jsonify({"error": "restock_only must be a boolean"}), 400
     if get_scraped_item(user_id, url) is None:
         return jsonify({"error": "Item not found"}), 404
 
-    changed = False
+    updates = {}
     if data.get("clear_target") is True:
-        if not set_scraped_item_target(user_id, url, None, None):
-            return jsonify({"error": "Could not clear target"}), 500
-        changed = True
+        updates.update(target_price=None, target_currency=None)
     elif "target_price" in data or "target_currency" in data:
         price = data.get("target_price")
         currency = data.get("target_currency")
         if (
             not isinstance(price, (int, float))
             or isinstance(price, bool)
+            or not math.isfinite(price)
             or price <= 0
             or not isinstance(currency, str)
             or currency.upper() not in SUPPORTED_CURRENCIES
@@ -260,19 +259,15 @@ def api_set_wishlist_preferences():
                     f"must be one of {', '.join(SUPPORTED_CURRENCIES)}",
                 }
             ), 400
-        if not set_scraped_item_target(user_id, url, float(price), currency):
-            return jsonify({"error": "Could not set target"}), 500
-        changed = True
+        updates.update(target_price=float(price), target_currency=currency)
 
     if "restock_only" in data:
-        if not isinstance(data["restock_only"], bool):
-            return jsonify({"error": "restock_only must be a boolean"}), 400
-        if not set_scraped_item_restock_only(user_id, url, data["restock_only"]):
-            return jsonify({"error": "Could not set restock_only"}), 500
-        changed = True
+        updates["restock_only"] = data["restock_only"]
 
-    if not changed:
+    if not updates:
         return jsonify({"error": "Provide target_price/target_currency, clear_target, or restock_only"}), 400
+    if not update_scraped_item_preferences(user_id, url, **updates):
+        return jsonify({"error": "Could not update wishlist preferences"}), 500
     return jsonify(_serialize_scraped_item(get_scraped_item(user_id, url)))
 
 
@@ -292,6 +287,8 @@ def api_refresh_wishlist_item():
 
     result = refresh_item(item, _price_scraper)
     status = result.failure or "ok"
+    if result.failure == "database-error":
+        return jsonify({"error": "Could not save wishlist refresh"}), 500
     if result.failure == FAILURE_BUSY:
         return jsonify({
             "error": "busy",

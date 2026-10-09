@@ -1,7 +1,41 @@
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import quote, quote_plus
+
+
+def redact_sensitive(value, secrets=()):
+    text = str(value)
+    configured = [
+        item for name, item in os.environ.items()
+        if name.endswith(("_TOKEN", "_KEY", "_SECRET", "_PASSWORD")) and item
+    ]
+    for secret in sorted(set(configured).union(item for item in secrets if item), key=len, reverse=True):
+        for encoded in {secret, quote(secret, safe=""), quote_plus(secret)}:
+            text = text.replace(encoded, "[REDACTED]")
+    key_pattern = r"(?i)([\"']?\b(?:api_key|access_token|token|password|secret)[\"']?\s*[=:]\s*)"
+    text = re.sub(
+        key_pattern + r'''("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')''',
+        lambda match: match[1] + match[2][0] + "[REDACTED]" + match[2][-1],
+        text,
+    )
+    text = re.sub(
+        key_pattern + r"[^\s&\"'<>]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    text = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[REDACTED]@", text)
+    return re.sub(r"(?i)(\bBearer\s+)[^\s\"'<>]+", r"\1[REDACTED]", text)
+
+
+class RedactingFormatter(logging.Formatter):
+    def formatException(self, exc_info):
+        return redact_sensitive(super().formatException(exc_info))
+
+    def format(self, record):
+        return redact_sensitive(super().format(record))
 
 
 def setup_logger(name, log_file):
@@ -18,7 +52,7 @@ def setup_logger(name, log_file):
         configured_level = "INFO"
     logger.setLevel(level)
 
-    formatter = logging.Formatter(
+    formatter = RedactingFormatter(
         "%(asctime)s - %(levelname)s - [%(name)s pid=%(process)d "
         "thread=%(threadName)s %(filename)s:%(lineno)d] - %(message)s"
     )

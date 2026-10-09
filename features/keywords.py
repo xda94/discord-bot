@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import random
 import re
 
@@ -59,7 +60,7 @@ class KeywordsFeature:
         guild_id = message.guild.id
         content = message.content.lower()
         try:
-            responses_data = db.get_all_responses(guild_id)
+            responses_data = await asyncio.to_thread(db.get_all_responses,guild_id)
         except Exception:
             logger.exception("Error fetching responses for keyword match")
             return False
@@ -86,7 +87,7 @@ class KeywordsFeature:
                 return False
 
             self.gate.mark_responded()
-            db.log_keyword_usage(keyword, message.author.id, guild_id)
+            await asyncio.to_thread(db.log_keyword_usage,keyword, message.author.id, guild_id)
             await record("automatic", "keyword-reply", guild_id=guild_id)
             if suffix:
                 await record("automatic", "sponsor-tagged-reply", guild_id=guild_id)
@@ -108,7 +109,7 @@ class KeywordsFeature:
                     ephemeral=True,
                 )
                 return
-            if not db.add_response(keyword, response, interaction.guild.id):
+            if not await asyncio.to_thread(db.add_response,keyword, response, interaction.guild.id):
                 await interaction.response.send_message(
                     "Failed to save this keyword. Please try again.",
                     ephemeral=True,
@@ -133,10 +134,10 @@ class KeywordsFeature:
 
             guild_id = interaction.guild.id
             if user:
-                rows = db.get_top_keywords_by_user(guild_id, user.id)
+                rows = await asyncio.to_thread(db.get_top_keywords_by_user,guild_id, user.id)
                 title = f"Top keywords for {user.display_name}"
             else:
-                rows = db.get_top_keywords(guild_id)
+                rows = await asyncio.to_thread(db.get_top_keywords,guild_id)
                 title = "Top keywords in this server"
 
             if not rows:

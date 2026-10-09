@@ -15,8 +15,10 @@ def dashboard_client(tmp_db, monkeypatch):
     api = importlib.import_module("api")
     from web.routes import administration
 
-    app = api.create_app({"TESTING": True, "API_TOKEN": None})
-    return administration, app.test_client()
+    app = api.create_app({"TESTING": True, "API_TOKEN": "test-token"})
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+    return administration, client
 
 
 def test_dashboard_and_assets_are_served(dashboard_client):

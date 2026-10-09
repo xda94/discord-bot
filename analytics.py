@@ -81,7 +81,7 @@ class AnalyticsCommandTree(app_commands.CommandTree):
             event_id = getattr(interaction, "id", None)
             if isinstance(event_id, int):
                 from db.reminders import claim_action
-                if not claim_action(f"slash:{event_id}"):
+                if not await asyncio.to_thread(claim_action,f"slash:{event_id}"):
                     return False
             data = interaction.data or {}
             name = data.get("name")

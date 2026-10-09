@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
+import threading
+import time
 from collections import Counter
 
 import requests
 
-import db
+from db.wishlist import get_exchange_rates, set_exchange_rates
 from wishlist.scraper import PriceScraper
 
 logger = logging.getLogger("discord_bot")
@@ -20,27 +23,59 @@ class CurrencyConverter:
     SUPPORTED_DISPLAY_CURRENCIES = ("RON", "DKK", "EUR", "USD", "GBP")
     DEFAULT_DISPLAY_CURRENCY = "RON"
 
+    def __init__(self):
+        self._rates = {}
+        self._rates_until = 0.0
+        self._rates_lock = threading.Lock()
+
+    def _rate_snapshot(self):
+        with self._rates_lock:
+            if time.monotonic() >= self._rates_until:
+                try:
+                    self._rates = get_exchange_rates()
+                except Exception:
+                    logger.exception("Failed to load exchange rates")
+                    return {}
+                self._rates_until = time.monotonic() + 60
+            return self._rates
+
+    @staticmethod
+    def _price(value):
+        try:
+            price = float(value)
+            return price if not isinstance(value, bool) and math.isfinite(price) and price >= 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     def refresh(self) -> bool:
         logger.info("Starting scheduled exchange rate update task...")
         try:
-            response = requests.get(self.EXCHANGE_API, timeout=10)
+            response = requests.get(self.EXCHANGE_API, timeout=10, allow_redirects=False)
             response.raise_for_status()
+            if response.status_code != 200:
+                return False
             rates = response.json().get("rates")
-            if not rates:
+            if not isinstance(rates, dict) or not rates:
                 logger.error("Exchange rate API returned no rates table.")
                 return False
-            db.set_exchange_rate("EUR", 1.0)
+            updates = {"EUR": 1.0}
             for currency in self.SUPPORTED_DISPLAY_CURRENCIES:
                 if currency == "EUR":
                     continue
                 if currency in rates:
-                    db.set_exchange_rate(currency, rates[currency])
+                    updates[currency] = rates[currency]
                 else:
                     logger.warning(
                         "Currency %s missing from exchange rate API response — "
-                        "keeping previously stored rate.",
+                        "exchange rates were not saved.",
                         currency,
                     )
+                    return False
+            if not set_exchange_rates(updates):
+                logger.error("Exchange rates could not be saved.")
+                return False
+            with self._rates_lock:
+                self._rates_until = 0.0
             logger.info("Exchange rates updated successfully.")
             return True
         except requests.exceptions.RequestException as exc:
@@ -52,22 +87,22 @@ class CurrencyConverter:
     def convert(self, price, from_currency, to_currency):
         if price is None or not from_currency or not to_currency:
             return None
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
+        price = self._price(price)
+        if price is None:
             return None
-        from_rate = db.get_exchange_rate(from_currency)
-        to_rate = db.get_exchange_rate(to_currency)
+        rates = self._rate_snapshot()
+        from_rate = self._price(rates.get(from_currency.upper()))
+        to_rate = self._price(rates.get(to_currency.upper()))
         if not from_rate or not to_rate:
             return None
-        return price / from_rate * to_rate
+        converted = price / from_rate * to_rate
+        return converted if math.isfinite(converted) else None
 
     def to_currency(self, price, source_currency, target_currency) -> float | None:
         if price is None or not source_currency or not target_currency:
             return None
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
+        price = self._price(price)
+        if price is None:
             return None
         if source_currency.upper() == target_currency.upper():
             return price
@@ -76,9 +111,8 @@ class CurrencyConverter:
     def format_in_currency(self, price, source_currency, target_currency) -> str:
         if price is None:
             return "N/A"
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
+        price = self._price(price)
+        if price is None:
             return "N/A"
         target = target_currency.upper()
         if not source_currency:
@@ -94,9 +128,8 @@ class CurrencyConverter:
     def format_with_conversions(self, price, currency) -> str:
         if price is None:
             return "N/A"
-        try:
-            price = float(price)
-        except (ValueError, TypeError):
+        price = self._price(price)
+        if price is None:
             return "N/A"
         base = f"{price:.2f} {currency}" if currency else str(price)
         if not currency:
@@ -127,4 +160,3 @@ def majority_currency(url_currency_pairs) -> str:
 
 _effective_currency = effective_currency
 _majority_currency = majority_currency
-

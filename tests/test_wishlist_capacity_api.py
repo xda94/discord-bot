@@ -17,7 +17,9 @@ from wishlist.scraper import FAILURE_BUSY, PriceScraper
 
 @pytest.fixture
 def client(tmp_db):
-    return create_app({"TESTING": True, "API_TOKEN": None}).test_client()
+    client = create_app({"TESTING": True, "API_TOKEN": "test-token"}).test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-token"
+    return client
 
 
 @pytest.fixture

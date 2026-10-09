@@ -24,9 +24,10 @@ if _missing:
     )
     sys.exit(1)
 try:
-    int(PORT)
+    if not 1 <= int(PORT) <= 65535:
+        raise ValueError
 except (TypeError, ValueError):
-    logger.critical("PORT is not a valid integer (got %r). Refusing to start.", PORT)
+    logger.critical("PORT must be an integer between 1 and 65535. Refusing to start.")
     sys.exit(1)
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)

@@ -113,7 +113,7 @@ def complete(row,message_id=None,now=None):
         c.execute("UPDATE reminder_occurrences SET state='delivered',discord_message_id=? WHERE reminder_id=? AND scheduled_at=?",(message_id,row['id'],row['remind_at']))
         if row['recurrence']:
             following=next_occurrence(row['remind_at'],row['recurrence'],row['timezone'],now)
-            c.execute("UPDATE reminders SET state='pending',remind_at=?,attempt_count=0,next_attempt=NULL,claimed_at=NULL,last_error=NULL,discord_message_id=? WHERE id=? AND state IN ('sending','failed')",(following,message_id,row['id']))
+            c.execute("UPDATE reminders SET state='pending',remind_at=?,attempt_count=0,next_attempt=NULL,claimed_at=NULL,finished_at=NULL,last_error=NULL,discord_message_id=? WHERE id=? AND state IN ('sending','failed')",(following,message_id,row['id']))
         else:
             c.execute("UPDATE reminders SET state='delivered',finished_at=?,discord_message_id=? WHERE id=? AND state IN ('sending','failed')",(now,message_id,row['id']))
 
@@ -132,9 +132,9 @@ def fail(row,error,permanent=False,now=None):
 def cleanup(now=None):
     now=time.time() if now is None else now
     with _connect(commit=True) as c:
-        c.execute('DELETE FROM reminder_occurrences WHERE reminder_id IN (SELECT id FROM reminders WHERE finished_at<?)',(now-30*86400,))
+        c.execute("DELETE FROM reminder_occurrences WHERE reminder_id IN (SELECT id FROM reminders WHERE state IN ('delivered','cancelled','failed') AND finished_at<?)",(now-30*86400,))
         c.execute("DELETE FROM reminder_occurrences WHERE state='delivered' AND scheduled_at<?",(now-30*86400,))
-        c.execute('DELETE FROM reminders WHERE finished_at<?',(now-30*86400,))
+        c.execute("DELETE FROM reminders WHERE state IN ('delivered','cancelled','failed') AND finished_at<?",(now-30*86400,))
         c.execute('DELETE FROM action_executions WHERE created_at<?',(now-30*86400,))
 
 
