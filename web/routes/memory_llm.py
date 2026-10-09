@@ -6,12 +6,14 @@ from flask import Blueprint, jsonify, request
 
 from db import (
     delete_all_llm_user_memory, delete_llm_memory_channel_observations,
-    get_enabled_llm_memory_channels, get_llm_feedback_summary,
+    get_enabled_llm_memory_channels,
     get_llm_memory_entries, get_llm_memory_preference, get_llm_user_memory,
     get_setting, is_llm_memory_channel_enabled, purge_guild_llm_user_memories,
     set_llm_memory_channel_enabled, set_llm_memory_preference, set_setting,
 )
+from db.bot_data import get_llm_feedback_summary
 from llm.client import LlamaCppError, get_allowed_models, get_mention_model
+from llm.feedback import build_feedback_report
 from web.auth import require_token
 from web.helpers import discord_id as _discord_id
 
@@ -56,22 +58,12 @@ def api_llm_feedback_summary():
     guild_id = request.args.get("guild_id", type=int)
     if guild_id is None:
         return jsonify({"error": "Missing guild_id query parameter"}), 400
-    rows = get_llm_feedback_summary(guild_id)
-    groups = []
-    for category, model, prompt_version, total, positive, negative in rows:
-        groups.append(
-            {
-                "category": category,
-                "model": model,
-                "prompt_version": prompt_version,
-                "ratings": total,
-                "up": positive,
-                "down": negative,
-                "approval_percent": round(positive / total * 100, 1) if total else 0,
-                "ready_to_compare": total >= 10,
-            }
-        )
-    return jsonify({"guild_id": guild_id, "groups": groups})
+    try:
+        rows = get_llm_feedback_summary(guild_id, raise_on_error=True)
+    except Exception:
+        logger.exception("Could not read LLM feedback summary")
+        return jsonify({"error": "Feedback summary is temporarily unavailable. Please try again."}), 503
+    return jsonify({"guild_id": guild_id, **build_feedback_report(rows)})
 
 def _memory_scope_from_query():
     value = request.args.get("scope_id")
