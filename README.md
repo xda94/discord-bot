@@ -560,7 +560,7 @@ Successful flight observations, price history, budget crossing state, and any ne
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
 | `@bot` + image | Inspects the first processable directly attached JPEG, PNG, GIF, WebP, BMP, or TIFF. With a caption it answers that request; without one it gives a concise description. |
-| `/llm-feedback-summary` | Manage Server only; compare this server’s rated reply configurations. |
+| `/llm-feedback-summary` | Manage Server only; review this server’s rated reply configurations, administrator recommendations, and groups qualified after 10 likes. |
 
 Vision requests accept JPEG, PNG, GIF, WebP, BMP, and TIFF directly attached to
 the mention, using the first image that can be processed in attachment order.
@@ -645,11 +645,22 @@ consuming CPU.
 The bot may react to the original human message with a contextual emoji. It
 does not seed feedback reactions on its own reply. The requester may manually
 add 👍 or 👎 to that reply to rate the answer; reactions from the bot or any
-other user are ignored. The database retains only reply
-metadata, server, model alias, prompt version, final rating, and timestamps—not
-prompts or response text. `/llm-feedback-summary` marks a model/prompt
-combination ready to compare only after ten ratings; it never changes a model
-or prompt automatically.
+other user are ignored. The database retains only reply metadata, server,
+model alias, prompt version, final rating, and timestamps—not prompts or
+response text.
+
+`/llm-feedback-summary` qualifies each category/model/prompt-version group for
+administrator review after 10 likes, including historical groups that already
+meet the threshold. The dashboard and
+`GET /llm/feedback/summary?guild_id=<id>` expose the same qualification,
+remaining-like count, approval percentage, and deterministic recommendations.
+Recommendations ask administrators to inspect positive and negative feedback,
+compare configurations separately, and propose a specific future behavior
+change for approval. No model or prompt change is applied automatically, and
+the report stores no prompt or response text. Qualification is based on the
+current final ratings, so changing a like to a dislike can remove it; ten likes
+need not represent ten distinct people, and viewing a report may repeat the
+notice because no delivery history is stored.
 
 `LLM_MEMORY_ENABLED` selects one of two modes when the Discord process starts.
 Only the exact value `1` enables automatic memory; `0`, a missing value, or an
@@ -809,7 +820,7 @@ failed writes return a Discord error or API HTTP 500.
 |---|---|---|
 | `GET` | `/llm/mention-model` | Active mention model and the environment-defined allow-list |
 | `PUT` | `/llm/mention-model` | `{ "model" }` — accepts only a model in `LLAMA_CPP_ALLOWED_MODELS` |
-| `GET` | `/llm/feedback/summary?guild_id=<id>` | Aggregated ratings by category, model, and prompt version; no prompt or response text |
+| `GET` | `/llm/feedback/summary?guild_id=<id>` | Aggregated ratings plus `qualified_for_review`, `likes_needed`, `recommendations`, `approval_required`, `required_likes`, and `qualified_group_count`; no prompt or response text. Returns a retryable `503` when the database cannot be read. |
 | `GET` | `/inactivity/guilds/<guild_id>` | Whether automatic inactivity messages are enabled |
 | `PUT` | `/inactivity/guilds/<guild_id>` | `{ "enabled": true }` |
 

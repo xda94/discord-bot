@@ -1,11 +1,15 @@
 """Focused coverage for the local dashboard and its supporting API routes."""
 
 import importlib
+import json
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 
 import pytest
 
 import db
+from llm.feedback import build_feedback_report
 
 
 @pytest.fixture
@@ -27,6 +31,7 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     page = client.get("/")
     stylesheet = client.get("/static/dashboard.css")
     script = client.get("/static/dashboard.js")
+    translations = client.get("/static/dashboard-i18n.js")
 
     assert page.status_code == 200
     assert b"Bot Control" in page.data
@@ -62,6 +67,323 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"birthdayParts" in script.data
     assert b"/sponsors/tiers" in script.data
     assert b"formatChancePercent" in script.data
+    assert translations.status_code == 200
+    assert b"qualified_for_review" in script.data
+    assert b"likes_needed" in script.data
+    assert b"qualified_group_count" in script.data
+    assert b"required_likes" in script.data
+    assert b"recommendations" in script.data
+    assert b"approval_required" in script.data
+    assert b"ready_to_compare" not in script.data
+    assert b"10 - group.ratings" not in script.data
+    assert b"At least 10 likes in a group qualify it for administrator review." in page.data
+    assert b"At least 10 ratings" not in page.data
+    assert b"Administrator approval is required before applying any prompt or model change." in translations.data
+    assert "Aprecieri rămase" in translations.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("likes,dislikes", [(0, 12), (9, 15), (10, 15)])
+def test_dashboard_feedback_additive_contract(dashboard_client, likes, dislikes):
+    _api, client = dashboard_client
+    guild_id = 1234567890123456789
+    for index in range(likes + dislikes):
+        assert db.track_llm_response(
+            index + 1, 7, "mention", guild_id=guild_id,
+            model="discord-bot", prompt_version="v1",
+        )
+        assert db.set_llm_response_rating(index + 1, 7, 1 if index < likes else -1)
+
+    response = client.get(
+        f"/llm/feedback/summary?guild_id={guild_id}",
+        headers={"X-Discord-ID-Format": "string"},
+    )
+    assert response.status_code == 200
+    report = response.get_json()
+    assert report["guild_id"] == str(guild_id)
+    assert report["required_likes"] == 10
+    assert report["qualified_group_count"] == int(likes >= 10)
+    assert report["approval_required"] is True
+    group = report["groups"][0]
+    assert group["category"] == "mention"
+    assert group["model"] == "discord-bot"
+    assert group["prompt_version"] == "v1"
+    assert group["ratings"] == likes + dislikes
+    assert group["up"] == likes
+    assert group["down"] == dislikes
+    assert group["approval_percent"] == round(likes / (likes + dislikes) * 100, 1)
+    assert group["ready_to_compare"] is True
+    assert group["qualified_for_review"] is (likes >= 10)
+    assert group["likes_needed"] == max(0, 10 - likes)
+    assert group["approval_required"] is (likes >= 10)
+    assert bool(group["recommendations"]) is (likes >= 10)
+
+
+def test_dashboard_feedback_empty_and_retryable_api_error(dashboard_client, monkeypatch):
+    _api, client = dashboard_client
+    from web.routes import memory_llm
+
+    assert client.get("/llm/feedback/summary?guild_id=88").get_json() == {
+        "guild_id": 88, "required_likes": 10, "qualified_group_count": 0,
+        "approval_required": True, "groups": [],
+    }
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("private database details")
+
+    monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", unavailable)
+    response = client.get("/llm/feedback/summary?guild_id=88")
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "error": "Feedback summary is temporarily unavailable. Please try again."
+    }
+
+
+@pytest.fixture
+def dashboard_js(dashboard_client):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is unavailable for dashboard smoke checks")
+    _api, client = dashboard_client
+    script = client.get("/static/dashboard.js").get_data(as_text=True)
+    translations = client.get("/static/dashboard-i18n.js").get_data(as_text=True)
+    harness = r"""
+const vm = require("node:vm");
+const input = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+const nodes = new Map();
+const element = (selector) => {
+  if (!nodes.has(selector)) nodes.set(selector, {
+    innerHTML: "", textContent: "", value: "", style: {}, dataset: {},
+    classList: { add() {}, remove() {} }, append() {}, focus() {}, remove() {},
+  });
+  return nodes.get(selector);
+};
+const requests = [];
+const pending = [];
+let failure = false;
+let hold = false;
+let report = input.report;
+const response = (payload, status = 200) => ({
+  ok: status === 200, status,
+  headers: { get: () => "application/json" }, json: async () => payload,
+});
+const context = vm.createContext({
+  window: {}, document: {
+    querySelector: element, querySelectorAll: () => [],
+    createElement: () => element("toast"), addEventListener() {},
+    documentElement: {},
+  },
+  localStorage: { getItem: (key) => key === "bot-dashboard-language" ? input.locale : "88" },
+  sessionStorage: { getItem: () => "test-token", removeItem() {} },
+  URLSearchParams, URL, setTimeout() {}, clearInterval() {},
+  fetch: async (path, options) => {
+    requests.push({path, headers: options.headers});
+    if (path.startsWith("/llm/feedback/summary")) {
+      if (hold) return new Promise((resolve) => pending.push(resolve));
+      return failure ? response({error: input.error}, input.status || 503) : response(report);
+    }
+    if (path === "/llm/mention-model") return response({model: "discord-bot", allowed_models: ["discord-bot", "other-model"]});
+    if (path.startsWith("/inactivity/")) return response({enabled: true});
+    if (path.startsWith("/keywords/top")) return response({keywords: []});
+    if (path.startsWith("/keywords/get")) return response({});
+    if (path === "/system/stats") return response({cpu_percent: null, temperature_celsius: null, uptime_seconds: null});
+    return response([]);
+  },
+});
+vm.runInContext(input.translations, context);
+vm.runInContext(input.script.replace(
+  "window.DashboardTest = { idValue, unixSeconds, version };",
+  "window.DashboardTest = { state, renderFeedback, loadOverview, loadSettings, handleAction };"
+), context);
+const dashboard = context.window.DashboardTest;
+const target = element(`#${input.page || "overview"}-feedback`);
+const load = input.page === "settings" ? dashboard.loadSettings : dashboard.loadOverview;
+(async () => {
+  let errorHtml = "";
+  if (input.mode === "render") dashboard.renderFeedback(target, report);
+  else {
+    await load();
+    if (input.mode === "failure") {
+      failure = true;
+      await load();
+      errorHtml = target.innerHTML;
+      failure = false;
+      await dashboard.handleAction({dataset: {action: input.page === "settings" ? "load-settings" : "refresh-overview"}});
+    } else if (input.mode.startsWith("switch") || input.mode.startsWith("refresh")) {
+      hold = true;
+      const older = load();
+      for (let i = 0; i < 50 && !pending.length; i++) await Promise.resolve();
+      if (!pending.length) throw new Error("The delayed feedback request was not started");
+      if (input.mode.startsWith("switch")) dashboard.state.guildId = "99";
+      hold = false;
+      report = {...report, groups: report.groups.map((group) => ({...group, category: "current-server", recommendations: group.recommendations.map((item) => item.replaceAll("old-server", "current-server"))}))};
+      if (!input.mode.includes("away")) await load();
+      pending[0](input.mode.endsWith("error") ? response({error: input.error}, 503) : response(input.report));
+      await older;
+    } else if (input.mode === "clear") {
+      dashboard.state.guildId = "";
+      await load();
+    }
+  }
+  process.stdout.write(JSON.stringify({html: target.innerHTML, error_html: errorHtml, requests, token: dashboard.state.token, model: element("#model-select").innerHTML}));
+})().catch((error) => { process.stderr.write(error.stack); process.exitCode = 1; });
+"""
+
+    def run(report, **options):
+        completed = subprocess.run(
+            [node, "-e", harness],
+            input=json.dumps({"script": script, "translations": translations, "report": report, **options}),
+            text=True, capture_output=True, timeout=15,
+        )
+        assert completed.returncode == 0, completed.stderr
+        return json.loads(completed.stdout)
+
+    return run
+
+
+@pytest.mark.parametrize("locale", ["en", "ro"])
+@pytest.mark.parametrize("likes", [0, 9, 10])
+def test_dashboard_feedback_likes_and_locale(dashboard_js, locale, likes):
+    report = build_feedback_report([("mention", "discord-bot", "v1", likes + 15, likes, 15)])
+    html = dashboard_js(report, mode="render", locale=locale)["html"]
+    assert ("Administrator review" if locale == "en" else "Analiza administratorului") in html
+    assert ("Qualified groups" if locale == "en" else "Grupuri calificate") + f": {int(likes >= 10)}" in html
+    assert ("Likes required per group" if locale == "en" else "Aprecieri necesare pentru fiecare grup") + ": 10" in html
+    assert ("before applying any prompt or model change" if locale == "en" else "înainte de aplicarea oricărei modificări de prompt sau model") in html
+    handoff = (
+        "Please approve a specific proposed change before it is applied. No behavior changes have been applied."
+        if locale == "en" else
+        "Te rugăm să aprobi o modificare concretă propusă înainte de aplicarea ei. Nu au fost aplicate modificări ale comportamentului."
+    )
+    assert (handoff in html) is (likes >= 10)
+    if likes < 10:
+        assert ("Not yet qualified" if locale == "en" else "Încă necalificat") in html
+        assert ("Likes needed" if locale == "en" else "Aprecieri rămase") + f": {10 - likes}" in html
+        assert "<ol>" not in html
+    else:
+        assert ("Qualified for administrator review" if locale == "en" else "Calificat pentru analiza administratorului") in html
+        assert ("Recommendations" if locale == "en" else "Recomandări") in html
+        assert ("administrator approval before applying" if locale == "en" else "aprobarea administratorului înainte de aplicare") in html
+        assert ("Administrator approval required before changes." if locale == "en" else "Aprobarea administratorului este necesară înainte de modificări.") in html
+        if locale == "en":
+            assert "Aggregate metadata cannot diagnose individual answer failures or establish that another configuration is better." in html
+        else:
+            assert "Analizează evaluările pozitive și negative pentru category=mention, model=discord-bot, prompt_version=v1" in html
+            assert "cere solicitanților exemple pentru analiză, deoarece textul răspunsurilor nu este stocat." in html
+            assert "Compară category=mention, model=discord-bot, prompt_version=v1 cu un alt model sau o altă versiune de prompt identificată explicit" in html
+            assert "când sunt disponibile evaluări comparabile, verificând numărul evaluărilor și procentele de aprobare în condiții comparabile." in html
+            assert "Propune o modificare concretă a promptului sau o schimbare de model pentru category=mention, model=discord-bot, prompt_version=v1" in html
+            assert "exemple justificative și un plan de evaluare" in html
+            assert "Metadatele agregate conțin numărul evaluărilor și identificatorii configurațiilor, nu prompturi, textul răspunsurilor sau contextul conversației." in html
+            assert "Metadatele agregate nu pot diagnostica eșecurile răspunsurilor individuale sau stabili că o altă configurație este mai bună." in html
+            assert all(recommendation not in html for recommendation in report["groups"][0]["recommendations"])
+        assert "<ol>" in html
+    assert "Compare</th>" not in html
+    assert "ready</span>" not in html
+
+
+@pytest.mark.parametrize("locale", ["en", "ro"])
+def test_dashboard_feedback_empty_notice(dashboard_js, locale):
+    html = dashboard_js(build_feedback_report([]), mode="render", locale=locale)["html"]
+    assert ("No rated replies for this server yet." if locale == "en" else "Nu există răspunsuri evaluate pentru acest server.") in html
+    assert ("Qualified groups" if locale == "en" else "Grupuri calificate") + ": 0" in html
+    assert "Please approve a specific proposed change" not in html
+    assert "Te rugăm să aprobi o modificare concretă propusă" not in html
+    assert "<table" not in html
+
+
+def test_dashboard_feedback_uses_server_qualification_fields(dashboard_js):
+    report = build_feedback_report([("mention", "discord-bot", "v1", 24, 9, 15)])
+    report["required_likes"] = 20
+    report["groups"][0]["likes_needed"] = 11
+    html = dashboard_js(report, mode="render", locale="en")["html"]
+    assert "Likes required per group: 20" in html
+    assert "Likes needed: 11" in html
+    assert "Not yet qualified" in html
+
+
+@pytest.mark.parametrize("locale", ["en", "ro"])
+def test_dashboard_feedback_escapes_long_labels_and_recommendations(dashboard_js, locale):
+    label = '<img src=x onerror="alert(1)"> $& {configuration} {configurations}' + "long-model-" * 100
+    report = build_feedback_report([(label, label, label, 10, 10, 0)])
+    html = dashboard_js(report, mode="render", locale=locale)["html"]
+    assert "<img" not in html
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in html
+    assert "long-model-" * 100 in html
+    assert 'title="&lt;img' in html
+    assert html.count("<li>") == 4
+    assert "$&amp; {configuration} {configurations}" in html
+    assert ("Inspect positive and negative feedback" if locale == "en" else "Analizează evaluările pozitive și negative") in html
+
+
+@pytest.mark.parametrize("locale", ["en", "ro"])
+def test_dashboard_feedback_localizes_recorded_configuration_comparisons(dashboard_js, locale):
+    report = build_feedback_report([
+        ("mention", "model-a", "v1", 12, 10, 2),
+        ("mention", "model-c", "v3", 11, 10, 1),
+        ("mention", "model-b", "v2", 10, 9, 1),
+        ("summon", "unrelated-model", "v4", 1, 1, 0),
+    ])
+    html = dashboard_js(report, mode="render", locale=locale)["html"]
+    comparison = (
+        "Compare category=mention, model=model-a, prompt_version=v1 against these recorded configurations: "
+        if locale == "en" else
+        "Compară category=mention, model=model-a, prompt_version=v1 cu aceste configurații înregistrate: "
+    )
+    assert comparison + "model=model-b, prompt_version=v2; model=model-c, prompt_version=v3" in html
+    if locale == "ro":
+        assert "verificând numărul evaluărilor și procentele de aprobare în condiții comparabile." in html
+        assert all(recommendation not in html for group in report["groups"] for recommendation in group["recommendations"])
+
+
+@pytest.mark.parametrize("page", ["overview", "settings"])
+@pytest.mark.parametrize("locale", ["en", "ro"])
+def test_dashboard_feedback_failure_replaces_stale_data_and_retries(dashboard_js, page, locale):
+    report = build_feedback_report([("mention", "discord-bot", "v1", 10, 10, 0)])
+    result = dashboard_js(report, mode="failure", page=page, locale=locale, error="<img src=x onerror=alert(1)>")
+    assert 'role="alert"' in result["error_html"]
+    assert ("Feedback could not be loaded" if locale == "en" else "Evaluările nu au putut fi încărcate") in result["error_html"]
+    assert (">Retry<" if locale == "en" else ">Reîncearcă<") in result["error_html"]
+    assert "<table" not in result["error_html"]
+    assert "<img" not in result["error_html"]
+    assert "&lt;img" in result["error_html"]
+    assert "<table" in result["html"]
+    assert "mention" in result["html"]
+    feedback_requests = [item for item in result["requests"] if item["path"].startswith("/llm/feedback/summary")]
+    assert len(feedback_requests) == 3
+    assert all(item["headers"]["Authorization"] == "Bearer test-token" for item in feedback_requests)
+    assert all(item["headers"]["X-Discord-ID-Format"] == "string" for item in feedback_requests)
+    if page == "settings":
+        assert "other-model" in result["model"]
+
+
+@pytest.mark.parametrize("page", ["overview", "settings"])
+@pytest.mark.parametrize("mode", ["switch-success", "switch-error", "refresh-success", "refresh-error"])
+def test_dashboard_feedback_ignores_old_responses(dashboard_js, page, mode):
+    report = build_feedback_report([("old-server", "discord-bot", "v1", 10, 10, 0)])
+    result = dashboard_js(report, mode=mode, page=page, locale="en", error="Old request failed")
+    assert "current-server" in result["html"]
+    assert "old-server" not in result["html"]
+    assert "Old request failed" not in result["html"]
+    if mode.startswith("switch"):
+        assert any("guild_id=99" in item["path"] for item in result["requests"])
+
+
+@pytest.mark.parametrize("page", ["overview", "settings"])
+@pytest.mark.parametrize("mode", ["switch-away-success", "switch-away-error"])
+def test_dashboard_feedback_ignores_responses_after_scope_changes_on_another_page(dashboard_js, page, mode):
+    report = build_feedback_report([("old-server", "discord-bot", "v1", 10, 10, 0)])
+    result = dashboard_js(report, mode=mode, page=page, locale="en", error="Old request failed")
+    assert "Loading feedback…" in result["html"]
+    assert "old-server" not in result["html"]
+    assert "Old request failed" not in result["html"]
+
+
+@pytest.mark.parametrize("page", ["overview", "settings"])
+def test_dashboard_feedback_clears_when_server_is_removed(dashboard_js, page):
+    report = build_feedback_report([("mention", "discord-bot", "v1", 10, 10, 0)])
+    result = dashboard_js(report, mode="clear", page=page, locale="en")
+    assert "Enter a server ID" in result["html"]
+    assert "<table" not in result["html"]
 
 
 def test_birthday_navigation_uses_decorative_outline_icon(dashboard_client):

@@ -529,7 +529,7 @@ def get_llm_response_feedback(message_id):
         return None
 
 
-def get_llm_feedback_summary(guild_id):
+def get_llm_feedback_summary(guild_id, *, raise_on_error=False):
     """Aggregate a guild's rated replies without exposing prompts or text."""
     try:
         with _connect() as c:
@@ -547,6 +547,8 @@ def get_llm_feedback_summary(guild_id):
             return c.fetchall()
     except Exception:
         logger.exception(f"Failed to summarize LLM feedback for guild {guild_id}")
+        if raise_on_error:
+            raise
         return []
 
 def set_guild_activity(guild_id, last_time, channel_id):

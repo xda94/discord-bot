@@ -6,6 +6,7 @@ DB mutations they authorize are covered here.
 """
 
 import importlib
+import sqlite3
 from unittest.mock import Mock
 
 import pytest
@@ -134,7 +135,12 @@ def test_llm_feedback_summary_and_mention_model_config(client):
 
     summary = client.get("/llm/feedback/summary?guild_id=88")
     assert summary.status_code == 200
-    assert summary.get_json()["groups"] == [
+    body = summary.get_json()
+    assert body["guild_id"] == 88
+    assert body["required_likes"] == 10
+    assert body["qualified_group_count"] == 0
+    assert body["approval_required"] is True
+    assert body["groups"] == [
         {
             "category": "mention",
             "model": "discord-bot",
@@ -144,12 +150,201 @@ def test_llm_feedback_summary_and_mention_model_config(client):
             "down": 1,
             "approval_percent": 50.0,
             "ready_to_compare": False,
+            "qualified_for_review": False,
+            "likes_needed": 9,
+            "recommendations": [],
+            "approval_required": False,
         }
     ]
 
     update = client.put("/llm/mention-model", json={"model": "other-model"})
     assert update.status_code == 200
     assert client.get("/llm/mention-model").get_json()["model"] == "other-model"
+
+
+def test_llm_feedback_summary_qualifies_historical_likes_immediately(client):
+    for message_id in range(101, 111):
+        assert db.track_llm_response(
+            message_id, 7, "mention", guild_id=88,
+            model="discord-bot", prompt_version="v1",
+        )
+        assert db.set_llm_response_rating(message_id, 7, 1)
+    with db._connect(commit=True) as cursor:
+        cursor.execute(
+            "UPDATE llm_response_feedback SET created_at = ?, rated_at = ? "
+            "WHERE guild_id = ?",
+            (1, 1, 88),
+        )
+    db.set_setting("mention_model", "other-model")
+
+    response = client.get("/llm/feedback/summary?guild_id=88")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["qualified_group_count"] == 1
+    assert body["approval_required"] is True
+    group = body["groups"][0]
+    assert group["ratings"] == group["up"] == 10
+    assert group["down"] == 0
+    assert group["approval_percent"] == 100.0
+    assert group["ready_to_compare"] is True
+    assert group["qualified_for_review"] is True
+    assert group["likes_needed"] == 0
+    assert group["approval_required"] is True
+    assert len(group["recommendations"]) == 4
+    assert all(isinstance(item, str) and item for item in group["recommendations"])
+    assert "category=mention, model=discord-bot, prompt_version=v1" in group["recommendations"][0]
+    assert "administrator approval before applying" in group["recommendations"][2]
+    assert db.get_setting("mention_model") == "other-model"
+
+
+def test_llm_feedback_summary_empty_guild_reads_strictly(client, monkeypatch):
+    from web.routes import memory_llm
+
+    reader = Mock(wraps=db.bot_data.get_llm_feedback_summary)
+    monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", reader)
+
+    response = client.get("/llm/feedback/summary?guild_id=88")
+
+    reader.assert_called_once_with(88, raise_on_error=True)
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "guild_id": 88,
+        "required_likes": 10,
+        "qualified_group_count": 0,
+        "approval_required": True,
+        "groups": [],
+    }
+
+
+def test_llm_feedback_summary_isolates_guilds_and_excludes_unrated_replies(client):
+    assert db.track_llm_response(
+        101, 7, "mention", guild_id=88, model="discord-bot", prompt_version="v1"
+    )
+    assert db.set_llm_response_rating(101, 7, -1)
+    assert db.track_llm_response(
+        102, 7, "mention", guild_id=88, model="unrated-model", prompt_version="v2"
+    )
+    for message_id in range(201, 211):
+        assert db.track_llm_response(
+            message_id, 8, "mention", guild_id=99,
+            model="other-model", prompt_version="private-version",
+        )
+        assert db.set_llm_response_rating(message_id, 8, 1)
+
+    response = client.get("/llm/feedback/summary?guild_id=88")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["qualified_group_count"] == 0
+    assert len(body["groups"]) == 1
+    group = body["groups"][0]
+    assert group["model"] == "discord-bot"
+    assert group["ratings"] == group["down"] == 1
+    assert group["up"] == 0
+    assert group["likes_needed"] == 10
+    assert group["recommendations"] == []
+    assert "private-version" not in response.get_data(as_text=True)
+    other = client.get("/llm/feedback/summary?guild_id=99").get_json()
+    assert other["qualified_group_count"] == 1
+    assert other["groups"][0]["model"] == "other-model"
+
+
+@pytest.mark.parametrize("failure", ["reader", "connection"])
+def test_llm_feedback_summary_database_failure_is_retryable(client, monkeypatch, failure):
+    from web.routes import memory_llm
+
+    assert client.get("/health").status_code == 200
+    error = sqlite3.OperationalError("private database path /secret/feedback.db")
+    if failure == "reader":
+        reader = Mock(side_effect=error)
+        monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", reader)
+    else:
+        reader = Mock(wraps=db.bot_data.get_llm_feedback_summary)
+        monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", reader)
+        monkeypatch.setattr(db.bot_data, "_connect", Mock(side_effect=error))
+
+    response = client.get("/llm/feedback/summary?guild_id=88")
+
+    reader.assert_called_once_with(88, raise_on_error=True)
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "error": "Feedback summary is temporarily unavailable. Please try again."
+    }
+    assert "private" not in response.get_data(as_text=True)
+    assert "secret" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Basic test-token"])
+def test_llm_feedback_summary_requires_bearer_auth(client, monkeypatch, authorization):
+    from web.routes import memory_llm
+
+    reader = Mock()
+    monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", reader)
+    client.environ_base.pop("HTTP_AUTHORIZATION")
+    headers = {} if authorization is None else {"Authorization": authorization}
+
+    response = client.get("/llm/feedback/summary?guild_id=88", headers=headers)
+
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "Unauthorized"}
+    reader.assert_not_called()
+
+
+@pytest.mark.parametrize("token", [None, "", " "])
+def test_llm_feedback_summary_requires_configured_auth(client, monkeypatch, token):
+    from web.routes import memory_llm
+
+    client.application.config["API_TOKEN"] = token
+    reader = Mock()
+    monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", reader)
+
+    response = client.get("/llm/feedback/summary?guild_id=88")
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "API_TOKEN configuration is required"}
+    reader.assert_not_called()
+
+
+@pytest.mark.parametrize("query", ["", "?guild_id=", "?guild_id=invalid", "?guild_id=88.0"])
+def test_llm_feedback_summary_preserves_invalid_query_handling(client, monkeypatch, query):
+    from web.routes import memory_llm
+
+    reader = Mock()
+    monkeypatch.setattr(memory_llm, "get_llm_feedback_summary", reader)
+
+    response = client.get(f"/llm/feedback/summary{query}")
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "Missing guild_id query parameter"}
+    reader.assert_not_called()
+
+
+@pytest.mark.parametrize("string_ids", [False, True])
+def test_llm_feedback_summary_preserves_exact_large_discord_ids(client, string_ids):
+    guild_id = 3_234_567_890_123_456_789
+    assert db.track_llm_response(
+        1_234_567_890_123_456_789, 2_234_567_890_123_456_789, "mention",
+        guild_id=guild_id, model="discord-bot", prompt_version="v1",
+    )
+    assert db.set_llm_response_rating(
+        1_234_567_890_123_456_789, 2_234_567_890_123_456_789, 1
+    )
+    headers = {"X-Discord-ID-Format": "string"} if string_ids else {}
+
+    response = client.get(f"/llm/feedback/summary?guild_id={guild_id}", headers=headers)
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["guild_id"] == (str(guild_id) if string_ids else guild_id)
+    assert type(body["guild_id"]) is (str if string_ids else int)
+    assert body["required_likes"] == 10
+    assert type(body["required_likes"]) is int
+    assert body["groups"][0]["ratings"] == 1
+    assert type(body["groups"][0]["ratings"]) is int
+    assert body["groups"][0]["likes_needed"] == 9
+    assert "requester_user_id" not in body["groups"][0]
+    assert "response_message_id" not in body["groups"][0]
 
 
 def test_inactivity_and_wishlist_preferences_are_configurable(client):

@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import db
 import pytest
@@ -533,6 +533,82 @@ def test_llm_feedback_keeps_only_compact_rating_metadata(tmp_db):
     row = db.get_llm_response_feedback(1001)
     assert row[0:3] == (123, "mention", -1)
     assert row[7] is not None
+
+
+@pytest.mark.parametrize("raise_on_error", [False, True])
+def test_llm_feedback_summary_preserves_grouping_and_latest_requester_rating(
+    tmp_db, raise_on_error
+):
+    responses = [
+        (1001, "summon", "model-a", "v1", -1),
+        (1002, "mention", "model-b", "v1", 1),
+        (1003, "mention", "model-a", "v2", -1),
+        (1004, "mention", "model-a", "v1", -1),
+        (1005, "mention", None, None, -1),
+        (1006, "mention", "model-a", "v1", -1),
+        (1007, "mention", "model-a", None, 1),
+    ]
+    for message_id, category, model, prompt_version, rating in responses:
+        assert db.track_llm_response(
+            message_id, 123, category, guild_id=GUILD_A,
+            model=model, prompt_version=prompt_version,
+        )
+        assert db.set_llm_response_rating(message_id, 123, rating)
+
+    assert db.set_llm_response_rating(1004, 123, 1)
+    assert not db.set_llm_response_rating(1006, 999, 1)
+    assert db.track_llm_response(
+        1008, 123, "mention", guild_id=GUILD_A,
+        model="model-a", prompt_version="v1",
+    )
+    assert not db.set_llm_response_rating(1008, 999, 1)
+    for message_id, guild_id in [(1009, GUILD_B), (1010, None)]:
+        assert db.track_llm_response(
+            message_id, 123, "mention", guild_id=guild_id,
+            model="model-a", prompt_version="v1",
+        )
+        assert db.set_llm_response_rating(message_id, 123, 1)
+
+    assert db.get_llm_feedback_summary(GUILD_A, raise_on_error=raise_on_error) == [
+        ("mention", "unknown", "unknown", 1, 0, 1),
+        ("mention", "model-a", "unknown", 1, 1, 0),
+        ("mention", "model-a", "v1", 2, 1, 1),
+        ("mention", "model-a", "v2", 1, 0, 1),
+        ("mention", "model-b", "v1", 1, 1, 0),
+        ("summon", "model-a", "v1", 1, 0, 1),
+    ]
+
+
+@pytest.mark.parametrize("raise_on_error", [False, True])
+def test_llm_feedback_summary_empty_guild(tmp_db, raise_on_error):
+    assert db.get_llm_feedback_summary(GUILD_A, raise_on_error=raise_on_error) == []
+
+
+@pytest.mark.parametrize("failure", ["connect", "execute", "fetchall"])
+@pytest.mark.parametrize("options", [{}, {"raise_on_error": False}, {"raise_on_error": True}])
+def test_llm_feedback_summary_failure_handling(monkeypatch, caplog, failure, options):
+    error = sqlite3.OperationalError("summary failed")
+    connection = MagicMock()
+    if failure == "connect":
+        connection.side_effect = error
+    else:
+        cursor = connection.return_value.__enter__.return_value
+        getattr(cursor, failure).side_effect = error
+    monkeypatch.setattr(db.bot_data, "_connect", connection)
+
+    if options.get("raise_on_error"):
+        with pytest.raises(sqlite3.OperationalError, match="summary failed") as raised:
+            db.get_llm_feedback_summary(GUILD_A, **options)
+        assert raised.value is error
+    else:
+        assert db.get_llm_feedback_summary(GUILD_A, **options) == []
+
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.name == "database"
+    assert record.levelname == "ERROR"
+    assert record.getMessage() == f"Failed to summarize LLM feedback for guild {GUILD_A}"
+    assert record.exc_info[1] is error
 
 
 # ---------------------------------------------------------------------------

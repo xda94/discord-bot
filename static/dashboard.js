@@ -153,9 +153,23 @@
     target.innerHTML = `<div class="rank-list">${rows.map((row) => `<div class="rank-row"><span>${escapeHtml(row.keyword)}</span><div class="rank-track"><i style="width:${Math.max(4, row.count / max * 100)}%"></i></div><strong>${row.count}</strong></div>`).join("")}</div>`;
   }
 
-  function renderFeedback(target, groups) {
-    if (!groups?.length) { target.innerHTML = '<div class="empty">No rated replies for this server yet.</div>'; return; }
-    target.innerHTML = `<table class="data-table"><thead><tr><th>Group</th><th>Ratings</th><th>Approval</th><th>Compare</th></tr></thead><tbody>${groups.map((group) => `<tr><td>${escapeHtml(group.category)}<span class="cell-muted">${escapeHtml(group.model)} · ${escapeHtml(group.prompt_version)}</span></td><td>${group.ratings}<span class="cell-muted">${group.up} up · ${group.down} down</span></td><td>${group.approval_percent}%</td><td><span class="tag ${group.ready_to_compare ? "good" : ""}">${group.ready_to_compare ? "ready" : `${10 - group.ratings} needed`}</span></td></tr>`).join("")}</tbody></table>`;
+  function feedbackRecommendationText(recommendation, group) {
+    const configuration = `category=${group.category}, model=${group.model}, prompt_version=${group.prompt_version}`;
+    let template = String(recommendation).replace(configuration, () => "{configuration}");
+    const comparison = template.match(/^Compare \{configuration\} against these recorded configurations: ([\s\S]*), checking rating counts and approval percentages under comparable conditions\.$/);
+    if (comparison) template = "Compare {configuration} against these recorded configurations: {configurations}, checking rating counts and approval percentages under comparable conditions.";
+    if (!Object.hasOwn(window.DashboardI18n?.catalog || {}, template)) return tr(recommendation);
+    return tr(template).replace(/\{configuration(s)?\}/g, (_placeholder, plural) => plural ? comparison[1] : configuration);
+  }
+
+  function renderFeedback(target, report) {
+    const notice = `<div role="status"><strong>${escapeHtml(tr("Administrator review"))}</strong><p>${escapeHtml(tr("Likes required per group"))}: ${escapeHtml(report.required_likes)} · ${escapeHtml(tr("Qualified groups"))}: ${escapeHtml(report.qualified_group_count)}</p>${report.approval_required ? `<p>${escapeHtml(tr("Administrator approval is required before applying any prompt or model change."))}</p>` : ""}${report.qualified_group_count > 0 ? `<p>${escapeHtml(tr("Please approve a specific proposed change before it is applied. No behavior changes have been applied."))}</p>` : ""}</div>`;
+    if (!report.groups?.length) { target.innerHTML = `${notice}<div class="empty">${escapeHtml(tr("No rated replies for this server yet."))}</div>`; return; }
+    target.innerHTML = `${notice}<table class="data-table"><thead><tr><th>${escapeHtml(tr("Group"))}</th><th>${escapeHtml(tr("Ratings"))}</th><th>${escapeHtml(tr("Like rate"))}</th><th>${escapeHtml(tr("Review status"))}</th></tr></thead><tbody>${report.groups.map((group) => `<tr><td class="keyword-response-text">${escapeHtml(group.category)}<span class="cell-muted" title="${escapeHtml(`${group.model} · ${group.prompt_version}`)}">${escapeHtml(group.model)} · ${escapeHtml(group.prompt_version)}</span></td><td>${escapeHtml(group.ratings)}<span class="cell-muted">${escapeHtml(group.up)} ${escapeHtml(tr("likes"))} · ${escapeHtml(group.down)} ${escapeHtml(tr("dislikes"))}</span></td><td>${escapeHtml(group.approval_percent)}%</td><td><span class="tag ${group.qualified_for_review ? "good" : ""}">${escapeHtml(tr(group.qualified_for_review ? "Qualified for administrator review" : "Not yet qualified"))}</span>${group.qualified_for_review ? "" : `<span class="cell-muted">${escapeHtml(tr("Likes needed"))}: ${escapeHtml(group.likes_needed)}</span>`}${group.approval_required ? `<p>${escapeHtml(tr("Administrator approval required before changes."))}</p>` : ""}</td></tr>${group.recommendations?.length ? `<tr><td colspan="4" class="keyword-response-text"><strong>${escapeHtml(tr("Recommendations"))}</strong><ol>${group.recommendations.map((recommendation) => `<li>${escapeHtml(feedbackRecommendationText(recommendation, group))}</li>`).join("")}</ol></td></tr>` : ""}`).join("")}</tbody></table>`;
+  }
+
+  function renderFeedbackError(target, error, action) {
+    target.innerHTML = `<div class="empty" role="alert">${escapeHtml(tr("Feedback could not be loaded. Retry to try again."))}<span class="cell-muted">${escapeHtml(tr(error.message))}</span><button class="button secondary small" data-action="${escapeHtml(action)}">${escapeHtml(tr("Retry"))}</button></div>`;
   }
 
   function renderSponsorTiers(rows) {
@@ -199,10 +213,13 @@
   async function loadOverview() {
     loadStats();
     const ticket = version("overview");
+    const guildId = state.guildId;
+    const feedbackTarget = $("#overview-feedback");
+    feedbackTarget.innerHTML = `<div class="empty">${escapeHtml(tr(guildId ? "Loading feedback…" : "Enter a server ID above."))}</div>`;
     const requests = [api("/reminders/all"), api("/birthdays"), api("/jokes"), api("/wishlist/all")];
     if (state.guildId) requests.push(api(`/keywords/get?${query({ guild_id: state.guildId })}`)); else requests.push(Promise.resolve({}));
     const results = await Promise.allSettled(requests);
-    if (!ticket.current()) return;
+    if (!ticket.current() || guildId !== state.guildId) return;
     const values = results.map((result) => result.status === "fulfilled" ? result.value : null);
     const keywordCount = values[4] ? Object.values(values[4]).reduce((sum, items) => sum + items.length, 0) : "—";
     const counts = [keywordCount, values[0]?.length ?? "—", values[1]?.length ?? "—", values[2]?.length ?? "—", values[3]?.length ?? "—"];
@@ -212,13 +229,17 @@
       if (state.userId) params.user_id = state.userId;
       try {
         const [ranking, feedback] = await Promise.all([api(`/keywords/top?${query(params)}`), api(`/llm/feedback/summary?${query({ guild_id: state.guildId })}`)]);
-        if (!ticket.current()) return;
+        if (!ticket.current() || guildId !== state.guildId) return;
         renderRankings($("#overview-keywords"), ranking.keywords);
-        renderFeedback($("#overview-feedback"), feedback.groups);
-      } catch (error) { if (ticket.current()) toast(error.message, "error"); }
+        renderFeedback(feedbackTarget, feedback);
+      } catch (error) {
+        if (ticket.current() && guildId === state.guildId) {
+          renderFeedbackError(feedbackTarget, error, "refresh-overview");
+          toast(error.message, "error");
+        }
+      }
     } else {
       $("#overview-keywords").innerHTML = '<div class="empty">Enter a server ID above.</div>';
-      $("#overview-feedback").innerHTML = '<div class="empty">Enter a server ID above.</div>';
     }
   }
 
@@ -443,20 +464,27 @@
 
   async function loadSettings() {
     const ticket = version("settings");
+    const guildId = state.guildId;
+    const feedbackTarget = $("#settings-feedback");
+    feedbackTarget.innerHTML = `<div class="empty">${escapeHtml(tr(guildId ? "Loading feedback…" : "Enter a server ID to load feedback."))}</div>`;
     const tiers = loadSponsorTiers();
     const sponsor = loadSponsorSetting();
     try {
-      const model = await api("/llm/mention-model"); if (!ticket.current()) return;
+      const model = await api("/llm/mention-model"); if (!ticket.current() || guildId !== state.guildId) return;
       $("#model-select").innerHTML = model.allowed_models.map((name) => `<option ${name === model.model ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
       if (state.guildId) {
-        const [inactivity, feedback] = await Promise.all([api(`/inactivity/guilds/${state.guildId}`), api(`/llm/feedback/summary?${query({ guild_id: state.guildId })}`)]); if (!ticket.current()) return;
+        const [inactivity, feedback] = await Promise.all([api(`/inactivity/guilds/${state.guildId}`), api(`/llm/feedback/summary?${query({ guild_id: state.guildId })}`)]); if (!ticket.current() || guildId !== state.guildId) return;
         $("#inactivity-state").innerHTML = `<span class="tag ${inactivity.enabled ? "good" : "bad"}">${inactivity.enabled ? "Enabled" : "Disabled"}</span>`;
-        renderFeedback($("#settings-feedback"), feedback.groups);
+        renderFeedback(feedbackTarget, feedback);
       } else {
         $("#inactivity-state").innerHTML = '<div class="empty">Enter a server ID.</div>';
-        $("#settings-feedback").innerHTML = '<div class="empty">Enter a server ID to load feedback.</div>';
       }
-    } catch (error) { if (ticket.current()) toast(error.message, "error"); }
+    } catch (error) {
+      if (ticket.current() && guildId === state.guildId) {
+        renderFeedbackError(feedbackTarget, error, "load-settings");
+        toast(error.message, "error");
+      }
+    }
     await Promise.all([tiers, sponsor]);
   }
 
