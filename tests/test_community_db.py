@@ -106,17 +106,15 @@ def test_public_vote_requires_message_binding(tmp_db):
     assert community.cast_vote(1, session['id'], 30, '0', now=101)['status'] == 'closed'
 
 
-def test_tribunal_subject_consent_and_exact_vote_window(tmp_db):
+def test_tribunal_immediate_and_exact_vote_window(tmp_db):
     session = community.create_session(1, 10, 20, 'tribunal', 'ro', {'accusation': 'Forgot coffee'}, subject_id=30, now=100)
     sid = session['id']
     community.bind_session_message(1, sid, 1000)
-    assert community.cast_vote(1, sid, 40, 'guilty', now=150)['status'] == 'closed'
-    assert community.transition_session(1, sid, 'pending', 'active', 20, now=200)['status'] == 'forbidden'
-    accepted = community.transition_session(1, sid, 'pending', 'active', 30, now=200)
-    assert accepted['status'] == 'changed'
-    assert accepted['session']['deadline'] == 800
-    assert community.cast_vote(1, sid, 40, 'guilty', now=799)['status'] == 'changed'
-    assert community.cast_vote(1, sid, 41, 'innocent', now=800)['status'] == 'closed'
+    assert session['phase'] == 'active' and session['deadline'] == 700
+    for user_id in (20, 30, 40):
+        assert community.cast_vote(1, sid, user_id, 'guilty', now=150)['status'] == 'changed'
+    assert community.cast_vote(1, sid, 40, 'innocent', now=699)['status'] == 'changed'
+    assert community.cast_vote(1, sid, 41, 'innocent', now=700)['status'] == 'closed'
     assert community.transition_session(1, sid, 'pending', 'active', 30, now=201)['status'] == 'closed'
 
 

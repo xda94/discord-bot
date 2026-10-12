@@ -782,7 +782,7 @@ Commands and examples:
 
 | Invocation | Flow |
 |---|---|
-| `/tribunal acuzat:@member acuzatie:Who stole the biscuits?` | Accused-only joke consent within 24 hours; then a 600-second Guilty/Innocent vote. |
+| `/tribunal acuzat:@member acuzatie:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
 | `/sedinta subiect:Lunch optiuni:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
 | `/quest` | Private safe catalog offer; voluntary acceptance publishes a seven-day challenge, completion opens ten-minute verification. |
 | `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
@@ -1127,8 +1127,9 @@ response mode. Pending quote content and voter identities are excluded.
 | `GET` | `/community/titles?guild_id=<id>` | Symbolic awards. |
 | `DELETE` | `/community/titles/<user_id>/<title_key>` | `{guild_id}`; explicitly remove award. |
 
-There are no admin vote, consent, private humor generation or tribunal-consent
-bypass routes. The dashboard preserves its operator trust model and uses
+There are no admin vote, quote consent or private humor generation routes.
+Tribunal voting starts immediately without an accused-consent step.
+The dashboard preserves its operator trust model and uses
 existing bearer/session storage. **Community games / Jocuri de comunitate**
 shows these four panels, delivery errors and a compact bilingual command guide;
 operators can cancel sessions, manage habits and remove quotes/titles after

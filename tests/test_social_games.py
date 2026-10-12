@@ -45,8 +45,9 @@ def session(kind="sedinta", phase="active", deadline=None, creator=42, bound=Tru
     row = community.create_session(12, 23, creator, kind, "en", payload, subject_id=45 if kind == "tribunal" else None, now=time.time() - 100)
     if bound:
         community.bind_session_message(12, row["id"], 99)
-    if kind == "tribunal" and phase == "active":
-        community.transition_session(12, row["id"], "pending", "active", 45)
+    if kind == "tribunal" and phase == "pending":
+        with community._connect(commit=True) as cursor:
+            cursor.execute("UPDATE community_sessions SET phase='pending',deadline=? WHERE id=?", (time.time() + 86400, row["id"]))
     if kind == "quest" and phase in ("active", "verification"):
         community.transition_session(12, row["id"], "pending", "active", creator)
         if phase == "verification":
@@ -75,13 +76,14 @@ def test_command_registration():
 
 
 @pytest.mark.parametrize("language", ["en", "ro"])
-def test_tribunal_public_consent_and_safe_mentions(tmp_db, language):
+def test_tribunal_immediate_vote_and_safe_mentions(tmp_db, language):
     value = interaction(language=language)
     accused = SimpleNamespace(id=45, bot=False, guild=value.guild)
     row = asyncio.run(feature(value).tribunal(value, accused, "@everyone **biscuit theft**"))
-    assert row["phase"] == "pending" and row["language"] == language
+    assert row["phase"] == "active" and row["language"] == language
     assert row["message_id"] == 99
-    assert community.cast_vote(12, row["id"], 60, "guilty")["status"] == "closed"
+    assert row["deadline"] == row["created_at"] + 600
+    assert community.cast_vote(12, row["id"], 60, "guilty")["status"] == "changed"
     sent = value.channel.send.call_args
     assert "<@45>" in sent.args[0]
     assert "@everyone" not in sent.args[0]
@@ -89,7 +91,7 @@ def test_tribunal_public_consent_and_safe_mentions(tmp_db, language):
     assert sent.kwargs["allowed_mentions"].roles is False
     assert [user.id for user in sent.kwargs["allowed_mentions"].users] == [45]
     assert sent.kwargs["suppress_embeds"] is True
-    assert [button.custom_id for button in sent.kwargs["view"].children] == [f"social:{row['id']}:accept", f"social:{row['id']}:decline"]
+    assert [button.custom_id for button in sent.kwargs["view"].children] == [f"social:{row['id']}:guilty", f"social:{row['id']}:innocent"]
     games.generate_humor.assert_not_called()
 
 
@@ -115,6 +117,23 @@ def test_tribunal_acceptance_starts_exact_ten_minutes(tmp_db, monkeypatch):
     assert value.message.edit.call_args.kwargs["allowed_mentions"].users is False
     assert {button.custom_id.rsplit(":", 1)[1] for button in value.message.edit.call_args.kwargs["view"].children} == {"guilty", "innocent"}
     assert games.record.call_args_list[0].args[:2] == ("control", "community/accept")
+
+
+def test_tribunal_all_members_can_vote_immediately(tmp_db):
+    async def run():
+        accused = interaction(user_id=45)
+        worker = feature(accused)
+        row = await worker.tribunal(accused, accused.user, "Biscuit theft")
+        voting = accused.channel.send.call_args.kwargs["view"]
+        assert all(not button.disabled for button in voting.children)
+        for user_id in (42, 45, 60, 61):
+            voter = interaction(user_id=user_id)
+            await voting.children[0].callback(voter)
+            assert voter.followup.send.call_args.args[0] == games.text("saved", "en")
+        assert community.session_tally(12, row["id"]) == {"guilty": 4, "innocent": 0}
+        await voting.children[1].callback(interaction(user_id=60))
+        assert community.session_tally(12, row["id"]) == {"guilty": 3, "innocent": 1}
+    asyncio.run(run())
 
 
 def test_decline_has_no_model(tmp_db):

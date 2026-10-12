@@ -457,7 +457,7 @@ menu; natural-language mention parsing does not support them.
 
 | Invocation | Behavior |
 |---|---|
-| `/tribunal acuzat:@member acuzatie:Who hid the coffee?` | Joke accusation, maximum 500 characters. The accused alone can accept or decline within 24 hours; voting begins only after acceptance. |
+| `/tribunal acuzat:@member acuzatie:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
 | `/sedinta subiect:Lunch optiuni:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
 | `/quest` | Private voluntary safe challenge; acceptance publishes it. Submit completion within seven days, or abandon it. One active quest per member/server. |
 | `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |

@@ -4,7 +4,7 @@
     "Community games":"Jocuri de comunitate",
     "Manage shared games, weekly habits, approved quotes, and symbolic titles.":"Gestionează jocurile comune, obiceiurile săptămânale, citatele aprobate și titlurile simbolice.",
     "Command guide":"Ghidul comenzilor",
-    "Accused-only acceptance before a ten-minute Guilty/Innocent vote; ties and no votes are neutral.":"Doar acuzatul acceptă înaintea votului Vinovat/Nevinovat de zece minute; egalitatea și lipsa voturilor sunt neutre.",
+    "All human server members can vote Guilty/Innocent immediately for ten minutes; ties and no votes are neutral.":"Toți membrii umani ai serverului pot vota imediat Vinovat/Nevinovat timp de zece minute; egalitatea și lipsa voturilor sunt neutre.",
     "Choose two to five options separated by |; ten-minute voting, neutral ties.":"Alege două până la cinci opțiuni separate prin |; vot de zece minute, egalitățile sunt neutre.",
     "Accept a safe challenge, submit within seven days, then a ten-minute vote awards a symbolic title only for a positive majority.":"Acceptă o provocare sigură, anunță finalizarea în șapte zile, apoi un vot de zece minute acordă un titlu simbolic doar cu majoritate pozitivă.",
     "A weekly 3×3 board; another member confirms each mark. Manage habits with /bingo-obicei and /bingo-obicei-sterge.":"O tablă săptămânală 3×3; alt membru confirmă fiecare marcaj. Gestionează obiceiurile cu /bingo-obicei și /bingo-obicei-sterge.",
