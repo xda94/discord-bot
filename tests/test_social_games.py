@@ -83,8 +83,11 @@ def test_tribunal_public_consent_and_safe_mentions(tmp_db, language):
     assert row["message_id"] == 99
     assert community.cast_vote(12, row["id"], 60, "guilty")["status"] == "closed"
     sent = value.channel.send.call_args
+    assert "<@45>" in sent.args[0]
     assert "@everyone" not in sent.args[0]
     assert sent.kwargs["allowed_mentions"].everyone is False
+    assert sent.kwargs["allowed_mentions"].roles is False
+    assert [user.id for user in sent.kwargs["allowed_mentions"].users] == [45]
     assert sent.kwargs["suppress_embeds"] is True
     assert [button.custom_id for button in sent.kwargs["view"].children] == [f"social:{row['id']}:accept", f"social:{row['id']}:decline"]
     games.generate_humor.assert_not_called()
@@ -108,6 +111,8 @@ def test_tribunal_acceptance_starts_exact_ten_minutes(tmp_db, monkeypatch):
     asyncio.run(feature(value).handle_control(value, 12, row["id"], "accept"))
     changed = community.get_session(12, row["id"])
     assert changed["phase"] == "active" and changed["deadline"] == now + 600
+    assert "<@45>" in value.message.edit.call_args.kwargs["content"]
+    assert value.message.edit.call_args.kwargs["allowed_mentions"].users is False
     assert {button.custom_id.rsplit(":", 1)[1] for button in value.message.edit.call_args.kwargs["view"].children} == {"guilty", "innocent"}
     assert games.record.call_args_list[0].args[:2] == ("control", "community/accept")
 
