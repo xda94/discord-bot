@@ -154,7 +154,7 @@ def create_session(guild_id, channel_id, creator_id, kind, language, payload, su
             quote = _quote(c, guild_id, payload['quote_id'])
             if not quote or quote['status'] != 'approved' or quote['quote_text'] != payload['quote_text'] or quote['author_id'] != payload['correct_author_id']:
                 raise ValueError('quote_unavailable')
-        phase = 'pending' if kind in ('tribunal', 'quest') else 'active'
+        phase = 'pending' if kind == 'quest' else 'active'
         deadline = now + (86400 if phase == 'pending' else 600)
         c.execute('INSERT INTO community_sessions (guild_id,channel_id,creator_id,subject_id,kind,phase,language,payload,created_at,deadline) VALUES (?,?,?,?,?,?,?,?,?,?)', (guild_id, channel_id, creator_id, subject_id, kind, phase, language, encoded, now, deadline))
         result = _session(c, guild_id, c.lastrowid)

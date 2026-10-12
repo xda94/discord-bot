@@ -491,7 +491,7 @@ class SocialGamesFeature:
         await self._tick()
 
     def _register_commands(self):
-        @self.tree.command(name="tribunal", description="Tribunal, cu acordul acuzatului / Tribunal with consent")
+        @self.tree.command(name="tribunal", description="Tribunal: toți membrii votează imediat / All members vote immediately")
         @app_commands.guild_only()
         @app_commands.describe(acuzat="Membrul acuzat / Accused member", acuzatie="Acuzație în glumă / Joke accusation, maximum 500 characters")
         async def tribunal(interaction: discord.Interaction, acuzat: discord.Member, acuzatie: str):
