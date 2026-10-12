@@ -179,6 +179,7 @@ HELP_TEXT = (
     "previous ordinary messages.\n\n"
     "**/excuse** `<reason>` `<style>`\n"
     "Show a private excuse in corporate, grandmother, gamer, or public-servant style. "
+    "The result mentions you and shows your original reason and selected style. "
     "Reason limit: 500 characters. Private reasons and generated responses are not saved.\n\n"
     "**/worth-it** `<url>`\n"
     "Privately show current, minimum, maximum and median recorded prices, plus a calculated "

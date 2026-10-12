@@ -798,9 +798,10 @@ Shared games, museum, bingo and horoscope are guild-only. Excuses and wishlist
 humor also work in DMs. For guild invocations, both defer ephemerally and deliver
 the full result as an ephemeral followup in the command channel, visible only
 to the requester with Discord's Dismiss message control. Neither sends a DM;
-blocked DMs do not affect these commands. The completed `/worth-it` result
-prefixes the requester's mention and allows mentions only for that user.
-Private reasons/responses are not
+blocked DMs do not affect these commands. Both completed results
+prefix the requester's mention and allow mentions only for that user.
+`/excuse` renders the original reason and localized selected style outside model
+prose, escaping input mentions and Markdown. Private reasons/responses are not
 persisted. `/worth-it` only reads
 requester-owned `get_scraped_item` and `get_price_history`; no scrape, refresh,
 purchase or history mutation. Current/minimum/maximum/median prices and signed

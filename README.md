@@ -479,7 +479,8 @@ and `/worth-it` also work in DMs. On a server, their full results appear in the
 command channel as ephemeral messages visible only to the requester, with
 Discord's **Dismiss message** control. They do not send results by DM and work
 even when DMs are blocked. Private excuse reasons and generated responses are not
-saved. The completed `/worth-it` result mentions only the requester.
+saved. Both completed results mention only the requester. `/excuse` also shows
+the original reason and selected style above the generated excuse.
 `/worth-it` never refreshes prices, scrapes a page or makes a purchase.
 It reports the current saved price, recorded minimum, maximum and median, and
 percentage differences from the median and minimum. With at least seven valid

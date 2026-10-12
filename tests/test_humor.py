@@ -74,10 +74,14 @@ def test_excuses_bilingual_styles_and_private_delivery(tmp_db, monkeypatch, lang
     value.user.send.assert_not_called()
     value.followup.send.assert_awaited_once()
     sent = value.followup.send.call_args.args[0]
-    assert sent == common.EXCUSE_FALLBACKS[style][language == "ro"].format(reason="private reason")
+    request = common.text("excuse_request", language, reason="private reason", style=common.EXCUSE_STYLES[style][language == "ro"])
+    result = common.EXCUSE_FALLBACKS[style][language == "ro"].format(reason="private reason")
+    assert sent == f"<@{value.user.id}>\n{request}\n\n" + common.text("excuse_result", language) + "\n" + result
     assert len(sent) <= 2000
     assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
-    assert value.followup.send.call_args.kwargs["allowed_mentions"].users is False
+    mentions = value.followup.send.call_args.kwargs["allowed_mentions"]
+    assert [user.id for user in mentions.users] == [value.user.id]
+    assert mentions.roles is False and mentions.replied_user is False
     assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     generate.assert_awaited_once()
@@ -86,6 +90,25 @@ def test_excuses_bilingual_styles_and_private_delivery(tmp_db, monkeypatch, lang
 def test_excuse_styles_are_distinct():
     for language in ("en", "ro"):
         assert len({values[language == "ro"] for values in common.EXCUSE_FALLBACKS.values()}) == 4
+
+
+@pytest.mark.parametrize("language", ["en", "ro"])
+def test_excuse_preserves_input_independently_of_generated_text(tmp_db, monkeypatch, language):
+    value = interaction(locale=language)
+    reason = "@everyone <@123456789012345678> **missed the meeting**\n" + "*" * 430
+    monkeypatch.setattr(humor, "generate_humor", AsyncMock(return_value="Generated excuse"))
+    asyncio.run(feature().excuse(value, reason, "corporate"))
+    sent = value.followup.send.call_args.args[0]
+    assert sent.startswith(f"<@{value.user.id}>\n")
+    assert common.safe_text(reason, 1500) in sent
+    assert "Generated excuse" in sent
+    assert "@everyone" not in sent and "<@123456789012345678>" not in sent
+    assert len(sent) <= 2000
+    mentions = value.followup.send.call_args.kwargs["allowed_mentions"]
+    assert [user.id for user in mentions.users] == [value.user.id]
+    assert mentions.everyone is False and mentions.roles is False
+    assert value.followup.send.call_args.kwargs["ephemeral"] is True
+    value.user.send.assert_not_called()
 
 
 @pytest.mark.parametrize("reason", ["", "  ", "x" * 501])
@@ -119,6 +142,8 @@ def test_blocked_dm_does_not_prevent_ephemeral_result(tmp_db, monkeypatch, langu
     assert "secret generated result" in private
     if command == "worth-it":
         assert "secret title" in private
+    else:
+        assert "private reason" in private
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
     assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
