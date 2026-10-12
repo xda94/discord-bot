@@ -5,6 +5,7 @@ import requests
 
 from llm.client import (
     LlamaCppError,
+    LlamaCppTimeoutError,
     get_allowed_models,
     get_default_model,
     get_mention_model,
@@ -229,12 +230,40 @@ def test_truncated_valid_json_is_not_returned_for_memory_commit(monkeypatch):
 def test_timeout_logs_request_duration_without_prompt(monkeypatch, caplog):
     caplog.set_level("INFO", logger="discord_bot")
     monkeypatch.setattr(requests, "post", MagicMock(side_effect=requests.exceptions.Timeout))
-    with pytest.raises(LlamaCppError, match="within 5s"):
+    with pytest.raises(LlamaCppTimeoutError, match="within 5s") as error:
         query_llm("private-message-content", timeout=5)
+    assert error.value.timeout_seconds == 5
     assert "LLM request started" in caplog.text
     assert "LLM HTTP wait ended" in caplog.text
     assert "elapsed=" in caplog.text
     assert "private-message-content" not in caplog.text
+
+
+@pytest.mark.parametrize("image,vision_timeout,general_timeout,explicit,expected", [
+    (False, None, 180, None, 180),
+    (True, None, 180, None, 600),
+    (True, "900", 180, None, 900),
+    (False, "900", 180, None, 180),
+    (True, None, 1200, None, 1200),
+    (True, "900", 180, 15, 15),
+])
+def test_vision_timeout_is_separate_and_explicit_timeout_wins(
+    monkeypatch, image, vision_timeout, general_timeout, explicit, expected,
+):
+    monkeypatch.setattr("llm.client.LLAMA_CPP_TIMEOUT", general_timeout)
+    if vision_timeout is None:
+        monkeypatch.delenv("LLAMA_CPP_VISION_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("LLAMA_CPP_VISION_TIMEOUT", vision_timeout)
+    response = MagicMock(ok=True)
+    response.json.return_value = {"choices": [{"message": {"content": "red"}}]}
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(requests, "post", post)
+    query_llm(
+        "What color?", timeout=explicit,
+        **({"image_bytes": b"png", "image_mime": "image/png"} if image else {}),
+    )
+    assert post.call_args.kwargs["timeout"] == (10, expected)
 
 
 def test_success_logs_server_usage_and_timings_without_content(monkeypatch, caplog):

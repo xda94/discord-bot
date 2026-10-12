@@ -606,6 +606,43 @@ def test_prepare_image_preserves_valid_png_and_jpeg(data, mime):
         assert image.size == (3, 2)
 
 
+@pytest.mark.parametrize("image_format", ["JPEG", "PNG", "WEBP"])
+def test_large_images_are_resized_proportionally_before_inference(monkeypatch, image_format):
+    monkeypatch.delenv("LLM_IMAGE_MAX_EDGE", raising=False)
+    data = _image_bytes(image_format, size=(2048, 1024))
+    prepared, mime = prepare_image(data)
+    assert mime == ("image/jpeg" if image_format == "JPEG" else "image/png")
+    with Image.open(io.BytesIO(prepared)) as image:
+        assert image.size == (1280, 640)
+        red, green, blue = image.convert("RGB").getpixel((640, 320))
+        assert red > 240 and green < 10 and blue < 10
+
+
+def test_resize_preserves_transparency_and_can_be_configured(monkeypatch):
+    monkeypatch.setenv("LLM_IMAGE_MAX_EDGE", "32")
+    data = _image_bytes("PNG", size=(40, 80), mode="RGBA", color=(255, 0, 0, 128))
+    prepared, mime = prepare_image(data)
+    assert mime == "image/png"
+    with Image.open(io.BytesIO(prepared)) as image:
+        assert image.size == (16, 32)
+        assert image.mode == "RGBA"
+        assert image.getpixel((8, 16))[3] == 128
+    monkeypatch.setenv("LLM_IMAGE_MAX_EDGE", "100")
+    assert prepare_image(data)[0] is data
+
+
+def test_resize_applies_phone_photo_orientation(monkeypatch):
+    monkeypatch.setenv("LLM_IMAGE_MAX_EDGE", "32")
+    exif = Image.Exif()
+    exif[274] = 6
+    data = _image_bytes("JPEG", size=(80, 40), exif=exif)
+    prepared, mime = prepare_image(data)
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(prepared)) as image:
+        assert image.size == (16, 32)
+        assert image.getexif().get(274, 1) == 1
+
+
 @pytest.mark.parametrize("image_format", ["GIF", "WEBP", "BMP", "TIFF"])
 def test_prepare_image_normalizes_other_supported_formats(image_format):
     data = _image_bytes(image_format)
@@ -888,6 +925,31 @@ def test_attached_image_reaches_http_request_and_retry_before_discord_reply(monk
     attachment.read.assert_awaited_once_with()
     feature._reply_mention.assert_awaited_once_with(job, "Un dreptunghi roșu.")
     feature._reply_job_error.assert_not_awaited()
+
+
+def test_image_http_timeout_is_localized_and_never_retried(monkeypatch):
+    monkeypatch.setenv("LLAMA_CPP_VISION_TIMEOUT", "600")
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    monkeypatch.setattr("features.llm_mention.record_for", AsyncMock())
+    feature = _handling_feature()
+    feature._reply_mention = AsyncMock()
+    message = _mention_message(text="Ce vezi în poză?", attachments=[_attachment()])
+    props = MagicMock(ok=True)
+    props.json.return_value = {"modalities": {"vision": True}}
+    monkeypatch.setattr(requests, "get", MagicMock(return_value=props))
+    post = MagicMock(side_effect=requests.exceptions.ReadTimeout)
+    monkeypatch.setattr(requests, "post", post)
+
+    async def process():
+        assert await feature.handle_message(message)
+        await feature._process_job(feature._enqueue_job.await_args.args[0])
+
+    asyncio.run(process())
+    post.assert_called_once()
+    assert post.call_args.kwargs["timeout"] == (10, 600)
+    message.reply.assert_awaited_once()
+    assert "Modelul nu a terminat analiza imaginii în 600 de secunde" in message.reply.await_args.args[0]
+    feature._reply_mention.assert_not_awaited()
 
 
 def test_busy_multi_image_request_can_be_queued(monkeypatch):

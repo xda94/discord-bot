@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import discord
 from discord import app_commands
-from PIL import Image
+from PIL import Image, ImageOps
 
 import db
 from i18n import t, language_for, localize
@@ -22,6 +22,7 @@ from features.llm_feedback import LLMFeedbackFeature
 from features.user_memory import UserMemoryFeature
 from llm.client import (
     LlamaCppError,
+    LlamaCppTimeoutError,
     get_allowed_models,
     get_mention_model,
     llama_supports_vision,
@@ -200,6 +201,7 @@ def select_image_attachments(
 def prepare_image(data: bytes) -> tuple[bytes, str]:
     if not data or len(data) > MAX_IMAGE_BYTES:
         raise ValueError("That image is empty or exceeds the 8 MiB limit.")
+    max_edge = max(1, int(os.getenv("LLM_IMAGE_MAX_EDGE", "1280")))
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -220,18 +222,35 @@ def prepare_image(data: bytes) -> tuple[bytes, str]:
             with Image.open(io.BytesIO(data)) as image:
                 image.seek(0)
                 image.load()
-                if image_format == "JPEG":
-                    return data, "image/jpeg"
-                if image_format == "PNG" and not image.is_animated:
-                    return data, "image/png"
-                mode = (
-                    "RGBA"
-                    if "A" in image.getbands() or "transparency" in image.info
-                    else "RGB"
+                resize = max(image.size) > max_edge
+                if image_format == "JPEG" and not resize:
+                    normalized = data
+                    image_mime = "image/jpeg"
+                elif image_format == "PNG" and not image.is_animated and not resize:
+                    normalized = data
+                    image_mime = "image/png"
+                else:
+                    image = ImageOps.exif_transpose(image)
+                    mode = (
+                        "RGBA"
+                        if "A" in image.getbands() or "transparency" in image.info
+                        else "RGB"
+                    )
+                    image = image.convert(mode)
+                    image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                    output = io.BytesIO()
+                    image_mime = "image/png"
+                    if image_format == "JPEG":
+                        image.save(output, format="JPEG", quality=90)
+                        image_mime = "image/jpeg"
+                    else:
+                        image.save(output, format="PNG")
+                    normalized = output.getvalue()
+                logger.info(
+                    "LLM image prepared source_dimensions=%sx%s prepared_dimensions=%sx%s "
+                    "source_bytes=%d prepared_bytes=%d resized=%s mime=%s",
+                    width, height, *image.size, len(data), len(normalized), resize, image_mime,
                 )
-                output = io.BytesIO()
-                image.convert(mode).save(output, format="PNG")
-                normalized = output.getvalue()
     except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
         raise ValueError(
             "That image has too many pixels. Please use an image under 25 megapixels."
@@ -242,7 +261,7 @@ def prepare_image(data: bytes) -> tuple[bytes, str]:
         ) from exc
     if len(normalized) > MAX_IMAGE_BYTES:
         raise ValueError("That image exceeds the 8 MiB limit after conversion.")
-    return normalized, "image/png"
+    return normalized, image_mime
 
 
 def budget_reference_context(
@@ -771,6 +790,13 @@ class LLMMentionFeature:
                     job.question,
                     **generation_kwargs,
                 )
+        except LlamaCppTimeoutError as exc:
+            await self._reply_job_error(
+                job,
+                t("image_timeout", language_for(job.question, job.assistant_profile),
+                  seconds=exc.timeout_seconds),
+            )
+            return
         except Exception:
             logger.exception("Unexpected error in mention reply")
             await self._reply_job_error(

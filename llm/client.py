@@ -24,6 +24,16 @@ class LlamaCppError(Exception):
     pass
 
 
+class LlamaCppTimeoutError(LlamaCppError):
+    def __init__(self, timeout_seconds: int):
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"llama.cpp did not respond within {timeout_seconds}s.")
+
+
+def get_vision_timeout() -> int:
+    return max(1, int(os.getenv("LLAMA_CPP_VISION_TIMEOUT", str(max(600, LLAMA_CPP_TIMEOUT)))))
+
+
 def _numeric_metric(mapping: object, key: str) -> int | float | None:
     if not isinstance(mapping, dict):
         return None
@@ -188,7 +198,7 @@ def query_llm(
     instruction for feature-specific behavior.
     """
     if timeout is None:
-        timeout = LLAMA_CPP_TIMEOUT
+        timeout = get_vision_timeout() if image_bytes is not None else LLAMA_CPP_TIMEOUT
     if model is None:
         model = get_default_model()
 
@@ -278,10 +288,7 @@ def query_llm(
             timeout,
             time.monotonic() - started,
         )
-        raise LlamaCppError(
-            f"llama.cpp did not respond within {timeout}s. "
-            "The model may still be loading; try again in a moment."
-        ) from exc
+        raise LlamaCppTimeoutError(timeout) from exc
     except requests.exceptions.ConnectionError as exc:
         logger.warning(
             "LLM connection failed request=%s model=%s elapsed=%.2fs error=%s",

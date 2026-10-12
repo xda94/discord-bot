@@ -368,8 +368,11 @@ dimensions are validated from the downloaded image. Downloads begin only after
 the job becomes active and vision is confirmed through `/props`
 `modalities.vision: true`. Actual bytes determine the format, regardless of
 filename or MIME metadata, and the first frame or page must decode fully.
-Valid static JPEG/PNG bytes are preserved; other supported formats are normalized
-locally to RGB/RGBA PNG. Both input and prepared output must fit the 8 MiB
+Static JPEG/PNG bytes within `LLM_IMAGE_MAX_EDGE` (default 1280 pixels) are
+preserved. Larger images are resized proportionally with EXIF orientation applied;
+resized JPEGs stay JPEG, and other formats become RGB/RGBA PNG. Transparency is
+preserved. Logs include source/prepared dimensions and byte counts. Both input
+and prepared output must fit the 8 MiB
 limit, and decoded dimensions must fit the 25-megapixel limit. Download,
 decode, unsupported-format, or limit failures advance to the next candidate;
 processing stops after one succeeds. Bytes exist only for that active request
@@ -377,6 +380,14 @@ and are neither persisted nor logged. The worker returns a specific message for
 disabled/unavailable vision, failed image processing, or inference failure.
 Vision prompts use a 4,000-character memory/history reference budget; memory
 consolidation still sees only the user's authored text.
+
+Production logs from 2026-10-12 confirmed an image-bearing HTTP request timing
+out after 180 seconds despite advertised vision support. Image requests now
+use `LLAMA_CPP_VISION_TIMEOUT`, defaulting to the larger of 600 seconds and
+`LLAMA_CPP_TIMEOUT`; explicit per-call timeouts still win. `LlamaCppTimeoutError`
+preserves the wait limit through mention generation to a localized worker reply.
+HTTP timeouts are not retried automatically, since server inference may continue.
+These changes still require validation against the deployed CPU server.
 
 Generic English/Romanian image-access denials trigger one retry with the same
 image and current question, without stale chat or saved memory. Repeated denials
@@ -1179,6 +1190,8 @@ Important environment values include:
 - `LLAMA_CPP_ALLOWED_MODELS`
 - `MENTION_LLAMA_CPP_MODEL`
 - `LLAMA_CPP_TIMEOUT`
+- `LLAMA_CPP_VISION_TIMEOUT`
+- `LLM_IMAGE_MAX_EDGE`
 - `LLM_CAPACITY_DIR`
 - `LLAMA_CPP_API_KEY`
 - `ASK_COOLDOWN_SECONDS`
