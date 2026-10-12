@@ -255,7 +255,11 @@ def build_mention_prompt(
 
     if has_image:
         prompt += (
-            "An image is attached. Ground visual claims in what is actually visible; "
+            "An image is attached. Its decoded pixels are included in this request; "
+            "inspect them to answer <current_message>. Earlier claims that you cannot "
+            "see images do not describe this request. Do not ask for a PNG or JPEG "
+            "just because earlier chat lacked an image. "
+            "Ground visual claims in what is actually visible; "
             "say when something cannot be read or determined. Describe only when asked "
             "to describe; solve or explain a visible task only when <current_message> "
             "explicitly asks for it.\n"
@@ -401,6 +405,19 @@ def _is_obvious_echo(reply: str, current_message: str) -> bool:
     # that quotes the question and then actually answers it remains valid.
     repeats, remainder = divmod(len(reply_words), len(message_words))
     return repeats > 0 and remainder == 0 and reply_words == message_words * repeats
+
+
+def _denies_image_access(reply: str) -> bool:
+    decomposed = unicodedata.normalize("NFKD", html.unescape(reply).casefold())
+    text = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return bool(re.match(
+        r"^\s*(?:(?:sorry|i['’]m sorry|unfortunately|imi pare rau|din pacate)[,.:!]?\s+)?(?:"
+        r"i (?:can['’]t|cannot|am unable to) (?:see|view|access) "
+        r"(?:the |this |your |attached |uploaded |an? )*(?:image|photo|picture)s?|"
+        r"nu pot (?:sa )?(?:vad|vedea|vizualiza|accesez|accesa) "
+        r"(?:aceasta |acea |atasata )?(?:poza|imaginea|fotografia|poze|imagini|fotografii)"
+        r")(?:\s+(?:attached|uploaded|atasata|trimisa))?(?=\s*(?:[.,!;:]|$))", text,
+    ))
 
 
 def _parse_mention_result(
@@ -560,10 +577,21 @@ def generate_mention_result(
     else:
         prompt = prompt.replace("Rules:\n", "Rules:\n- You cannot execute bot actions in this conversation. Never claim to have saved, scheduled, changed, or deleted anything. For unsupported actions, explain how to use /help.\n", 1)
     rejection_reason = "empty text"
+    retry_without_context = False
     for attempt in range(2):
         try:
             attempt_prompt = prompt
-            if attempt:
+            if retry_without_context:
+                attempt_prompt = build_mention_prompt(
+                    username, content, has_image=True,
+                    assistant_profile=assistant_profile, json_reply=True,
+                ) + (
+                    "\nInspect the attached image and answer the current request. "
+                    "Do not invent visual details. If the image input is genuinely "
+                    "unavailable, say so; if only a detail is unclear, name that detail. "
+                    "You cannot execute bot actions; never claim to have done so."
+                )
+            elif attempt:
                 attempt_prompt += (
                     f"\nThe previous output was invalid: {rejection_reason}. "
                     "Answer the user's question directly in text. For a question about "
@@ -599,6 +627,9 @@ def generate_mention_result(
                 reply_names=(username, *reply_names),
                 allow_action=allow_action,
             )
+            if image_bytes is not None and _denies_image_access(result.text):
+                retry_without_context = True
+                raise ValueError("model denied access to the attached image")
             return MentionResult(strip_history_tags(result.text, bot_name), result.reaction, result.action)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             rejection_reason = (

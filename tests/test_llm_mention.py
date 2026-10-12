@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import io
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -848,6 +850,44 @@ def test_image_mention_enqueues_description_or_caption(
     assert job.prompt_version == VISION_MENTION_PROMPT_VERSION
     attachment.read.assert_not_awaited()
     message.reply.assert_not_awaited()
+
+
+def test_attached_image_reaches_http_request_and_retry_before_discord_reply(monkeypatch):
+    monkeypatch.setattr("features.llm_mention.get_selected_model", lambda: "discord-bot")
+    feature = _handling_feature()
+    feature._reply_mention = AsyncMock()
+    feature._reply_job_error = AsyncMock()
+    attachment = _attachment()
+    message = _mention_message(text="Ce părere ai?", attachments=[attachment])
+    props = MagicMock(ok=True)
+    props.json.return_value = {"modalities": {"vision": True}}
+    monkeypatch.setattr(requests, "get", MagicMock(return_value=props))
+    replies = []
+    for answer in ("Nu pot să văd poza. Trimite un PNG sau JPEG.", "Un dreptunghi roșu."):
+        response = MagicMock(ok=True)
+        response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps({"text": answer, "reaction": None})}}],
+        }
+        replies.append(response)
+    post = MagicMock(side_effect=replies)
+    monkeypatch.setattr(requests, "post", post)
+
+    async def process():
+        assert await feature.handle_message(message)
+        job = feature._enqueue_job.await_args.args[0]
+        await feature._process_job(job)
+        return job
+
+    job = asyncio.run(process())
+    assert post.call_count == 2
+    for call in post.call_args_list:
+        parts = call.kwargs["json"]["messages"][-1]["content"]
+        image = next(part["image_url"]["url"] for part in parts if part["type"] == "image_url")
+        assert image.startswith("data:image/png;base64,")
+        assert base64.b64decode(image.split(",", 1)[1]) == PNG_BYTES
+    attachment.read.assert_awaited_once_with()
+    feature._reply_mention.assert_awaited_once_with(job, "Un dreptunghi roșu.")
+    feature._reply_job_error.assert_not_awaited()
 
 
 def test_busy_multi_image_request_can_be_queued(monkeypatch):

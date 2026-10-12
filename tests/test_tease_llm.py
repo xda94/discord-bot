@@ -409,6 +409,76 @@ def test_generate_mention_result_passes_image_to_llm(monkeypatch):
     assert "An image is attached." in query.call_args.kwargs["prompt"]
 
 
+@pytest.mark.parametrize("denial", [
+    "Nu pot să văd poza, așa că nu pot să vă spun ce părere am. "
+    "Vă rog să îmi trimiteți o imagine în format PNG sau JPEG.",
+    "Îmi pare rău, nu pot vedea imaginea atașată.",
+    "Din păcate, nu pot vizualiza imagini.",
+    "I cannot see the attached image. Please upload a PNG or JPEG.",
+    "Sorry, I can't view your photo.",
+])
+def test_image_access_denial_retries_with_pixels_without_stale_context(monkeypatch, denial):
+    query = MagicMock(side_effect=[
+        json.dumps({"text": denial, "reaction": None}),
+        '{"text":"Un pătrat albastru.","reaction":null}',
+    ])
+    monkeypatch.setattr("llm.client.query_llm", query)
+    result = generate_mention_result(
+        "Ana", "Ce părere ai?", model="discord-bot",
+        context_messages=["You: I cannot see images."],
+        user_memory="old note", memory_enabled=True,
+        replied_message="old reply", mentioned_memories=(("Alex", "old profile"),),
+        assistant_profile=AssistantProfile(language="ro"),
+        image_bytes=b"png-data", image_mime="image/png",
+    )
+    assert result.text == "Un pătrat albastru."
+    assert query.call_count == 2
+    for call in query.call_args_list:
+        assert call.kwargs["image_bytes"] == b"png-data"
+        assert call.kwargs["image_mime"] == "image/png"
+        assert call.kwargs["model"] == "discord-bot"
+    retry = query.call_args.kwargs["prompt"]
+    assert "Ce părere ai?" in retry
+    assert "Romanian" in retry
+    assert "Do not invent visual details" in retry
+    for stale in ("<chat_history>\n", "old note", "old reply", "old profile"):
+        assert stale not in retry
+
+
+def test_repeated_image_access_denial_fails_instead_of_requesting_another_format(monkeypatch):
+    query = MagicMock(return_value='{"text":"Nu pot să văd poza.","reaction":null}')
+    monkeypatch.setattr("llm.client.query_llm", query)
+    assert generate_mention_result(
+        "Ana", "Păreri?", image_bytes=b"png", image_mime="image/png",
+    ) is None
+    assert query.call_count == 2
+
+
+@pytest.mark.parametrize("answer", [
+    "Nu pot să văd numărul de pe mașină; este prea mic.",
+    "I cannot see the fine print, but the heading says SALE.",
+    'Textul din poză spune: „Nu pot să văd poza”.',
+    "Nu pot determina unde a fost făcută poza.",
+    "Nu pot vedea imaginea în întregime, pentru că este decupată.",
+    "I cannot see the image clearly, but it looks like a dog.",
+])
+def test_uncertain_image_details_and_quoted_denials_are_valid(monkeypatch, answer):
+    query = MagicMock(return_value=json.dumps({"text": answer, "reaction": None}))
+    monkeypatch.setattr("llm.client.query_llm", query)
+    assert generate_mention_result(
+        "Ana", "Ce scrie?", image_bytes=b"png", image_mime="image/png",
+    ).text == answer
+    query.assert_called_once()
+
+
+def test_text_only_image_access_denial_is_not_retried(monkeypatch):
+    answer = "Nu pot să văd poza."
+    query = MagicMock(return_value=json.dumps({"text": answer, "reaction": None}))
+    monkeypatch.setattr("llm.client.query_llm", query)
+    assert generate_mention_result("Ana", "Ce vezi?").text == answer
+    query.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "question,echo,answer",
     [
