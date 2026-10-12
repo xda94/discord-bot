@@ -370,21 +370,21 @@ class QuoteMuseumFeature:
         async def nominate(interaction: discord.Interaction, message: discord.Message):
             await self.nominate(interaction, message)
 
-        self.tree.add_command(app_commands.ContextMenu(name="Pune în muzeu", callback=nominate))
+        self.tree.add_command(app_commands.ContextMenu(name="Add to museum", callback=nominate))
 
-        @self.tree.command(name="citat", description="Citat aprobat din muzeul serverului / Approved quote from this server")
+        @self.tree.command(name="quote", description="Show an approved quote from this server's museum")
         @app_commands.guild_only()
         async def quote(interaction: discord.Interaction):
             await self.quote(interaction)
 
-        @self.tree.command(name="cine-a-zis", description="Quiz cu autorii citați aprobați / Quiz with approved quote authors")
+        @self.tree.command(name="who-said", description="Guess the author of an approved museum quote")
         @app_commands.guild_only()
         async def quiz(interaction: discord.Interaction):
             await self.quiz(interaction)
 
-        @self.tree.command(name="citat-sterge", description="Retrage un citat propriu sau moderează / Withdraw or moderate a quote")
+        @self.tree.command(name="quote-delete", description="Withdraw your quote or moderate the museum")
         @app_commands.guild_only()
         @app_commands.rename(quote_id="id")
-        @app_commands.describe(quote_id="ID-ul citatului / Quote ID")
+        @app_commands.describe(quote_id="Quote ID")
         async def delete(interaction: discord.Interaction, quote_id: int):
             await self.delete(interaction, quote_id)

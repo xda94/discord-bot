@@ -13,9 +13,10 @@ import db
 from features.humor_common import (
     EXCUSE_FALLBACKS, EXCUSE_STYLES, HOROSCOPE_FORECASTS,
     HOROSCOPE_SIGNS, HOROSCOPE_THEMES, interaction_language, local_day,
-    safe_text, text,
+    purchase_voices, safe_text, text,
 )
 from llm.humor import generate_humor
+from wishlist.alerts import ALERT_LOW_REALERT_DROP_PCT, ALERT_MIN_DATA_POINTS
 
 
 def _positive(value):
@@ -41,7 +42,6 @@ def _price_label(value, language):
 def purchase_summary(item, history, language, now=None):
     now = time.time() if now is None else now
     prices = [row[0] for row in history if isinstance(row, (list, tuple)) and len(row) >= 2 and _positive(row[0])]
-    timestamps = [row[1] for row in history if isinstance(row, (list, tuple)) and len(row) >= 2 and _positive(row[0]) and _positive(row[1])]
     price = item[3] if _positive(item[3]) else None
     currency = safe_text(item[6], 15) if item[6] else text("unknown", language)
     checked = item[13]
@@ -52,27 +52,43 @@ def purchase_summary(item, history, language, now=None):
     ordered = sorted(prices)
     middle = len(ordered) // 2
     median = ordered[middle] if len(ordered) % 2 else ordered[middle - 1] + (ordered[middle] - ordered[middle - 1]) / 2 if ordered else None
+    def money(value):
+        return f"{_price_label(value, language)} {currency}" if value is not None else text("unknown", language)
+
+    if stock == "out_of_stock":
+        decision = "unavailable"
+    elif price is None or not item[6] or len(prices) < ALERT_MIN_DATA_POINTS:
+        decision = "insufficient"
+    elif stale or not _positive(checked) or stock == "unknown":
+        decision = "refresh"
+    elif max(maximum, price) < min(minimum, price) * (1 + ALERT_LOW_REALERT_DROP_PCT):
+        decision = "neutral"
+    elif price > median:
+        decision = "wait"
+    elif price < median or price <= minimum:
+        decision = "buy"
+    else:
+        decision = "neutral"
     lines = [
-        text("saved_item", language, title=safe_text(item[5] or "—", 180)),
-        text("saved_price", language, price=_price_label(price, language), currency=currency),
-        text("saved_stock", language, stock=text(stock, language)),
-        text("last_check", language, checked=_date_label(checked, language), freshness=text("stale" if stale else "fresh" if _positive(checked) else "unknown", language)),
-        text("history_summary", language, count=len(prices), start=_date_label(min(timestamps) if timestamps else None, language), end=_date_label(max(timestamps) if timestamps else None, language)),
-        text("history_stats", language, minimum=_price_label(minimum, language), maximum=_price_label(maximum, language), median=_price_label(median, language)),
-        text("history_currency", language),
+        f"**{safe_text(item[5] or '—', 180)}**",
+        text("purchase_current", language, price=money(price)),
+        text("purchase_stats", language, minimum=money(minimum), maximum=money(maximum), median=money(median)),
     ]
-    if len(prices) < 2:
-        lines.append(text("history_sparse", language))
-    lines.append(text("saved_only", language))
-    facts = {"title": str(item[5] or "")[:180], "saved_price": price, "native_currency": str(item[6] or "unknown")[:15], "saved_stock": stock, "stale": stale, "last_check_known": _positive(checked), "history_samples": len(prices), "recorded_minimum": minimum, "recorded_maximum": maximum, "recorded_median": median, "historical_currency": "not stored; do not compare with current currency"}
+    if price is not None and median is not None:
+        median_delta = (price / median - 1) * 100
+        minimum_delta = (price / minimum - 1) * 100
+        if math.isfinite(median_delta) and math.isfinite(minimum_delta):
+            lines.append(text("purchase_comparison", language, median_delta=f"{median_delta:+.1f}%", minimum_delta=f"{minimum_delta:+.1f}%"))
+    lines.extend([
+        text("purchase_verdict", language, verdict=text("purchase_" + decision, language), reason=text("purchase_reason_" + decision, language, median=money(median))),
+        text("purchase_observations", language, count=len(prices), checked=_date_label(checked, language)),
+    ])
+    facts = {"title": str(item[5] or "")[:180], "saved_price": price, "native_currency": str(item[6] or "unknown")[:15], "saved_stock": stock, "stale": stale, "last_check_known": _positive(checked), "history_samples": len(prices), "recorded_minimum": minimum, "recorded_maximum": maximum, "recorded_median": median, "decision": decision, "median_display": money(median), "historical_currency_assumption": "same native units as this tracked item; no currency conversion"}
     return "\n".join(lines), facts
 
 
-def purchase_fallback(language):
-    return (
-        f"**{text('purchase_advocate', language)}:** {text('purchase_fallback_advocate', language)}\n"
-        f"**{text('household_accountant', language)}:** {text('purchase_fallback_accountant', language)}"
-    )
+def purchase_fallback(language, facts=None):
+    return purchase_voices(language, facts or {})
 
 
 def horoscope(guild_id, user_id, day, theme, language):
@@ -84,13 +100,8 @@ def horoscope(guild_id, user_id, day, theme, language):
     return text("horoscope", language, day=day.isoformat(), theme=HOROSCOPE_THEMES[theme][language == "ro"], sign=sign[language == "ro"], forecast=forecast[language == "ro"])
 
 
-async def _private_reply(interaction, content, language):
-    try:
-        await interaction.user.send(content[:2000], allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
-    except (discord.HTTPException, OSError):
-        await interaction.followup.send(text("dm_failed", language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
-        return
-    await interaction.followup.send(text("dm_sent", language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
+async def _private_reply(interaction, content):
+    await interaction.followup.send(content[:2000], ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
 
 
 class HumorFeature:
@@ -106,8 +117,8 @@ class HumorFeature:
             await interaction.followup.send(text("excuse_invalid", language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
             return
         fallback = EXCUSE_FALLBACKS[style][language == "ro"].format(reason=safe_text(reason.strip(), 1000))
-        result = await generate_humor("scuza", language, {"reason": reason.strip(), "style": style}, fallback)
-        await _private_reply(interaction, result, language)
+        result = await generate_humor("excuse", language, {"reason": reason.strip(), "style": style}, fallback)
+        await _private_reply(interaction, result)
 
     async def purchase(self, interaction, url):
         await interaction.response.defer(ephemeral=True)
@@ -125,11 +136,11 @@ class HumorFeature:
         except (sqlite3.Error, OSError, ValueError, TypeError, IndexError):
             await interaction.followup.send(text("failed", language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
             return
-        fallback = purchase_fallback(language)
-        result = await generate_humor("merita", language, facts, fallback)
+        fallback = purchase_fallback(language, facts)
+        result = await generate_humor("worth-it", language, facts, fallback)
         if len(summary) + len(result) + 2 > 2000:
             result = fallback
-        await _private_reply(interaction, summary + "\n\n" + result, language)
+        await _private_reply(interaction, summary + "\n\n" + result)
 
     async def forecast(self, interaction, theme=None):
         await interaction.response.defer(ephemeral=interaction.guild_id is None)
@@ -140,20 +151,20 @@ class HumorFeature:
         await interaction.followup.send(horoscope(interaction.guild_id, interaction.user.id, local_day(), theme or "general", language), allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
 
     def _register_commands(self):
-        @self.tree.command(name="scuza", description="O scuză amuzantă în mesaj privat / A humorous excuse by DM")
-        @app_commands.describe(motiv="Motivul / Reason (maximum 500 characters)", stil="Stilul scuzei / Excuse style")
-        @app_commands.choices(stil=[app_commands.Choice(name=f"{ro} / {en}", value=key) for key, (en, ro) in EXCUSE_STYLES.items()])
-        async def scuza(interaction: discord.Interaction, motiv: str, stil: app_commands.Choice[str]):
-            await self.excuse(interaction, motiv, stil.value)
+        @self.tree.command(name="excuse", description="Generate a humorous excuse visible only to you")
+        @app_commands.describe(reason="Reason, maximum 500 characters", style="Excuse style")
+        @app_commands.choices(style=[app_commands.Choice(name=en, value=key) for key, (en, ro) in EXCUSE_STYLES.items()])
+        async def excuse(interaction: discord.Interaction, reason: str, style: app_commands.Choice[str]):
+            await self.excuse(interaction, reason, style.value)
 
-        @self.tree.command(name="merita", description="Dezbatere privată din lista salvată / Private saved-wishlist debate")
-        @app_commands.describe(url="Linkul din lista ta salvată / URL in your saved wishlist")
-        async def merita(interaction: discord.Interaction, url: str):
+        @self.tree.command(name="worth-it", description="Privately compare saved prices and get a buy-or-wait verdict")
+        @app_commands.describe(url="URL in your saved wishlist")
+        async def worth_it(interaction: discord.Interaction, url: str):
             await self.purchase(interaction, url)
 
-        @self.tree.command(name="horoscop", description="Horoscop amuzant zilnic pe server / Daily server humor horoscope")
+        @self.tree.command(name="horoscope", description="Show your daily humorous server horoscope")
         @app_commands.guild_only()
-        @app_commands.describe(tema="Tema / Theme")
-        @app_commands.choices(tema=[app_commands.Choice(name=f"{ro} / {en}", value=key) for key, (en, ro) in HOROSCOPE_THEMES.items()])
-        async def horoscop(interaction: discord.Interaction, tema: Optional[app_commands.Choice[str]] = None):
-            await self.forecast(interaction, tema.value if tema else None)
+        @app_commands.describe(theme="Horoscope theme")
+        @app_commands.choices(theme=[app_commands.Choice(name=en, value=key) for key, (en, ro) in HOROSCOPE_THEMES.items()])
+        async def horoscope(interaction: discord.Interaction, theme: Optional[app_commands.Choice[str]] = None):
+            await self.forecast(interaction, theme.value if theme else None)

@@ -206,7 +206,7 @@ def test_page_guide_and_translation_catalog(tmp_db):
     source = (ROOT / 'templates/dashboard.html').read_text()
     assert source.count('data-page="community"') == 1
     assert 'id="page-community"' in source
-    for command in ['tribunal', 'sedinta', 'quest', 'bingo', 'citat', 'cine-a-zis', 'scuza', 'merita', 'horoscop']:
+    for command in ['tribunal', 'meeting', 'quest', 'bingo', 'quote', 'who-said', 'excuse', 'worth-it', 'horoscope']:
         assert f'<code>/{command}</code>' in source
     translations = (ROOT / 'static/dashboard-i18n.js').read_text()
     assert 'Jocuri de comunitate' in translations

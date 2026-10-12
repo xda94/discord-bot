@@ -22,18 +22,18 @@ from features.social_games import SocialGamesFeature
 
 ROOT = Path(__file__).resolve().parent.parent
 COMMANDS = {
-    "tribunal": ("acuzat", "acuzatie"),
-    "sedinta": ("subiect", "optiuni"),
+    "tribunal": ("accused", "accusation"),
+    "meeting": ("subject", "options"),
     "quest": (),
     "bingo": (),
-    "bingo-obicei": ("text", "text-en", "id"),
-    "bingo-obicei-sterge": ("id",),
-    "citat": (),
-    "cine-a-zis": (),
-    "citat-sterge": ("id",),
-    "scuza": ("motiv", "stil"),
-    "merita": ("url",),
-    "horoscop": ("tema",),
+    "bingo-habit": ("text-ro", "text-en", "id"),
+    "bingo-habit-delete": ("id",),
+    "quote": (),
+    "who-said": (),
+    "quote-delete": ("id",),
+    "excuse": ("reason", "style"),
+    "worth-it": ("url",),
+    "horoscope": ("theme",),
 }
 
 
@@ -93,11 +93,13 @@ def test_real_command_payloads_and_constructor_dependencies(tmp_db, monkeypatch)
         assert payload["name"] == name
         assert tuple(option["name"] for option in payload.get("options", [])) == options
         assert all("_" not in option["name"] for option in payload.get("options", []))
-        assert command.guild_only is (name not in {"scuza", "merita"})
+        assert command.guild_only is (name not in {"excuse", "worth-it"})
         assert len(payload["description"]) <= 100
+        assert payload["description"].isascii()
+        assert all(option["description"].isascii() for option in payload.get("options", []))
     contexts = [command for command in tree.get_commands() if isinstance(command, app_commands.ContextMenu)]
     assert len(contexts) == 1
-    assert contexts[0].to_dict(tree)["name"] == "Pune în muzeu"
+    assert contexts[0].to_dict(tree)["name"] == "Add to museum"
     assert contexts[0].type == discord.AppCommandType.message and contexts[0].guild_only
     private_generation.assert_not_called()
     shared_generation.assert_not_called()
@@ -108,7 +110,7 @@ def test_real_command_payloads_and_constructor_dependencies(tmp_db, monkeypatch)
 
 def test_optional_arguments_are_typing_optional_and_payloads_match(tmp_db):
     _, tree, _ = registered_features()
-    for name, parameter in (("bingo-obicei", "id"), ("horoscop", "tema")):
+    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme")):
         command = tree.get_command(name)
         annotation = get_type_hints(command.callback)[parameter]
         assert get_origin(annotation) is Union
@@ -147,8 +149,8 @@ def test_help_and_start_discover_community_with_profile_language(tmp_db, name, l
         full_label = "Toate comenzile" if language == "ro" else "Complete reference"
         full_event = interaction(language=language)
         await next(child for child in discovered.children if child.label == full_label).callback(full_event)
-        assert "Pune în muzeu" in "\n".join(sent_content(full_event))
-        assert "/Pune în muzeu" not in "\n".join(sent_content(full_event))
+        assert "Add to museum" in "\n".join(sent_content(full_event))
+        assert "/Add to museum" not in "\n".join(sent_content(full_event))
         current.stop()
         discovered.stop()
     asyncio.run(run())
@@ -194,7 +196,7 @@ def test_complete_reference_handles_real_message_context_menu(tmp_db, language, 
         assert all(len(chunk) <= 1900 for chunk in chunks)
         for name in COMMANDS:
             assert f"**/{name}**" in content
-        assert "Pune în muzeu" in content and "/Pune în muzeu" not in content
+        assert "Add to museum" in content and "/Add to museum" not in content
         assert ("Mesaje → Aplicații" if language == "ro" else "Messages → Apps") in content
         assert "24" in content
         assert all(call.kwargs["ephemeral"] for call in event.response.send_message.await_args_list + event.followup.send.await_args_list)
@@ -224,7 +226,7 @@ def test_bilingual_community_guide_and_onboarding_return_layout(tmp_db, language
         assert all(len(chunk) <= 1900 for chunk in chunks)
         assert all(len(paragraph) <= 1900 for paragraph in COMMUNITY_GUIDE[language].split("\n\n"))
         assert all(f"/{name}" in content for name in COMMANDS)
-        assert "Pune în muzeu" in content and "600" in content and "9–50" in content
+        assert "Add to museum" in content and "600" in content and "9–50" in content
         assert "30" in content and "24" in content
         if edit_message:
             event.response.send_message.assert_not_awaited()
@@ -249,8 +251,8 @@ def test_bilingual_community_guide_and_onboarding_return_layout(tmp_db, language
 def test_static_reference_keeps_all_community_features_in_each_memory_mode(automatic, disabled):
     text = build_help_text(automatic, disabled)
     assert all(f"**/{name}**" in text for name in COMMANDS)
-    assert "Messages → Apps → Pune în muzeu" in text
-    assert "/Pune în muzeu" not in text
+    assert "Messages → Apps → Add to museum" in text
+    assert "/Add to museum" not in text
     assert "natural-language mention commands" in text
-    assert "historical currency is unknown" in text
+    assert "calculated buy-or-wait verdict" in text
     assert all(len(chunk) <= 1900 for chunk in _chunk_text(text))

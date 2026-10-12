@@ -454,33 +454,43 @@ language, then Discord locale; shared sessions retain their creator's language,
 while button acknowledgments use the clicking member's language. User text is
 kept as written. These features use slash commands and the message context
 menu; natural-language mention parsing does not support them.
+Command names, options and descriptions are English throughout the bot,
+except `/azi-se-spala`. Reply content remains bilingual. The museum message
+action is **Add to museum**.
 
 | Invocation | Behavior |
 |---|---|
-| `/tribunal acuzat:@member acuzatie:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
-| `/sedinta subiect:Lunch optiuni:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
+| `/tribunal accused:@member accusation:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
+| `/meeting subject:Lunch options:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
 | `/quest` | Private voluntary safe challenge; acceptance publishes it. Submit completion within seven days, or abandon it. One active quest per member/server. |
 | `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |
-| `/bingo-obicei text:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
-| `/bingo-obicei-sterge id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
-| Message menu → Apps → **Pune în muzeu** | Nominate one text message for the author-consented Quote Museum. This is a Messages context action, not a slash command. |
-| `/citat` | Show a random approved quote from this server, its author and quote ID. |
-| `/cine-a-zis` | Ten-minute quiz identifying the author of an approved quote; requires at least two distinct approved authors and offers 2–4 choices. |
-| `/citat-sterge id:12` | Withdraw as quote author or a moderator with Manage Messages. |
-| `/scuza motiv:I missed the meeting stil:corporate` | DM a private excuse in corporate, grandmother, gamer or public-servant style; reason at most 500 characters. |
-| `/merita url:https://shop.example/item` | DM purchase-advocate and household-accountant commentary using only the requesting user's saved wishlist observations. |
-| `/horoscop tema:work` | Local daily deterministic forecast; themes are general, work, gaming and household. |
+| `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
+| `/bingo-habit-delete id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
+| Message menu → Apps → **Add to museum** | Nominate one text message for the author-consented Quote Museum. This is a Messages context action, not a slash command. |
+| `/quote` | Show a random approved quote from this server, its author and quote ID. |
+| `/who-said` | Ten-minute quiz identifying the author of an approved quote; requires at least two distinct approved authors and offers 2–4 choices. |
+| `/quote-delete id:12` | Withdraw as quote author or a moderator with Manage Messages. |
+| `/excuse reason:I missed the meeting style:corporate` | Privately show an excuse in corporate, grandmother, gamer or public-servant style; reason at most 500 characters. |
+| `/worth-it url:https://shop.example/item` | Privately show current/minimum/maximum/median prices, a calculated buy-or-wait verdict, and actionable advice from both voices. |
+| `/horoscope theme:work` | Local daily deterministic forecast; themes are general, work, gaming and household. |
 
-Shared games, museum commands, bingo and horoscope require a server. `/scuza`
-and `/merita` also work in DMs. Their content goes by DM; server acknowledgments
-are ephemeral. If DMs are blocked, a private error exposes no generated
-content in the server. Private excuse reasons and generated responses are not
-saved. `/merita` never refreshes prices, scrapes a page or makes a purchase.
-It reports saved price, native currency, stock, last check and valid historical
-sample count/range/minimum/median. Missing/stale observations are explicit;
-one observation establishes no price movement. Historical currency is not
-stored, so historical units are not assumed comparable to the current native
-currency and no conversion is invented.
+Shared games, museum commands, bingo and horoscope require a server. `/excuse`
+and `/worth-it` also work in DMs. On a server, their full results appear in the
+command channel as ephemeral messages visible only to the requester, with
+Discord's **Dismiss message** control. They do not send results by DM and work
+even when DMs are blocked. Private excuse reasons and generated responses are not
+saved. `/worth-it` never refreshes prices, scrapes a page or makes a purchase.
+It reports the current saved price, recorded minimum, maximum and median, and
+percentage differences from the median and minimum. With at least seven valid
+positive observations, a fresh check and available stock, prices below the
+median or at the recorded minimum are favorable; above the median means wait;
+at the median or a range narrower than 1% means an ordinary price. Missing
+price/currency/history, unknown stock, a check older than a day and unavailable
+stock have explicit outcomes. Both voices give concrete actions matching the
+calculated verdict; LLM commentary cannot change it. Comparisons use the tracked
+item's recorded native units, assuming its currency has stayed the same. The
+historical table has no per-observation currency, so there is no conversion or
+way to detect historical currency changes. No future price drop is promised.
 
 All votes last exactly **600 seconds** from opening, including after restart.
 Each eligible human has one stored, changeable vote. Tribunal and meeting

@@ -35,14 +35,14 @@ def external_mocks(monkeypatch):
 def test_command_registration_and_optional_parameter():
     worker = feature()
     commands = {command.name: command for command in worker.tree.get_commands()}
-    assert set(commands) == {"bingo", "bingo-obicei", "bingo-obicei-sterge"}
+    assert set(commands) == {"bingo", "bingo-habit", "bingo-habit-delete"}
     assert all(command.guild_only for command in commands.values())
-    payload = commands["bingo-obicei"].to_dict(worker.tree)
-    assert [option["name"] for option in payload["options"]] == ["text", "text-en", "id"]
+    payload = commands["bingo-habit"].to_dict(worker.tree)
+    assert [option["name"] for option in payload["options"]] == ["text-ro", "text-en", "id"]
     assert payload["options"][2]["required"] is False
-    assert commands["bingo-obicei"].default_permissions.manage_guild
-    assert commands["bingo-obicei-sterge"].default_permissions.manage_guild
-    assert all(" / " in command.description for command in commands.values())
+    assert commands["bingo-habit"].default_permissions.manage_guild
+    assert commands["bingo-habit-delete"].default_permissions.manage_guild
+    assert all(" / " not in command.description for command in commands.values())
 
 
 @pytest.mark.parametrize("language", ["en", "ro"])

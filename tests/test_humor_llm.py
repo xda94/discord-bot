@@ -12,7 +12,7 @@ from llm.humor import generate_humor
 def test_one_bounded_interactive_call(monkeypatch):
     query = MagicMock(return_value=json.dumps({"text": "The coffee has filed an appeal."}))
     monkeypatch.setattr(client, "query_llm", query)
-    result = asyncio.run(generate_humor("scuza", "en", {"style": "corporate", "reason": "private reason"}, "fallback"))
+    result = asyncio.run(generate_humor("excuse", "en", {"style": "corporate", "reason": "private reason"}, "fallback"))
     assert result == "The coffee has filed an appeal."
     query.assert_called_once()
     options = query.call_args.kwargs
@@ -39,7 +39,7 @@ def test_background_and_romanian(monkeypatch):
 def test_expected_errors_use_fallback_without_retry(monkeypatch, error, caplog):
     query = MagicMock(side_effect=error)
     monkeypatch.setattr(client, "query_llm", query)
-    assert asyncio.run(generate_humor("scuza", "ro", {"reason": "private reason"}, "rezervă")) == "rezervă"
+    assert asyncio.run(generate_humor("excuse", "ro", {"reason": "private reason"}, "rezervă")) == "rezervă"
     query.assert_called_once()
     assert "private reason" not in caplog.text
 
@@ -48,35 +48,53 @@ def test_expected_errors_use_fallback_without_retry(monkeypatch, error, caplog):
 def test_invalid_output_uses_fallback(monkeypatch, raw):
     query = MagicMock(return_value=raw)
     monkeypatch.setattr(client, "query_llm", query)
-    assert asyncio.run(generate_humor("scuza", "en", {}, "fallback")) == "fallback"
+    assert asyncio.run(generate_humor("excuse", "en", {}, "fallback")) == "fallback"
     query.assert_called_once()
 
 
 @pytest.mark.parametrize("language,label_a,label_b", [("en", "Purchase advocate", "Household accountant"), ("ro", "Avocatul cumpărăturii", "Contabilul casei")])
 def test_purchase_requires_two_parts(monkeypatch, language, label_a, label_b):
-    query = MagicMock(return_value='{"advocate":"The parcel wants a welcome party.","accountant":"The budget wants a quiet evening."}')
+    query = MagicMock(return_value='{"decision":"wait","advocate":"The parcel wants a welcome party.","accountant":"The budget wants a quiet evening."}')
     monkeypatch.setattr(client, "query_llm", query)
-    result = asyncio.run(generate_humor("merita", language, {}, "fallback"))
+    facts = {"decision": "wait", "median_display": "269.00 RON"}
+    result = asyncio.run(generate_humor("worth-it", language, facts, "fallback"))
     assert label_a in result and label_b in result
+    assert "269.00 RON" in result
+    assert ("Do not buy" if language == "en" else "Nu cumpăra") in result
     query.return_value = '{"text":"Buy it."}'
-    assert asyncio.run(generate_humor("merita", language, {}, "fallback")) == "fallback"
+    assert asyncio.run(generate_humor("worth-it", language, facts, "fallback")) == "fallback"
 
 
 @pytest.mark.parametrize("claim", ["Only 50 RON!", "Save twenty percent.", "Costs twenty.", "Half price!", "Costă zece lei.", "Double the value.", "€ bargain"])
 def test_purchase_rejects_numeric_claims(monkeypatch, claim):
-    query = MagicMock(return_value=json.dumps({"advocate": claim, "accountant": "The budget is asleep."}))
+    query = MagicMock(return_value=json.dumps({"decision": "wait", "advocate": claim, "accountant": "The budget is asleep."}))
     monkeypatch.setattr(client, "query_llm", query)
-    assert asyncio.run(generate_humor("merita", "en", {}, "fallback")) == "fallback"
+    assert asyncio.run(generate_humor("worth-it", "en", {"decision": "wait"}, "fallback")) == "fallback"
+    query.assert_called_once()
+
+
+@pytest.mark.parametrize("decision,claim", [("wait", "Buy it now."), ("wait", "Merită achiziția."), ("buy", "Wait until later."), ("buy", "Așteaptă o ofertă.")])
+def test_purchase_model_cannot_add_conflicting_advice(monkeypatch, decision, claim):
+    query = MagicMock(return_value=json.dumps({"decision": decision, "advocate": claim, "accountant": "The ledger has spoken."}))
+    monkeypatch.setattr(client, "query_llm", query)
+    assert asyncio.run(generate_humor("worth-it", "en", {"decision": decision}, "fallback")) == "fallback"
+    query.assert_called_once()
+
+
+def test_purchase_model_cannot_change_computed_decision(monkeypatch):
+    query = MagicMock(return_value=json.dumps({"decision": "buy", "advocate": "The parcel has a party hat.", "accountant": "The ledger is happy."}))
+    monkeypatch.setattr(client, "query_llm", query)
+    assert asyncio.run(generate_humor("worth-it", "en", {"decision": "wait"}, "fallback")) == "fallback"
     query.assert_called_once()
 
 
 def test_untrusted_facts_bounded_before_call(monkeypatch):
     query = MagicMock(return_value='{"text":"Hello."}')
     monkeypatch.setattr(client, "query_llm", query)
-    asyncio.run(generate_humor("scuza", "en", {"reason": "x" * 5000, "price": float("nan")}, "fallback"))
+    asyncio.run(generate_humor("excuse", "en", {"reason": "x" * 5000, "price": float("nan")}, "fallback"))
     facts = json.loads(query.call_args.kwargs["prompt"].split("\n", 1)[1])
     assert len(facts["reason"]) == 1200
     assert facts["price"] is None
     query.reset_mock()
-    assert asyncio.run(generate_humor("scuza", "en", {str(i): "x" * 1200 for i in range(24)}, "fallback")) == "fallback"
+    assert asyncio.run(generate_humor("excuse", "en", {str(i): "x" * 1200 for i in range(24)}, "fallback")) == "fallback"
     query.assert_not_called()

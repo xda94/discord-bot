@@ -71,13 +71,13 @@ def test_excuses_bilingual_styles_and_private_delivery(tmp_db, monkeypatch, lang
     monkeypatch.setattr(humor, "generate_humor", generate)
     asyncio.run(feature().excuse(value, "private reason", style))
     value.response.defer.assert_awaited_once_with(ephemeral=True)
-    value.user.send.assert_awaited_once()
-    sent = value.user.send.call_args.args[0]
+    value.user.send.assert_not_called()
+    value.followup.send.assert_awaited_once()
+    sent = value.followup.send.call_args.args[0]
     assert sent == common.EXCUSE_FALLBACKS[style][language == "ro"].format(reason="private reason")
     assert len(sent) <= 2000
-    assert value.user.send.call_args.kwargs["allowed_mentions"].everyone is False
-    assert value.user.send.call_args.kwargs["suppress_embeds"] is True
-    assert "private reason" not in value.followup.send.call_args.args[0]
+    assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
+    assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     generate.assert_awaited_once()
 
@@ -99,22 +99,28 @@ def test_excuse_reason_bound(tmp_db, monkeypatch, reason):
 
 
 @pytest.mark.parametrize("language", ["en", "ro"])
-@pytest.mark.parametrize("command", ["scuza", "merita"])
-def test_blocked_dm_never_exposes_private_content(tmp_db, monkeypatch, language, command):
+@pytest.mark.parametrize("command", ["excuse", "worth-it"])
+def test_blocked_dm_does_not_prevent_ephemeral_result(tmp_db, monkeypatch, language, command):
     value = interaction(locale=language)
     response = MagicMock(status=403, reason="Forbidden")
     value.user.send.side_effect = discord.Forbidden(response, "blocked")
     monkeypatch.setattr(humor, "generate_humor", AsyncMock(return_value="secret generated result"))
     worker = feature()
-    if command == "scuza":
+    if command == "excuse":
         asyncio.run(worker.excuse(value, "private reason", "corporate"))
     else:
         db.add_scraped_item(value.user.id, "https://private.example", title="secret title", price=100, currency="RON")
         asyncio.run(worker.purchase(value, "https://private.example"))
-    public = value.followup.send.call_args.args[0]
-    assert public == common.text("dm_failed", language)
+    value.user.send.assert_not_called()
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    value.followup.send.assert_awaited_once()
+    private = value.followup.send.call_args.args[0]
+    assert "secret generated result" in private
+    if command == "worth-it":
+        assert "secret title" in private
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
-    assert all(secret not in public for secret in ("secret", "private reason", "https://"))
+    assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
+    assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
 
 
 def test_purchase_owned_saved_data_only(tmp_db, monkeypatch):
@@ -134,10 +140,15 @@ def test_purchase_owned_saved_data_only(tmp_db, monkeypatch):
     asyncio.run(feature().purchase(value, url))
     get_item.assert_called_once_with(value.user.id, url)
     get_history.assert_called_once_with(value.user.id, url)
-    sent = value.user.send.call_args.args[0]
+    value.user.send.assert_not_called()
+    value.response.defer.assert_awaited_once_with(ephemeral=True)
+    value.followup.send.assert_awaited_once()
+    assert value.followup.send.call_args.kwargs["ephemeral"] is True
+    sent = value.followup.send.call_args.args[0]
     assert "100.00" in sent and "80.00" in sent and "RON" in sent
     assert "Other member" not in sent and "999" not in sent
-    assert "Historical currency is not stored" in sent
+    assert "Lowest:" in sent and "Highest:" in sent and "Median:" in sent
+    assert "Not enough data" in sent
     assert "Purchase advocate" in sent and "Household accountant" in sent
     assert before == (get_item(value.user.id, url), get_history(value.user.id, url))
 
@@ -162,7 +173,8 @@ def test_sparse_invalid_history_and_missing_facts(language):
     assert facts["saved_price"] is None
     assert facts["recorded_minimum"] == facts["recorded_median"] == 80
     assert "80.00" in summary
-    assert common.text("history_sparse", language) in summary
+    assert facts["decision"] == "insufficient"
+    assert common.text("purchase_insufficient", language) in summary
     assert "nan" not in summary and "inf" not in summary
     empty, facts = humor.purchase_summary(item, [], language)
     assert facts["recorded_minimum"] is None and facts["recorded_median"] is None
@@ -175,8 +187,9 @@ def test_saved_observations_stale_and_median():
     assert facts["stale"] is True
     assert facts["recorded_median"] == 25
     assert facts["recorded_maximum"] == 40
-    assert "10.00 → 40.00" in summary
-    assert "stale" in summary and "out of stock" in summary and "25.00" in summary
+    assert "10.00 RON" in summary and "40.00 RON" in summary
+    assert facts["decision"] == "unavailable"
+    assert "out of stock" in summary and "25.00" in summary
 
 
 def test_extreme_finite_prices_do_not_overflow_reply():
@@ -227,21 +240,61 @@ def test_horoscope_rejects_dm(tmp_db, monkeypatch):
     generate.assert_not_called()
 
 
+@pytest.mark.parametrize("language", ["en", "ro"])
+def test_worth_it_user_example_recommends_waiting(language):
+    item = (1, 42, "url", 360.46, 1, "Moet & Chandon Nectar Demi-Sec 0.75L", "RON", None, None, None, None, 0, 0, 200000, None)
+    history = [(value, 199000) for value in [241.08] + [269.00] * 411 + [360.46]]
+    summary, facts = humor.purchase_summary(item, history, language, now=200001)
+    assert facts["decision"] == "wait"
+    assert facts["history_samples"] == 413
+    assert facts["recorded_minimum"] == 241.08
+    assert facts["recorded_maximum"] == 360.46
+    assert facts["recorded_median"] == 269
+    assert all(value in summary for value in ("360.46 RON", "241.08 RON", "269.00 RON", "+34.0%", "+49.5%"))
+    assert common.text("purchase_wait", language) in summary
+    voices = humor.purchase_fallback(language, facts)
+    assert "269.00 RON" in voices
+    assert ("Do not buy" if language == "en" else "Nu cumpăra") in voices
+    assert len(summary + "\n\n" + voices) <= 2000
+
+
+@pytest.mark.parametrize("price,stock,checked,history,decision", [
+    (80, 1, 200000, [80, 90, 100, 110, 120, 130, 140], "buy"),
+    (95, 1, 200000, [80, 90, 100, 110, 120, 130, 140], "buy"),
+    (150, 1, 200000, [80, 90, 100, 110, 120, 130, 140], "wait"),
+    (110, 1, 200000, [80, 90, 100, 110, 120, 130, 140], "neutral"),
+    (100, 1, 200000, [100] * 7, "neutral"),
+    (150, 1, 200000, [100] * 7, "wait"),
+    (80, 1, 1000, [80, 90, 100, 110, 120, 130, 140], "refresh"),
+    (80, 1, None, [80, 90, 100, 110, 120, 130, 140], "refresh"),
+    (80, None, 200000, [80, 90, 100, 110, 120, 130, 140], "refresh"),
+    (80, 0, 200000, [80, 90, 100, 110, 120, 130, 140], "unavailable"),
+    (80, 1, 200000, [80, 100], "insufficient"),
+    (None, 1, 200000, [80, 90, 100, 110, 120, 130, 140], "insufficient"),
+])
+def test_worth_it_price_stock_and_freshness_decisions(price, stock, checked, history, decision):
+    item = (1, 42, "url", price, stock, "Desk", "RON", None, None, None, None, 0, 0, checked, None)
+    summary, facts = humor.purchase_summary(item, [(value, 199000) for value in history], "en", now=200001)
+    assert facts["decision"] == decision
+    assert common.text("purchase_" + decision, "en") in summary
+    assert len(summary + "\n\n" + humor.purchase_fallback("en", facts)) <= 2000
+
+
 def test_commands_and_optional_annotation():
     worker = feature()
-    assert {cmd.name for cmd in worker.tree.get_commands()} == {"scuza", "merita", "horoscop"}
-    command = worker.tree.get_command("horoscop")
+    assert {cmd.name for cmd in worker.tree.get_commands()} == {"excuse", "worth-it", "horoscope"}
+    command = worker.tree.get_command("horoscope")
     assert command.parameters[0].required is False
-    assert "Optional" in str(command.callback.__annotations__["tema"])
-    assert len(worker.tree.get_command("scuza").parameters[1].choices) == 4
+    assert "Optional" in str(command.callback.__annotations__["theme"])
+    assert len(worker.tree.get_command("excuse").parameters[1].choices) == 4
 
 
 def test_command_registration_scopes_match_dm_behavior():
     worker = feature()
-    horoscope_command = worker.tree.get_command("horoscop")
+    horoscope_command = worker.tree.get_command("horoscope")
     assert horoscope_command.guild_only is True
     assert horoscope_command.to_dict(worker.tree)["dm_permission"] is False
-    for name in ("scuza", "merita"):
+    for name in ("excuse", "worth-it"):
         command = worker.tree.get_command(name)
         assert command.guild_only is False
         assert command.to_dict(worker.tree)["dm_permission"] is True

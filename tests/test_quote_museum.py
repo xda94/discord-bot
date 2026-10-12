@@ -63,11 +63,11 @@ def external_mocks(monkeypatch):
 def test_registration_constructor_and_option_names():
     worker = feature()
     commands = worker.tree.get_commands()
-    assert {item.name for item in commands} == {"Pune în muzeu", "citat", "cine-a-zis", "citat-sterge"}
+    assert {item.name for item in commands} == {"Add to museum", "quote", "who-said", "quote-delete"}
     assert all(item.guild_only for item in commands)
     context = next(item for item in commands if isinstance(item, app_commands.ContextMenu))
     assert context.type == discord.AppCommandType.message
-    assert worker.tree.get_command("citat-sterge").parameters[0].display_name == "id"
+    assert worker.tree.get_command("quote-delete").parameters[0].display_name == "id"
     assert worker._startup_lock is None
 
 
