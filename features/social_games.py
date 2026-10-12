@@ -220,7 +220,8 @@ class SocialGamesFeature:
         try:
             session = await asyncio.to_thread(community.create_session, interaction.guild_id, interaction.channel_id, interaction.user.id, kind, language, payload, subject_id=subject_id)
             content = await self._render_session(session)
-            message = await interaction.channel.send(content, view=SessionView(self, session), allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
+            mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=subject_id)], replied_user=False) if kind == "tribunal" else discord.AllowedMentions.none()
+            message = await interaction.channel.send(content, view=SessionView(self, session), allowed_mentions=mentions, suppress_embeds=True)
             bound = await asyncio.to_thread(community.bind_session_message, interaction.guild_id, session["id"], message.id)
             if bound["status"] != "bound":
                 raise ValueError("bind_failed")
@@ -332,7 +333,7 @@ class SocialGamesFeature:
             return _t(phase, language)
         deadline = f"<t:{int(session['deadline'])}:F>"
         if kind == "tribunal":
-            lines = [_t("tribunal", language, member=session["subject_id"], content=safe_text(payload["accusation"], 650))]
+            lines = [_t("tribunal", language, member=f"<@{session['subject_id']}>", content=safe_text(payload["accusation"], 650))]
         elif kind == "sedinta":
             lines = [_t("meeting", language, content=safe_text(payload["subject"], 260))]
         elif kind == "quest":
