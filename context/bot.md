@@ -2,9 +2,9 @@
 
 This living document summarizes the repository structure, runtime behavior,
 data model, external integrations, testing status, and notable implementation
-details. It was created from a codebase review on 2026-09-14 and updated for
-the bilingual commands, durable delivery, and dashboard work completed on
-2026-10-09.
+details. It was created from a codebase review on 2026-09-14 and updated through
+2026-10-12, including vision retries, diagnostics, and the reported Gemma 4
+deployment.
 
 ## Project overview
 
@@ -96,7 +96,7 @@ Both mount the same `bot-data` volume. Inside Docker, the database is `/data/res
 The documented non-Docker deployment uses two PM2 processes. `package.json` is currently empty; Node is only relevant because PM2 is used as the process manager.
 
 The reported production hardware is an Intel N150 with 16 GB RAM. It is not a
-Pi Zero W. The llama.cpp service currently has an 8 GB systemd memory limit and
+Pi Zero W. The llama.cpp service currently has a 10 GB systemd memory limit and
 a 4,096-token context.
 Docker uses Python 3.13, `vl-convert-python`, and DejaVu fonts. Wishlist PNGs
 render locally without Chrome, Altair, or Matplotlib. Install changed Python
@@ -377,6 +377,14 @@ and are neither persisted nor logged. The worker returns a specific message for
 disabled/unavailable vision, failed image processing, or inference failure.
 Vision prompts use a 4,000-character memory/history reference budget; memory
 consolidation still sees only the user's authored text.
+
+Generic English/Romanian image-access denials trigger one retry with the same
+image and current question, without stale chat or saved memory. Repeated denials
+fail through the normal processing-error path; uncertainty about specific visual
+details remains valid. The retry preserves the requester's assistant profile.
+Vision feedback uses the `mention-v13-vision-retry`
+versions. `scripts/check_vision.py` compares a simple direct request with the
+structured bot prompt using a generated red circle, without Discord traffic.
 
 ### `features/user_memory.py`
 
@@ -1064,18 +1072,21 @@ The project previously used Ollama but now talks directly to llama.cpp's
 OpenAI-compatible `/v1/chat/completions` API through `llm/client.py`.
 `ollama_client.py` and the `*_OLLAMA_*` configuration names were removed.
 
-The recommended production deployment uses an 8 GB service budget on the Intel
-N150 and the following Gemma 3 4B configuration: Q4_K_M weights, a 4,096-token
-context, three CPU threads, one parallel slot, and the model's matching vision
-projector. `--no-mmproj-offload` keeps projector work on the CPU-only host;
+The reported production deployment as of 2026-10-12 uses a 10 GB service budget
+on the Intel N150 and Gemma 4 E4B UD-Q4_K_XL weights, a 4,096-token context,
+three CPU threads, one parallel slot, and the model's matching vision projector.
+The Ubuntu host runs llama.app build `b10909-a2878d30d` (`0.4.0-dev`), and
+`/props` advertises vision, video, and audio support. This verifies advertised
+capabilities; image recognition still requires a live visual check.
+`--no-mmproj-offload` keeps projector work on the CPU-only host;
 `--no-mmproj` must not be present because it disables vision. Prompt caching and
 64-token chunk reuse complement the cache-friendly application prompts:
 
 ```bash
-llama-server \
-  -hf ggml-org/gemma-3-4b-it-GGUF:Q4_K_M \
+/home/robertivan/.llama-app/llama serve \
+  -hf unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL \
   --no-mmproj-offload \
-  --alias gemma3:4b \
+  --alias gemma4:e4b \
   --host 127.0.0.1 \
   --port 8080 \
   --ctx-size 4096 \
@@ -1084,8 +1095,11 @@ llama-server \
   --threads-batch 3 \
   --flash-attn auto \
   --cache-prompt \
+  --swa-full \
   --cache-reuse 64 \
-  --sleep-idle-seconds 600
+  --reasoning-effort low \
+  --reasoning-budget 128 \
+  --cache-ram 1024
 ```
 
 Three threads leave one of the N150's four cores available to the OS, Discord
@@ -1093,12 +1107,12 @@ bot, and API. Giving llama.cpp all four cores can make the host unresponsive
 during inference even when the Python queue and event loop are healthy.
 
 `-hf` downloads and caches the GGUF in the service user's Hugging Face cache.
-For Gemma 3 it also selects the matching multimodal projector automatically.
-The alias must match
+For this Gemma repository it also selects the matching multimodal projector
+automatically. The alias must match
 `LLAMA_CPP_DEFAULT_MODEL`/`LLAMA_CPP_ALLOWED_MODELS`. Binding to `127.0.0.1`
 keeps the unauthenticated inference endpoint local to the host.
 
-An earlier observation with the same 4B Q4_K_M architecture at a 2,048-token
+An earlier observation with Gemma 3 4B Q4_K_M at a 2,048-token
 context found that the service used about 1.8 GB peak RAM without swapping. A
 representative request
 processed roughly 360 prompt tokens at 18.5 tokens/second and generated at
@@ -1108,15 +1122,15 @@ before changing history, user, and price fields so llama-server can retain a
 larger common prefix between requests. The current 4,096-token context permits
 longer combined prompts and output but does not itself make inference faster.
 
-For persistence, run `llama-server` as a `systemd` service with
-`Restart=always`, `MemoryMax=8G`, and the command above in
+The reported `systemd` service runs as `robertivan`, with
+`Restart=on-failure`, `RestartSec=5`, `MemoryMax=10G`, and the command above in
 `ExecStart`. After changing the unit, run `systemctl daemon-reload` followed
-by `systemctl enable --now llama-server`; inspect it with
+by `systemctl restart llama-server`; inspect it with
 `systemctl status llama-server` and `journalctl -u llama-server`.
 After restarting llama-server, inspect `http://127.0.0.1:8080/props` and confirm
 that `modalities.vision` is `true` before restarting the Discord bot. During the
 first PNG description and screenshot-question smoke tests, record cold-start
-and image-processing latency and confirm the service remains below its 8 GB
+and image-processing latency and confirm the service remains below its 10 GB
 limit.
 
 By default, llama-server keeps the model loaded indefinitely

@@ -157,6 +157,14 @@ server reports `"vision": true` under `modalities`:
 curl -s http://127.0.0.1:8080/props
 ```
 
+The reported Ubuntu deployment as of 2026-10-12 uses
+`unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL`, alias `gemma4:e4b`, build
+`b10909-a2878d30d`, and a systemd `MemoryMax=10G` limit. Its `/props` response
+advertises vision support. This confirms capability loading; visual accuracy
+still needs a direct image test such as `scripts/check_vision.py` below.
+Use the deployed alias in `LLAMA_CPP_ALLOWED_MODELS`, `LLAMA_CPP_DEFAULT_MODEL`,
+and any `MENTION_LLAMA_CPP_MODEL` override.
+
 See the official llama.cpp [multimodal documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md)
 and [server documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
 for model/projector and endpoint details.
@@ -579,6 +587,25 @@ downloaded only after a job is admitted, are never logged or persisted, and are
 never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
+
+If a vision reply claims that no image is available, the bot retries once with
+the same image and current question, without old chat or memory that might
+reinforce that claim. The retry preserves the user's language and style profile.
+A repeated denial is reported as a processing failure;
+it is not sent as a request to re-upload an already valid PNG/JPEG.
+
+To distinguish server vision problems from bot prompting, run this from the
+project on the llama.cpp host (using the bot's Python environment):
+
+```bash
+python scripts/check_vision.py --model gemma4:e4b --base-url http://127.0.0.1:8080
+```
+
+This checks advertised vision support and sends an in-memory test image first
+with a simple question, then with the bot's structured prompt. Both answers
+should identify a red circle on white. It loads `.env` for authentication and
+does not contact Discord or save images. A successful exit means the requests
+completed, not that visual accuracy has been verified; compare the answers.
 
 Bot and API coordinate through POSIX file locks in `LLM_CAPACITY_DIR`. The bot
 reserves capacity before queuing a job and holds the same reservation across
