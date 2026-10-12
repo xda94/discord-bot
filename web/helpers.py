@@ -16,6 +16,16 @@ DISCORD_ID_FIELDS = {
     "discord_message_id",
     "message_id",
     "scope_id",
+    "author_id",
+    "nominator_id",
+    "subject_id",
+    "marker_id",
+    "confirmer_id",
+    "source_message_id",
+    "source_channel_id",
+    "consent_message_id",
+    "consent_channel_id",
+    "correct_author_id",
 }
 
 

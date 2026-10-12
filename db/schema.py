@@ -570,6 +570,8 @@ def init_db():
             )
             from db.experience_schema import migrate
             migrate(c)
+            from db import community_schema
+            community_schema.migrate(c)
         logger.info("Database initialized.")
     except Exception:
         logger.exception("Critical error initializing database")

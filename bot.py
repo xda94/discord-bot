@@ -22,10 +22,13 @@ from analytics import AnalyticsCommandTree, record_message_mention, refresh_comm
 from features.azi_se_spala import AziSeSpalaFeature
 from features.assistant_profiles import AssistantProfilesFeature
 from features.birthdays import BirthdaysFeature
+from features.bingo import BingoFeature
+from features.humor import HumorFeature
 from features.llm_mention import ContextReactionFeature, LLMMentionFeature
 from features.natural_commands import NaturalCommandsFeature
 from features.help_feature import HelpFeature
 from features.onboarding import OnboardingFeature
+from features.quote_museum import QuoteMuseumFeature
 from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
@@ -37,6 +40,7 @@ from features.response_gate import ResponseGate
 from features.wishlist import WishlistFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
+from features.social_games import SocialGamesFeature
 from features.teases import TeasesFeature
 from features.user_memory import (
     UserMemoryFeature,
@@ -104,6 +108,10 @@ assistant_profiles = AssistantProfilesFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
+social_games = SocialGamesFeature(client, tree)
+quote_museum = QuoteMuseumFeature(client, tree, social_games)
+bingo = BingoFeature(client, tree)
+humor = HumorFeature(client, tree)
 MEMORY_DISABLED = is_memory_disabled()
 AUTOMATIC_MEMORY_ENABLED = not MEMORY_DISABLED and is_automatic_memory_enabled()
 user_memory = (
@@ -160,6 +168,8 @@ BACKGROUND_FEATURES = (
     wishlist,
     flights,
     llm_mention,
+    social_games,
+    quote_museum,
 )
 
 

@@ -4,6 +4,7 @@ import asyncio
 import math
 import zoneinfo
 import discord
+from discord import app_commands
 import db
 from i18n import language_for,t,localize
 from assistant_profiles import validate_timezone
@@ -13,6 +14,28 @@ CATEGORIES = {
  'wishlist':('Wishlist','Lista de dorințe','/wishlist-item · /wishlist-show · /wishlist-target-price · /wishlist-restock-only · /wishlist-refresh · /wishlist-graph'),
  'flights':('Flights','Zboruri','/flight-tracker-add · /flight-tracker-login · /flight-tracker-show · /flight-tracker-budget'),
  'memory':('Memory','Memorie','/memory-show · /assistant-profile · /assistant-profile-set'),
+ 'community':('Community games','Jocuri de comunitate','/tribunal · /sedinta · /quest · /bingo · /bingo-obicei · /bingo-obicei-sterge · /citat · /cine-a-zis · /citat-sterge · /scuza · /merita · /horoscop'),
+}
+
+COMMUNITY_GUIDE = {
+ 'en': (
+    '**Community games** · Server commands unless stated otherwise. Use slash commands or the Messages menu; these features have no natural-language mention commands. Private language uses your saved profile, then Discord locale; shared sessions keep their creator’s language.\n\n'
+    '**/tribunal acuzat:<member> acuzatie:<text>** — A joke accusation (max 500 characters). Only the accused can accept within 24 hours; acceptance opens voting. **/sedinta subiect:<text> optiuni:A|B** — Choose 2–5 distinct options. Votes last exactly 600 seconds (10 minutes), survive restart, and each human can change their single vote. Ties/no votes are neutral. Results edit the original message.\n\n'
+    '**/quest** — Privately offer a voluntary safe challenge. Accept to publish it, then submit completion within seven days; verification lasts ten minutes. The owner cannot verify themselves. Only a strict positive majority awards a symbolic title; ties/no votes award none. Titles are not Discord roles and remain until an administrator removes them.\n\n'
+    '**/bingo** — A shared 3×3 board for the bot’s local ISO week, starting Monday. Mark manually; another human must confirm before it counts. No chat monitoring. **/bingo-obicei text:<Romanian> text-en:<English> [id]** adds/edits habits; **/bingo-obicei-sterge id:<id>** removes one. Manage Server is required; keep 9–50 active habits. Edits affect future boards.\n\n'
+    '**Messages → Apps → Pune în muzeu** — Nominate a text message (max 1,200 characters). Its author gets the exact snapshot by DM and has 24 hours to consent. Acceptance shares it guild-wide, including with members unable to see its source channel. Refusal erases unapproved text; blocked DMs cancel nomination. **/citat** shows approved quotes and IDs; **/cine-a-zis** starts a ten-minute author quiz, requiring at least two distinct approved authors. **/citat-sterge id:<id>** lets the author or Manage Messages moderator withdraw. The persistent consent-DM removal control works even after leaving. Removal revokes quizzes and stored text; it cannot recall screenshots or previous ordinary messages.\n\n'
+    '**/scuza motiv:<reason> stil:<choice>** — A private excuse in corporate, grandmother, gamer, or public-servant style. **/merita url:<saved-url>** — A purchase advocate and household accountant discuss only your saved wishlist price/stock/history. No refresh or purchase; missing/stale facts are shown honestly, historical currencies are unknown and not converted. Both work in DMs; server acknowledgments are private. Blocked DMs expose no content publicly. Reasons and private generated responses are not saved.\n\n'
+    '**/horoscop [tema]** — A deterministic server forecast for general, work, gaming, or household, using the bot’s local date; same member/server/date/theme gives the same result across restart, without an LLM. Bingo, quest selection and quizzes also need no model. Humor uses one bounded model call with a local fallback, including after interrupted result generation. Completed sessions last 30 days after closure; bingo history lasts 30 days after the local ISO week ends; unapproved quote text expires at its consent deadline, approved quotes remain until deletion.'
+ ),
+ 'ro': (
+    '**Jocuri de comunitate** · Comenzi pe server, cu excepțiile de mai jos. Folosește comenzile slash sau meniul Mesaje; aceste funcții nu au comenzi în limbaj natural prin mențiuni. Limba privată vine din profil, apoi din Discord; sesiunile comune păstrează limba creatorului.\n\n'
+    '**/tribunal acuzat:<membru> acuzatie:<text>** — Acuzație în glumă (maximum 500 de caractere). Doar acuzatul poate accepta în 24 de ore; apoi începe votul. **/sedinta subiect:<text> optiuni:A|B** — Alege 2–5 opțiuni distincte. Votul durează exact 600 de secunde (10 minute), supraviețuiește repornirii și fiecare om își poate schimba votul unic. Egalitatea/lipsa voturilor dă rezultat neutru. Rezultatul editează mesajul inițial.\n\n'
+    '**/quest** — Primești privat o provocare sigură, voluntară. Accept-o pentru publicare și declară finalizarea în șapte zile; verificarea durează zece minute. Autorul nu se poate verifica singur. Doar majoritatea strict pozitivă acordă un titlu simbolic; egalitatea/lipsa voturilor nu acordă nimic. Titlurile nu sunt roluri Discord și rămân până la ștergerea administrativă.\n\n'
+    '**/bingo** — Tablă comună 3×3 pentru săptămâna ISO locală a botului, de luni. Marchezi manual; un alt om confirmă înainte să conteze. Fără monitorizarea conversațiilor. **/bingo-obicei text:<română> text-en:<engleză> [id]** adaugă/editează; **/bingo-obicei-sterge id:<id>** șterge. Necesită Gestionare server; păstrează 9–50 de obiceiuri active. Editările afectează tablele viitoare.\n\n'
+    '**Mesaje → Aplicații → Pune în muzeu** — Propui un mesaj text (maximum 1.200 de caractere). Autorul primește copia exactă prin DM și are 24 de ore pentru acord. Acceptarea îl face disponibil întregului server, inclusiv membrilor fără acces la canalul sursă. Refuzul șterge textul neaprobat; DM-urile blocate anulează propunerea. **/citat** arată citate aprobate și ID-uri; **/cine-a-zis** pornește un quiz de zece minute, cu minimum doi autori aprobați distincți. **/citat-sterge id:<id>** permite retragerea de către autor sau moderator cu Gestionare mesaje. Butonul persistent din DM funcționează și după părăsirea serverului. Ștergerea revocă quizurile și textul stocat; nu poate retrage capturi de ecran sau mesaje obișnuite trimise anterior.\n\n'
+    '**/scuza motiv:<motiv> stil:<opțiune>** — Scuză privată în stil corporatist, bunică, gamer sau funcționar public. **/merita url:<link-salvat>** — Avocatul cumpărăturii și contabilul casei discută numai prețul/stocul/istoricul din lista ta salvată. Fără actualizare sau cumpărare; datele lipsă/vechi sunt indicate, monedele istorice sunt necunoscute și nu se convertesc. Ambele merg în DM; confirmarea pe server este privată. DM-urile blocate nu expun conținut public. Motivele și răspunsurile private generate nu se salvează.\n\n'
+    '**/horoscop [tema]** — Prognoză deterministă pe server pentru general, muncă, gaming sau casă, după data locală a botului; același membru/server/dată/temă dă același rezultat după repornire, fără LLM. Bingo, alegerea questului și quizurile nu folosesc modele. Umorul folosește un singur apel limitat, cu variantă locală de rezervă, inclusiv după întreruperea generării rezultatului. Sesiunile încheiate rămân 30 de zile de la închidere; istoricul bingo rămâne 30 de zile după sfârșitul săptămânii ISO locale; textul citatelor neaprobate expiră la termenul acordului, cele aprobate rămân până la ștergere.'
+ ),
 }
 
 
@@ -38,9 +61,18 @@ class HelpView(discord.ui.View):
         for name,(en,ro,commands) in CATEGORIES.items():
             if name=='memory' and memory_disabled:
                 continue
-            button=discord.ui.Button(label=ro if language=='ro' else en)
+            button=discord.ui.Button(label=ro if language=='ro' else en,row=0)
             async def callback(interaction,category=name,content=commands):
                 if not await self.interaction_check(interaction):
+                    return
+                if category=='community':
+                    from features.help_feature import _chunk_text
+                    for i,chunk in enumerate(_chunk_text(COMMUNITY_GUIDE[self.language])):
+                        if i==0 and edit_message:
+                            await interaction.response.edit_message(content=chunk,view=self,allowed_mentions=discord.AllowedMentions.none(),suppress_embeds=True)
+                        else:
+                            send=interaction.response.send_message if i==0 else interaction.followup.send
+                            await send(chunk,ephemeral=True,allowed_mentions=discord.AllowedMentions.none(),suppress_embeds=True)
                     return
                 registered={c.name for c in tree.get_commands()}
                 content=' · '.join(command for command in content.split(' · ') if command[1:] in registered)
@@ -51,7 +83,7 @@ class HelpView(discord.ui.View):
                     await interaction.response.send_message(content,ephemeral=True)
             button.callback=callback
             self.add_item(button)
-        full=discord.ui.Button(label='Toate comenzile' if language=='ro' else 'Complete reference')
+        full=discord.ui.Button(label='Toate comenzile' if language=='ro' else 'Complete reference',row=1)
         async def full_callback(interaction):
             if not await self.interaction_check(interaction):
                 return
@@ -59,6 +91,11 @@ class HelpView(discord.ui.View):
             from features.help_feature import _chunk_text
             lines=[]
             for command in tree.get_commands():
+                if isinstance(command,app_commands.ContextMenu):
+                    invocation='Mesaje → Aplicații' if lang=='ro' else 'Messages → Apps'
+                    description='Propune un mesaj pentru muzeu; autorul trebuie să accepte prin DM în 24 de ore.' if lang=='ro' else 'Nominate a message for the museum; its author must consent by DM within 24 hours.'
+                    lines.append(f'**{invocation} → {command.name}**\n{description}')
+                    continue
                 if memory_disabled and (command.name.startswith('memory-') or command.name.startswith('llm-memory')):
                     continue
                 desc=localize(command.description,lang)
