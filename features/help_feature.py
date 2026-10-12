@@ -183,7 +183,7 @@ HELP_TEXT = (
     "**/worth-it** `<url>`\n"
     "Privately show current, minimum, maximum and median recorded prices, plus a calculated "
     "buy-or-wait verdict and concrete advice from both voices. At least seven "
-    "prices and fresh stock data are needed. No refresh or purchase.\n\n"
+    "prices and fresh stock data are needed. The completed result mentions only you. No refresh or purchase.\n\n"
     "**/horoscope** `[theme]`\n"
     "Deterministic general/work/gaming/household forecast for the bot's local date. "
     "Same server/member/date/theme survives restart without an LLM.\n\n"

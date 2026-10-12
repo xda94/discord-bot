@@ -479,7 +479,8 @@ and `/worth-it` also work in DMs. On a server, their full results appear in the
 command channel as ephemeral messages visible only to the requester, with
 Discord's **Dismiss message** control. They do not send results by DM and work
 even when DMs are blocked. Private excuse reasons and generated responses are not
-saved. `/worth-it` never refreshes prices, scrapes a page or makes a purchase.
+saved. The completed `/worth-it` result mentions only the requester.
+`/worth-it` never refreshes prices, scrapes a page or makes a purchase.
 It reports the current saved price, recorded minimum, maximum and median, and
 percentage differences from the median and minimum. With at least seven valid
 positive observations, a fresh check and available stock, prices below the

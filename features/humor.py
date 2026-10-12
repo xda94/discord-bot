@@ -100,8 +100,10 @@ def horoscope(guild_id, user_id, day, theme, language):
     return text("horoscope", language, day=day.isoformat(), theme=HOROSCOPE_THEMES[theme][language == "ro"], sign=sign[language == "ro"], forecast=forecast[language == "ro"])
 
 
-async def _private_reply(interaction, content):
-    await interaction.followup.send(content[:2000], ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
+async def _private_reply(interaction, content, mention_requester=False):
+    prefix = f"<@{interaction.user.id}>\n" if mention_requester else ""
+    mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=interaction.user.id)], replied_user=False) if mention_requester else discord.AllowedMentions.none()
+    await interaction.followup.send(prefix + content[:2000 - len(prefix)], ephemeral=True, allowed_mentions=mentions, suppress_embeds=True)
 
 
 class HumorFeature:
@@ -138,9 +140,9 @@ class HumorFeature:
             return
         fallback = purchase_fallback(language, facts)
         result = await generate_humor("worth-it", language, facts, fallback)
-        if len(summary) + len(result) + 2 > 2000:
+        if len(summary) + len(result) + 2 + len(f"<@{interaction.user.id}>\n") > 2000:
             result = fallback
-        await _private_reply(interaction, summary + "\n\n" + result)
+        await _private_reply(interaction, summary + "\n\n" + result, mention_requester=True)
 
     async def forecast(self, interaction, theme=None):
         await interaction.response.defer(ephemeral=interaction.guild_id is None)

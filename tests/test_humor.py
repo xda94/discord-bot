@@ -77,6 +77,7 @@ def test_excuses_bilingual_styles_and_private_delivery(tmp_db, monkeypatch, lang
     assert sent == common.EXCUSE_FALLBACKS[style][language == "ro"].format(reason="private reason")
     assert len(sent) <= 2000
     assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
+    assert value.followup.send.call_args.kwargs["allowed_mentions"].users is False
     assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     generate.assert_awaited_once()
@@ -145,6 +146,11 @@ def test_purchase_owned_saved_data_only(tmp_db, monkeypatch):
     value.followup.send.assert_awaited_once()
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     sent = value.followup.send.call_args.args[0]
+    assert sent.startswith(f"<@{value.user.id}>\n")
+    assert len(sent) <= 2000
+    mentions = value.followup.send.call_args.kwargs["allowed_mentions"]
+    assert [user.id for user in mentions.users] == [value.user.id]
+    assert mentions.everyone is False and mentions.roles is False and mentions.replied_user is False
     assert "100.00" in sent and "80.00" in sent and "RON" in sent
     assert "Other member" not in sent and "999" not in sent
     assert "Lowest:" in sent and "Highest:" in sent and "Median:" in sent
@@ -162,6 +168,7 @@ def test_purchase_wrong_owner_does_not_generate(tmp_db, monkeypatch):
     generate.assert_not_called()
     value.user.send.assert_not_called()
     assert value.followup.send.call_args.args[0] == common.text("wishlist_missing", "en")
+    assert value.followup.send.call_args.kwargs["allowed_mentions"].users is False
 
 
 @pytest.mark.parametrize("language", ["en", "ro"])
