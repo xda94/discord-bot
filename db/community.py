@@ -131,7 +131,7 @@ def _payload(kind, payload):
     return encoded
 
 
-def create_session(guild_id, channel_id, creator_id, kind, language, payload, subject_id=None, now=None):
+def create_session(guild_id, channel_id, creator_id, kind, language, payload, subject_id=None, now=None, replace_quest=False):
     guild_id, channel_id, creator_id = _id(guild_id), _id(channel_id), _id(creator_id)
     if kind not in KINDS:
         raise ValueError('invalid_kind')
@@ -144,12 +144,20 @@ def create_session(guild_id, channel_id, creator_id, kind, language, payload, su
     with _connect(commit=True) as c:
         c.execute('BEGIN IMMEDIATE')
         now = _now(now)
+        replaced_session_id = None
         if kind == 'quest':
             c.execute("SELECT * FROM community_sessions WHERE guild_id=? AND COALESCE(subject_id,creator_id)=? AND kind='quest' AND phase IN ('pending','active','verification','closing') ORDER BY id LIMIT 1", (guild_id, subject_id or creator_id))
             existing = _row(c, c.fetchone())
             if existing:
-                existing['created'] = False
-                return existing
+                if not replace_quest or existing['payload'] == payload:
+                    existing['created'] = False
+                    return existing
+                if existing['phase'] not in ('pending', 'active') or creator_id not in (existing['creator_id'], existing['subject_id'] or existing['creator_id']):
+                    existing['created'] = False
+                    existing['replacement_blocked'] = True
+                    return existing
+                c.execute("UPDATE community_sessions SET phase='cancelled',closed_at=?,result_text=NULL,delivery_status='pending',retry_at=NULL,error_code='cancelled' WHERE guild_id=? AND id=?", (now, guild_id, existing['id']))
+                replaced_session_id = existing['id']
         if kind == 'quiz':
             quote = _quote(c, guild_id, payload['quote_id'])
             if not quote or quote['status'] != 'approved' or quote['quote_text'] != payload['quote_text'] or quote['author_id'] != payload['correct_author_id']:
@@ -159,6 +167,8 @@ def create_session(guild_id, channel_id, creator_id, kind, language, payload, su
         c.execute('INSERT INTO community_sessions (guild_id,channel_id,creator_id,subject_id,kind,phase,language,payload,created_at,deadline) VALUES (?,?,?,?,?,?,?,?,?,?)', (guild_id, channel_id, creator_id, subject_id, kind, phase, language, encoded, now, deadline))
         result = _session(c, guild_id, c.lastrowid)
         result['created'] = True
+        if replaced_session_id is not None:
+            result['replaced_session_id'] = replaced_session_id
         return result
 
 
@@ -194,6 +204,15 @@ def _session_list(guild_id, where, params, limit, after_id=0):
 
 def list_restorable_sessions(guild_id=None, limit=100, after_id=0):
     return _session_list(guild_id, "(phase IN ('pending','active','verification','closing') OR delivery_status IN ('pending','retry'))", [], limit, after_id)
+
+
+def list_active_quests(guild_id, user_id=None, limit=100, after_id=0, now=None):
+    where = "kind='quest' AND phase='active' AND message_id IS NOT NULL AND deadline>?"
+    params = [_now(now)]
+    if user_id is not None:
+        where += ' AND COALESCE(subject_id,creator_id)=?'
+        params.append(_id(user_id))
+    return _session_list(_id(guild_id), where, params, limit, after_id)
 
 
 def list_due_sessions(guild_id=None, now=None, limit=100, after_id=0):

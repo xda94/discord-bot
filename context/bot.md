@@ -785,6 +785,7 @@ Commands and examples:
 | `/tribunal accused:@member accusation:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
 | `/meeting subject:Lunch options:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
 | `/quest [user:@member] [text:Organize a game night]` | Custom text of 1–300 characters is required for assignments to another member. Messages mention the recipient and assigner. Without arguments, keep the private catalog offer. Acceptance starts seven days; completion opens ten-minute verification. |
+| `/quest-show-active [user:@member]` | Private list of all active guild quests, optionally filtered by recipient, with links to the original Completed/Abandon controls. |
 | `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
 | `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
 | `/bingo-habit-delete id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
@@ -862,6 +863,24 @@ including after acceptance and closure; custom text escapes mentions and Markdow
 Only the recipient is notified on initial publication; subsequent edits disable
 mention notifications. Without arguments, `/quest` keeps its private catalog
 offer and title-list behavior; `text` can also customize a self-service quest.
+When new text differs, `create_session(replace_quest=True)` atomically cancels
+the old pending/active quest and creates a new invitation. Only its assigner
+or recipient can replace it; verification/closing phases reject replacement.
+The old message is disabled and the new text requires fresh acceptance.
+Identical custom text reuses the current quest. Blocked replacements report
+an explicit conflict instead of rendering the old challenge as the new result.
+
+`/quest-show-active` defers and replies ephemerally in the command channel.
+Without `user`, it lists all accepted, unexpired active quests in the current
+guild; an optional member filters by `COALESCE(subject_id,creator_id)`, the
+recipient. `list_active_quests` reads bound active quest sessions in ID order,
+with cursor pagination; replies split into Discord-safe chunks. Each entry
+shows recipient and assigner mentions without pings, localized challenge text,
+completion deadline and a direct link to the original channel message. The
+existing recipient-only Completed/Abandon controls handle actions there.
+Pending invitations, verification and closed/expired/unbound sessions are
+excluded. Listing creates no session and makes no model call.
+
 No bingo chat surveillance, automatic quote
 gathering, message-history scraping or memory-derived habits are introduced.
 Bingo uses the bot's local ISO week beginning Monday; confirmed and old-week

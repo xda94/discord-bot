@@ -19,6 +19,12 @@ STRINGS = {
     "invalid_meeting": ("Provide a subject of 1–200 characters and 2–5 distinct options, separated by |, each at most 80 characters.", "Scrie un subiect de 1–200 de caractere și 2–5 opțiuni distincte, separate prin |, fiecare de cel mult 80 de caractere."),
     "invalid_quest": ("Choose a human member of this server for the quest.", "Alege un membru uman al acestui server pentru quest."),
     "invalid_quest_text": ("Provide quest text of 1–300 characters when assigning a quest to another member.", "Scrie textul questului, de 1–300 de caractere, când îl atribui altui membru."),
+    "quest_conflict": ("The new quest was not assigned: an open quest is already in verification or was assigned by someone else. Its recipient can finish or abandon it before accepting another.", "Questul nou nu a fost atribuit: questul deschis este deja în verificare sau a fost atribuit de altcineva. Destinatarul îl poate încheia sau abandona înainte de a primi altul."),
+    "active_quests": ("🎯 Active quests", "🎯 Questuri active"),
+    "active_quests_user": ("🎯 Active quests for {member}", "🎯 Questuri active pentru {member}"),
+    "active_quests_empty": ("No active quests found.", "Nu există questuri active."),
+    "active_quest_link": ("Open quest to complete or abandon", "Deschide questul pentru finalizare sau abandon"),
+    "active_quest_deadline": ("Completion deadline: {deadline}", "Termen de finalizare: {deadline}"),
     "tribunal": ("⚖️ Tribunal · member {member}\n{content}", "⚖️ Tribunal · membrul {member}\n{content}"),
     "invitation": ("This is a joke. Only the accused can accept or decline. Voting opens after acceptance and lasts exactly 10 minutes. Invitation expires: {deadline}.", "Este o glumă. Doar acuzatul poate accepta sau refuza. Votul începe după acceptare și durează exact 10 minute. Invitația expiră: {deadline}."),
     "meeting": ("📝 Meeting: {content}", "📝 Ședință: {content}"),
@@ -189,7 +195,8 @@ class SocialGamesFeature:
                 if current["deadline"] <= time.time():
                     await self._finish_session(current)
                     current = await asyncio.to_thread(community.get_session, interaction.guild_id, current["id"])
-                if current["phase"] in community.ACTIVE_PHASES + ("closing",):
+                same_challenge = challenge is not None and current["payload"].get("title_key") == "custom-quest" and current["payload"].get("challenge_en") == current["payload"].get("challenge_ro") == challenge.strip()
+                if current["phase"] in community.ACTIVE_PHASES + ("closing",) and (challenge is None or same_challenge):
                     await self._reply(interaction, await self._render_session(current), SessionView(self, current) if current["phase"] == "pending" and current["message_id"] is None and not assigned else None)
                     return current
             titles = await asyncio.to_thread(community.list_titles, interaction.guild_id, recipient.id) if not assigned else []
@@ -205,14 +212,53 @@ class SocialGamesFeature:
                 chosen = QUESTS[int.from_bytes(seed[:8], "big") % len(QUESTS)]
                 payload = {"challenge_en": chosen["text_en"], "challenge_ro": chosen["text_ro"], "title_key": chosen["title_key"], "title_en": chosen["title_en"], "title_ro": chosen["title_ro"]}
             if assigned:
-                return await self._create_public(interaction, "quest", language, payload, subject_id=recipient.id)
-            session = await asyncio.to_thread(community.create_session, interaction.guild_id, interaction.channel_id, interaction.user.id, "quest", language, payload)
+                return await self._create_public(interaction, "quest", language, payload, subject_id=recipient.id, replace_quest=True)
+            session = await asyncio.to_thread(community.create_session, interaction.guild_id, interaction.channel_id, interaction.user.id, "quest", language, payload, replace_quest=challenge is not None)
+            if session.get("replacement_blocked"):
+                await self._reply(interaction, _t("quest_conflict", language))
+                return session
+            if session.get("replaced_session_id"):
+                replaced = await asyncio.to_thread(community.get_session, interaction.guild_id, session["replaced_session_id"])
+                await self._deliver_session(replaced, automatic=False)
             await self._reply(interaction, await self._render_session(session), SessionView(self, session) if session["phase"] == "pending" and session["message_id"] is None else None)
             return session
         except Exception:
             await self._record("failure", "community/quest", interaction.guild_id)
             await self._reply(interaction, text("failed", language))
             return None
+
+    async def show_active_quests(self, interaction, user=None):
+        await self._defer(interaction)
+        language = await interaction_language(interaction)
+        if not await self._admit(interaction, language):
+            return
+        if user is not None and (getattr(user, "bot", True) or getattr(getattr(user, "guild", None), "id", None) != interaction.guild_id):
+            await self._reply(interaction, _t("invalid_quest", language))
+            return
+        heading = _t("active_quests_user", language, member=f"<@{user.id}>") if user is not None else _t("active_quests", language)
+        content = heading
+        found = False
+        after_id = 0
+        try:
+            while True:
+                page = await asyncio.to_thread(community.list_active_quests, interaction.guild_id, user.id if user is not None else None, after_id=after_id)
+                for session in page:
+                    found = True
+                    row = _t("quest", language, member=f"<@{session['subject_id'] or session['creator_id']}>", assigner=f"<@{session['creator_id']}>", content=safe_text(session["payload"]["challenge_" + language], 600))
+                    row += "\n" + _t("active_quest_deadline", language, deadline=f"<t:{int(session['deadline'])}:F>")
+                    url = f"https://discord.com/channels/{session['guild_id']}/{session['channel_id']}/{session['message_id']}"
+                    row += f"\n[{_t('active_quest_link', language)}]({url})"
+                    if len(content) + len(row) + 2 > 1900:
+                        await self._reply(interaction, content)
+                        content = heading
+                    content += "\n\n" + row
+                if len(page) < 100:
+                    break
+                after_id = page[-1]["id"]
+            await self._reply(interaction, content if found else _t("active_quests_empty", language))
+        except Exception:
+            await self._record("failure", "community/quest-show-active", interaction.guild_id)
+            await self._reply(interaction, text("failed", language))
 
     async def create_quiz(self, interaction, quote, candidates):
         await self._defer(interaction)
@@ -231,14 +277,17 @@ class SocialGamesFeature:
             await self._reply(interaction, text("failed", language))
             return None
 
-    async def _create_public(self, interaction, kind, language, payload, subject_id=None):
+    async def _create_public(self, interaction, kind, language, payload, subject_id=None, replace_quest=False):
         session = None
         message = None
         try:
-            session = await asyncio.to_thread(community.create_session, interaction.guild_id, interaction.channel_id, interaction.user.id, kind, language, payload, subject_id=subject_id)
+            session = await asyncio.to_thread(community.create_session, interaction.guild_id, interaction.channel_id, interaction.user.id, kind, language, payload, subject_id=subject_id, replace_quest=replace_quest)
             if kind == "quest" and not session["created"]:
-                await self._reply(interaction, await self._render_session(session))
+                await self._reply(interaction, _t("quest_conflict", language) if session.get("replacement_blocked") else await self._render_session(session))
                 return session
+            if session.get("replaced_session_id"):
+                replaced = await asyncio.to_thread(community.get_session, interaction.guild_id, session["replaced_session_id"])
+                await self._deliver_session(replaced, automatic=False)
             content = await self._render_session(session)
             mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=subject_id)], replied_user=False) if kind in ("tribunal", "quest") else discord.AllowedMentions.none()
             message = await interaction.channel.send(content, view=SessionView(self, session), allowed_mentions=mentions, suppress_embeds=True)
@@ -532,3 +581,9 @@ class SocialGamesFeature:
         @app_commands.describe(user="Member to offer a quest to; omit to take one yourself", text="Quest text, maximum 300 characters; required when assigning to another member")
         async def quest(interaction: discord.Interaction, user: Optional[discord.Member] = None, text: Optional[str] = None):
             await self.quest(interaction, user=user, challenge=text)
+
+        @self.tree.command(name="quest-show-active", description="List active server quests and link to their completion or abandon controls")
+        @app_commands.guild_only()
+        @app_commands.describe(user="Filter by the quest recipient; omit to show all active server quests")
+        async def quest_show_active(interaction: discord.Interaction, user: Optional[discord.Member] = None):
+            await self.show_active_quests(interaction, user=user)

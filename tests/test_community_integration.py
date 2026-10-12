@@ -25,6 +25,7 @@ COMMANDS = {
     "tribunal": ("accused", "accusation"),
     "meeting": ("subject", "options"),
     "quest": ("user", "text"),
+    "quest-show-active": ("user",),
     "bingo": (),
     "bingo-habit": ("text-ro", "text-en", "id"),
     "bingo-habit-delete": ("id",),
@@ -111,7 +112,7 @@ def test_real_command_payloads_and_constructor_dependencies(tmp_db, monkeypatch)
 
 def test_optional_arguments_are_typing_optional_and_payloads_match(tmp_db):
     _, tree, _ = registered_features()
-    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme"), ("quest", "user"), ("quest", "text")):
+    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme"), ("quest", "user"), ("quest", "text"), ("quest-show-active", "user")):
         command = tree.get_command(name)
         annotation = get_type_hints(command.callback)[parameter]
         assert get_origin(annotation) is Union

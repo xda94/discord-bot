@@ -462,6 +462,7 @@ except `/azi-se-spala`. Reply content remains bilingual.
 | `/tribunal accused:@member accusation:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
 | `/meeting subject:Lunch options:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
 | `/quest [user:@member] [text:Organize a game night]` | Write a custom quest (1–300 characters); text is required when assigning to another member. Messages mention the recipient and assigner. Without arguments, take a private catalog challenge. One open quest per recipient/server. |
+| `/quest-show-active [user:@member]` | Privately list all active quests in this server, or filter by recipient. Each entry links to the original message to complete or abandon it. |
 | `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |
 | `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
 | `/bingo-habit-delete id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
@@ -537,9 +538,20 @@ custom quests award the symbolic **Quest Champion** title. `/quest` without
 arguments keeps the private catalog offer; `text` also supports a custom quest
 for yourself. Acceptance starts a **seven-day** completion
 window; verification lasts **ten minutes**. The recipient cannot self-verify,
-and any symbolic title is awarded to them. Repeated assignments show their
-existing open quest instead of creating another. Existing self-assigned quests
-also count toward the one-quest limit.
+and any symbolic title is awarded to them. Repeating the same text shows the
+existing quest. Different text replaces a pending or active quest you assigned,
+cancels its old controls, and sends a new invitation requiring the recipient's
+acceptance. The recipient can also replace their own quest with custom text.
+Quests already in verification, or assigned by someone else, return an explicit
+conflict instead of silently ignoring the new text. Existing self-assigned
+quests also count toward the one-quest limit.
+
+`/quest-show-active` privately lists all accepted, unexpired active quests in
+the current server. Select the optional `user` field to show only that member's
+quests. Entries show the challenge, recipient, assigner and completion deadline,
+with a link to the original message. Only the recipient can use its Completed
+or Abandon buttons. Pending invitations and quests under verification are not
+included.
 
 Session and consent controls are restored after restart. Overdue votes close
 promptly, and results edit the original public message rather than posting a
