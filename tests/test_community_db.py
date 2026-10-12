@@ -41,6 +41,23 @@ def current_week():
     return f'{year}-W{week:02d}'
 
 
+def test_quest_recipient_index_migrates_legacy_quests_and_handles_concurrent_assignments(tmp_db):
+    legacy = community.create_session(1, 10, 20, 'quest', 'en', QUEST, now=100)
+    with _connect(commit=True) as c:
+        c.execute('DROP INDEX community_active_quest_recipient')
+        c.execute("CREATE UNIQUE INDEX community_active_quest ON community_sessions(guild_id,creator_id) WHERE kind='quest' AND phase IN ('pending','active','verification','closing')")
+    db.init_db()
+    db.init_db()
+    assert community.get_session(1, legacy['id'])['creator_id'] == 20
+    assert community.create_session(1, 10, 40, 'quest', 'en', QUEST, subject_id=20, now=100)['id'] == legacy['id']
+    assigned = community.create_session(1, 10, 20, 'quest', 'en', QUEST, subject_id=30, now=100)
+    assert assigned['id'] != legacy['id']
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda creator: community.create_session(1, 10, creator, 'quest', 'en', QUEST, subject_id=50, now=100), [20, 30, 40, 60]))
+    assert len({row['id'] for row in results}) == 1
+    assert sum(row['created'] for row in results) == 1
+
+
 def mutation_after_lock_wait(monkeypatch, deadline, mutation):
     clock = [deadline - 1]
     attempted = threading.Event()

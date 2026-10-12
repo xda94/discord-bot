@@ -452,21 +452,20 @@ delivery guide above for migrations, limitations, and rollout checks.
 the full guide in English or Romanian. Private replies use the saved profile
 language, then Discord locale; shared sessions retain their creator's language,
 while button acknowledgments use the clicking member's language. User text is
-kept as written. These features use slash commands and the message context
-menu; natural-language mention parsing does not support them.
+kept as written. These features use slash commands; natural-language mention
+parsing does not support them.
 Command names, options and descriptions are English throughout the bot,
-except `/azi-se-spala`. Reply content remains bilingual. The museum message
-action is **Add to museum**.
+except `/azi-se-spala`. Reply content remains bilingual.
 
 | Invocation | Behavior |
 |---|---|
 | `/tribunal accused:@member accusation:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
 | `/meeting subject:Lunch options:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
-| `/quest` | Private voluntary safe challenge; acceptance publishes it. Submit completion within seven days, or abandon it. One active quest per member/server. |
+| `/quest [user:@member]` | Take a private voluntary challenge, or post an invitation tagging another human server member. Only the recipient can accept/decline, complete or abandon it. One open quest per recipient/server. |
 | `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |
 | `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
 | `/bingo-habit-delete id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
-| Message menu → Apps → **Add to museum** | Nominate one text message for the author-consented Quote Museum. This is a Messages context action, not a slash command. |
+| `/quote-add quote:Coffee is a food group user:@member` | Submit quote text and the server member who said it for author approval by DM. |
 | `/quote` | Show a random approved quote from this server, its author and quote ID. |
 | `/who-said` | Ten-minute quiz identifying the author of an approved quote; requires at least two distinct approved authors and offers 2–4 choices. |
 | `/quote-delete id:12` | Withdraw as quote author or a moderator with Manage Messages. |
@@ -512,18 +511,27 @@ date: the same guild/member/date/theme gives the same result across restart;
 changing language changes rendering only. Bingo, quest selection, quizzes and
 horoscope make no model calls.
 
-Museum nominations snapshot only message text, at most 1,200 characters; bot,
-system, empty and attachment-only messages are rejected, and attachments are
-never downloaded. The author receives the exact snapshot and source server by
-DM and has **24 hours** to accept or refuse. Acceptance explicitly makes the
+Use `/quote-add quote:<text> user:<member>` to enter a quote of at most 1,200
+characters and select the human server member who said it. Empty quotes, bots
+and system users are rejected. The selected author receives the exact text and
+server by DM and has **24 hours** to accept or refuse the attribution.
+Acceptance explicitly makes the
 quote **available throughout that guild, including to members who cannot see
-the source channel**. The author must still belong to the server when accepting.
+the submission channel**. The author must still belong to the server when accepting.
 Blocked DMs cancel the request. Nothing is selected from chat history or
 conversation memory automatically. Approved quotes remain until deletion;
 unapproved text is erased on refusal or expiry. An approved consent DM keeps a
 persistent author-only removal button, so withdrawal works even after leaving
 the server. Deletion clears stored text and revokes related quizzes. It cannot
 recall screenshots or already sent ordinary Discord messages.
+
+With `/quest user:@member`, the selected member has **24 hours** to accept or
+decline the invitation in the command channel. `/quest` without a member keeps
+the private self-service offer. Acceptance starts a **seven-day** completion
+window; verification lasts **ten minutes**. The recipient cannot self-verify,
+and any symbolic title is awarded to them. Repeated assignments show their
+existing open quest instead of creating another. Existing self-assigned quests
+also count toward the one-quest limit.
 
 Session and consent controls are restored after restart. Overdue votes close
 promptly, and results edit the original public message rather than posting a

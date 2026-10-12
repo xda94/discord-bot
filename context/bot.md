@@ -784,11 +784,11 @@ Commands and examples:
 |---|---|
 | `/tribunal accused:@member accusation:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
 | `/meeting subject:Lunch options:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
-| `/quest` | Private safe catalog offer; voluntary acceptance publishes a seven-day challenge, completion opens ten-minute verification. |
+| `/quest [user:@member]` | Private self-service offer, or public invitation tagging another human server member. Only the recipient can accept/decline, complete or abandon; acceptance starts seven days, completion opens ten-minute verification. |
 | `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
 | `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
 | `/bingo-habit-delete id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
-| Messages → Apps → **Add to museum** | Explicitly nominate one text-only message, maximum 1,200 characters, for author consent by DM. |
+| `/quote-add quote:Coffee is a food group user:@member` | Submit quote text, maximum 1,200 characters, and select its human server-member author for consent by DM. |
 | `/quote` / `/who-said` / `/quote-delete id:12` | Approved guild quote; ten-minute author quiz with 2–4 distinct choices; author/Manage Messages removal. |
 | `/excuse reason:I missed the meeting style:corporate` | Private corporate/grandmother/gamer/public-servant excuse, reason at most 500 characters. |
 | `/worth-it url:https://shop.example/item` | Private current/minimum/maximum/median prices, calculated verdict and actionable advocate/accountant advice. |
@@ -817,8 +817,8 @@ echo its decision and may add only bounded numeric-free, advice-free humor;
 contradictory/invalid output falls back to the deterministic voices.
 
 All command names, public options and descriptions are English except
-`/azi-se-spala`; bilingual reply content remains profile-controlled. The museum
-message action is `Add to museum`. The stored session kind `sedinta` is retained
+`/azi-se-spala`; bilingual reply content remains profile-controlled. Museum
+submissions use `/quote-add` with `quote` and `user`. The stored session kind `sedinta` is retained
 for compatibility while its public command is `/meeting`.
 
 `features/humor_common.py` owns bilingual text, safe catalogs, local calendar
@@ -832,7 +832,7 @@ at most 220 tokens and a 30-second timeout. Private calls use interactive
 capacity; automatic verdict/minutes use background capacity. Empty, malformed,
 oversized, busy or timed-out output falls back locally with no repair/retry call.
 
-`db/community_schema.py` is an additive idempotent migration invoked by
+`db/community_schema.py` is an idempotent schema migration invoked by
 `init_db`. `db/community.py` returns dictionaries from guild-scoped helpers
 using the existing connection layer. Tables store sessions, one changeable
 vote per member/session, symbolic titles, bilingual habits/board snapshots,
@@ -844,7 +844,17 @@ Votes last exactly 600 seconds from opening, even after restart. Tribunal and
 meeting ties/no votes are neutral; quest owners cannot self-verify, and only a
 strict positive majority awards a symbolic title. Titles never create Discord
 roles and remain until administrator removal. One active quest per guild/member
-prevents competing assignments. No bingo chat surveillance, automatic quote
+prevents competing assignments, including self-service and assignments from
+other members. For assigned quests, `creator_id` remains the assigning member
+and `subject_id` stores the recipient. Legacy/self-service quests use
+`creator_id` as the owner when `subject_id` is null. Ownership, duplicate checks,
+self-verification protection and title awards all use the recipient. Startup
+replaces the legacy unique index with one keyed by the recipient, preserving
+existing quests without new columns. Invitations to other members are posted in the command
+channel with only the recipient mention enabled and persistent Accept/Decline
+controls. Acceptance edits that same message; invitations expire after 24 hours.
+Without `user`, `/quest` keeps its private offer and title-list behavior.
+No bingo chat surveillance, automatic quote
 gathering, message-history scraping or memory-derived habits are introduced.
 Bingo uses the bot's local ISO week beginning Monday; confirmed and old-week
 cells cannot be mutated, and edits do not change existing snapshots.
@@ -859,11 +869,14 @@ edits retry the same message; deleted/inaccessible messages store safe delivery
 errors for administration. Individual database/model failures do not stop later
 ticks. All content disables mentions and link previews where supported.
 
-Museum consent DMs include the exact snapshot and source guild and warn that
-approval shares it guild-wide, including with members lacking source-channel
-access. The author must still be a member to accept within 24 hours. Bots,
-system authors, empty/attachment-only messages are rejected; attachments are
-not downloaded. Refusal, expiry or blocked-DM nomination removes pending text.
+Museum consent DMs include the exact submitted text and guild and warn that
+approval confirms the attribution and shares it guild-wide, including with
+members lacking submission-channel access. The author must still be a member
+to accept within 24 hours. Bots, system authors, nonmembers and empty or oversized
+quotes are rejected. The existing `source_message_id` column stores the command
+interaction ID for new submissions; `source_channel_id` stores the invocation
+channel. Existing quotes and consent controls remain valid without a migration.
+Refusal, expiry or blocked-DM nomination removes pending text.
 Approved quotes alone can be selected, and quizzes require two distinct approved
 authors. Authors have a persistent removal button in the consent DM after
 approval, including after leaving the guild. Author/moderator/operator deletion
@@ -883,9 +896,9 @@ command behavior and is split into chunks below Discord's 2,000-character limit.
 The English static reference includes all community commands in every memory
 mode. `HelpView` also provides the full bilingual community guide with bounded
 chunks and respects Discord's five buttons per row/five rows, including the
-onboarding return control on row 4. Complete reference handles
-`app_commands.ContextMenu` before slash-command descriptions/parameters and
-renders its Messages menu invocation. Existing categories, settings and the
+onboarding return control on row 4. Complete reference renders slash-command
+descriptions and parameters, including `/quote-add <quote> <user>`.
+Existing categories, settings and the
 natural-language guide remain available; community features have no mention
 parser support.
 
