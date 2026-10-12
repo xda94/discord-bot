@@ -58,6 +58,37 @@ def test_quest_recipient_index_migrates_legacy_quests_and_handles_concurrent_ass
     assert sum(row['created'] for row in results) == 1
 
 
+def test_active_quest_listing_scopes_recipients_and_excludes_non_actionable_sessions(tmp_db):
+    own = community.create_session(1, 10, 20, 'quest', 'en', QUEST, now=100)
+    community.bind_session_message(1, own['id'], 1000)
+    community.transition_session(1, own['id'], 'pending', 'active', 20, now=200)
+    assigned = community.create_session(1, 11, 20, 'quest', 'en', QUEST, subject_id=30, now=100)
+    community.bind_session_message(1, assigned['id'], 1001)
+    community.transition_session(1, assigned['id'], 'pending', 'active', 30, now=200)
+    pending = community.create_session(1, 10, 40, 'quest', 'en', QUEST, now=100)
+    other_guild = community.create_session(2, 10, 20, 'quest', 'en', QUEST, now=100)
+    community.bind_session_message(2, other_guild['id'], 1002)
+    community.transition_session(2, other_guild['id'], 'pending', 'active', 20, now=200)
+    expired = community.create_session(1, 10, 50, 'quest', 'en', QUEST, now=100)
+    community.bind_session_message(1, expired['id'], 1003)
+    community.transition_session(1, expired['id'], 'pending', 'active', 50, now=200)
+    unbound = community.create_session(1, 10, 60, 'quest', 'en', QUEST, now=100)
+    with _connect(commit=True) as c:
+        c.execute('UPDATE community_sessions SET deadline=250 WHERE id=?', (expired['id'],))
+        c.execute("UPDATE community_sessions SET phase='active' WHERE id=?", (unbound['id'],))
+    assert {row['id'] for row in community.list_active_quests(1, now=300)} == {own['id'], assigned['id']}
+    assert [row['id'] for row in community.list_active_quests(1, user_id=20, now=300)] == [own['id']]
+    assert [row['id'] for row in community.list_active_quests(1, user_id=30, now=300)] == [assigned['id']]
+    assert community.list_active_quests(1, user_id=40, now=300) == []
+    assert community.get_session(1, pending['id'])['phase'] == 'pending'
+    assert community.get_session(1, expired['id'])['phase'] == 'active'
+    first = community.list_active_quests(1, limit=1, now=300)
+    second = community.list_active_quests(1, after_id=first[0]['id'], now=300)
+    assert [row['id'] for row in first + second] == [own['id'], assigned['id']]
+    community.transition_session(1, assigned['id'], 'active', 'verification', 30, now=301)
+    assert [row['id'] for row in community.list_active_quests(1, now=302)] == [own['id']]
+
+
 def mutation_after_lock_wait(monkeypatch, deadline, mutation):
     clock = [deadline - 1]
     attempted = threading.Event()

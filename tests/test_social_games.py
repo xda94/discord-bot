@@ -71,7 +71,7 @@ def external_mocks(monkeypatch):
 
 def test_command_registration():
     worker = feature()
-    assert {command.name for command in worker.tree.get_commands()} == {"tribunal", "meeting", "quest"}
+    assert {command.name for command in worker.tree.get_commands()} == {"tribunal", "meeting", "quest", "quest-show-active"}
     assert all(command.guild_only for command in worker.tree.get_commands())
 
 
@@ -312,6 +312,7 @@ def test_assigned_quest_reuses_recipient_quest_without_affecting_assigner(tmp_db
         assert row["id"] != own["id"]
         assert (await worker.quest(other, recipient.user, challenge="Another task"))["id"] == row["id"]
         assert community.get_session(12, row["id"])["payload"]["challenge_en"] == "Organize a game night"
+        assert other.followup.send.call_args.args[0] == games._t("quest_conflict", "en")
         assert (await worker.quest(recipient))["id"] == row["id"]
         assert "view" not in recipient.followup.send.call_args.kwargs
         assert "https://discord.com/channels/12/23/99" in recipient.followup.send.call_args.args[0]
@@ -372,6 +373,155 @@ def test_custom_self_service_quest_uses_entered_text(tmp_db):
     assert "<@42>" in value.followup.send.call_args.args[0]
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     value.channel.send.assert_not_called()
+
+
+@pytest.mark.parametrize("language", ["en", "ro"])
+@pytest.mark.parametrize("action,phase", [("completed", "verification"), ("abandon", "cancelled")])
+def test_active_quests_link_to_original_controls_and_filter_by_recipient(tmp_db, language, action, phase):
+    async def run():
+        own = session("quest", phase="active")
+        assigned = community.create_session(12, 47, 60, "quest", language, quest_payload(), subject_id=45)
+        community.bind_session_message(12, assigned["id"], 199)
+        community.transition_session(12, assigned["id"], "pending", "active", 45)
+        session("quest", phase="pending", creator=61)
+        session("quest", phase="verification", creator=62)
+        session("quest", phase="active", creator=63, deadline=0)
+        value = interaction(channel_id=88, language=language)
+        worker = feature(value)
+        before = community.list_sessions(12)
+        command = worker.tree.get_command("quest-show-active")
+        await command.callback(value)
+        content = value.followup.send.call_args.args[0]
+        assert "https://discord.com/channels/12/23/99" in content
+        assert "https://discord.com/channels/12/47/199" in content
+        assert "<@42>" in content and "<@45>" in content and "<@60>" in content
+        assert all(f"<@{user_id}>" not in content for user_id in (61, 62, 63))
+        assert games._t("active_quest_link", language) in content
+        assert value.followup.send.call_args.kwargs["ephemeral"] is True
+        assert value.followup.send.call_args.kwargs["allowed_mentions"].users is False
+        value.channel.send.assert_not_called()
+        assert community.list_sessions(12) == before
+        recipient = interaction(user_id=45).user
+        await command.callback(value, recipient)
+        filtered = value.followup.send.call_args.args[0]
+        assert "https://discord.com/channels/12/47/199" in filtered
+        assert "https://discord.com/channels/12/23/99" not in filtered
+        owner = interaction(language=language)
+        await games.SessionView(worker, own).children[0 if action == "completed" else 1].callback(owner)
+        assert community.get_session(12, own["id"])["phase"] == phase
+    asyncio.run(run())
+    games.generate_humor.assert_not_called()
+
+
+@pytest.mark.parametrize("language", ["en", "ro"])
+def test_active_quests_empty_is_private_and_does_not_create_quest(tmp_db, language):
+    value = interaction(language=language)
+    asyncio.run(feature(value).show_active_quests(value))
+    assert value.followup.send.call_args.args[0] == games._t("active_quests_empty", language)
+    assert value.followup.send.call_args.kwargs["ephemeral"] is True
+    assert community.list_sessions(12) == []
+    value.channel.send.assert_not_called()
+
+
+def test_active_quests_list_all_pages_without_truncating_quest_links(tmp_db):
+    for index in range(101):
+        row = community.create_session(12, 23, 1000 + index, "quest", "en", quest_payload())
+        community.bind_session_message(12, row["id"], 2000 + index)
+        community.transition_session(12, row["id"], "pending", "active", 1000 + index)
+    value = interaction()
+    asyncio.run(feature(value).show_active_quests(value))
+    chunks = [call.args[0] for call in value.followup.send.call_args_list]
+    assert len(chunks) > 1 and all(len(chunk) <= 1900 for chunk in chunks)
+    content = "\n".join(chunks)
+    assert content.count("](https://discord.com/channels/") == 101
+    assert "](https://discord.com/channels/12/23/2100)" in content
+    assert all(call.kwargs["ephemeral"] for call in value.followup.send.call_args_list)
+
+
+@pytest.mark.parametrize("invalid", ["dm", "bot", "filter_bot", "filter_guild"])
+def test_active_quest_listing_rejects_invalid_scope_or_user(tmp_db, invalid):
+    value = interaction(guild_id=None if invalid == "dm" else 12)
+    user = None
+    if invalid == "bot":
+        value.user.bot = True
+    elif invalid.startswith("filter"):
+        user = interaction(user_id=45).user
+        if invalid == "filter_bot":
+            user.bot = True
+        else:
+            user.guild.id = 13
+    asyncio.run(feature(value).show_active_quests(value, user))
+    value.followup.send.assert_awaited_once()
+    assert value.followup.send.call_args.kwargs["ephemeral"] is True
+    value.channel.send.assert_not_called()
+
+
+def test_active_quest_listing_failure_is_private(tmp_db, monkeypatch):
+    monkeypatch.setattr(community, "list_active_quests", MagicMock(side_effect=sqlite3.OperationalError("private details")))
+    value = interaction()
+    asyncio.run(feature(value).show_active_quests(value))
+    assert value.followup.send.call_args.args[0] == games.text("failed", "en")
+    assert value.followup.send.call_args.kwargs["ephemeral"] is True
+
+
+def test_custom_assignment_replaces_legacy_active_quest_instead_of_ignoring_text(tmp_db):
+    async def run():
+        assigner, recipient = interaction(language="ro"), interaction(user_id=45, language="ro")
+        payload = quest_payload()
+        payload["challenge_ro"] = "Recomandă o melodie, o carte sau un joc care îți place, fără spoilere."
+        old = community.create_session(12, 23, assigner.user.id, "quest", "ro", payload, subject_id=recipient.user.id)
+        community.bind_session_message(12, old["id"], 99)
+        community.transition_session(12, old["id"], "pending", "active", recipient.user.id)
+        new_message = SimpleNamespace(id=199, edit=AsyncMock())
+        assigner.channel.send.return_value = new_message
+        worker = feature(assigner)
+        await worker.tree.get_command("quest").callback(assigner, recipient.user, "Fa un backflip")
+        assert community.get_session(12, old["id"])["phase"] == "cancelled"
+        assert all(button.disabled for button in assigner.message.edit.call_args.kwargs["view"].children)
+        new = next(row for row in community.list_sessions(12) if row["phase"] == "pending")
+        assert new["id"] != old["id"] and new["message_id"] == 199
+        assert new["payload"]["challenge_en"] == new["payload"]["challenge_ro"] == "Fa un backflip"
+        assert new["creator_id"] == 42 and new["subject_id"] == 45
+        content = assigner.channel.send.call_args.args[0]
+        assert "Fa un backflip" in content and "Recomandă o melodie" not in content
+        assert "<@42>" in content and "<@45>" in content
+        repeated = await worker.quest(assigner, recipient.user, challenge="Fa un backflip")
+        assert repeated["id"] == new["id"]
+        assigner.channel.send.assert_awaited_once()
+        await worker.handle_control(recipient, 12, old["id"], "completed")
+        assert recipient.followup.send.call_args.args[0] == games.text("expired", "ro")
+        recipient.message = new_message
+        assigner.channel.fetch_message.return_value = new_message
+        await worker.handle_control(recipient, 12, new["id"], "accept")
+        assert community.get_session(12, new["id"])["phase"] == "active"
+        assert "Fa un backflip" in new_message.edit.call_args.kwargs["content"]
+        assert "Recomandă o melodie" not in new_message.edit.call_args.kwargs["content"]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ["pending", "active", "verification"])
+def test_changed_quest_text_reoffers_only_before_verification(tmp_db, phase):
+    async def run():
+        assigner, recipient = interaction(), interaction(user_id=45)
+        worker = feature(assigner)
+        old = await worker.quest(assigner, recipient.user, challenge="Original task")
+        if phase in ("active", "verification"):
+            await worker.handle_control(recipient, 12, old["id"], "accept")
+        if phase == "verification":
+            await worker.handle_control(recipient, 12, old["id"], "completed")
+            community.cast_vote(12, old["id"], 60, "success")
+        new = await worker.quest(assigner, recipient.user, challenge="Replacement task")
+        if phase == "verification":
+            assert new["id"] == old["id"]
+            assert community.get_session(12, old["id"])["phase"] == "verification"
+            assert community.session_tally(12, old["id"])["success"] == 1
+            assert assigner.followup.send.call_args.args[0] == games._t("quest_conflict", "en")
+            assigner.channel.send.assert_awaited_once()
+        else:
+            assert new["id"] != old["id"] and new["phase"] == "pending"
+            assert community.get_session(12, old["id"])["phase"] == "cancelled"
+            assert new["payload"]["challenge_en"] == "Replacement task"
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("success,negative,title", [(0, 0, False), (1, 1, False), (1, 2, False), (2, 1, True)])
