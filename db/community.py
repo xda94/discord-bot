@@ -145,7 +145,7 @@ def create_session(guild_id, channel_id, creator_id, kind, language, payload, su
         c.execute('BEGIN IMMEDIATE')
         now = _now(now)
         if kind == 'quest':
-            c.execute("SELECT * FROM community_sessions WHERE guild_id=? AND creator_id=? AND kind='quest' AND phase IN ('pending','active','verification','closing') ORDER BY id LIMIT 1", (guild_id, creator_id))
+            c.execute("SELECT * FROM community_sessions WHERE guild_id=? AND COALESCE(subject_id,creator_id)=? AND kind='quest' AND phase IN ('pending','active','verification','closing') ORDER BY id LIMIT 1", (guild_id, subject_id or creator_id))
             existing = _row(c, c.fetchone())
             if existing:
                 existing['created'] = False
@@ -215,7 +215,7 @@ def transition_session(guild_id, session_id, expected_phase, new_phase, actor_id
         session = _session(c, guild_id, session_id)
         if not session:
             return _out('missing', 'session')
-        owner = session['subject_id'] if session['kind'] == 'tribunal' else session['creator_id']
+        owner = session['subject_id'] or session['creator_id']
         if actor_id != owner:
             return _out('forbidden', 'session', session)
         if session['phase'] != expected_phase or now >= session['deadline']:
@@ -252,7 +252,7 @@ def cast_vote(guild_id, session_id, user_id, option_key, now=None):
         phase = 'verification' if session['kind'] == 'quest' else 'active'
         if session['phase'] != phase or now >= session['deadline'] or session['message_id'] is None:
             return _out('closed', 'session', session)
-        if session['kind'] == 'quest' and session['creator_id'] == user_id:
+        if session['kind'] == 'quest' and (session['subject_id'] or session['creator_id']) == user_id:
             return _out('forbidden', 'session', session)
         if not isinstance(option_key, str) or option_key not in _options(session):
             return _out('invalid', 'session', session)
@@ -302,7 +302,7 @@ def claim_session_close(guild_id, session_id, fallback, now=None):
         phase = 'expired' if session['phase'] == 'pending' or (session['kind'] == 'quest' and session['phase'] == 'active') else 'closing'
         title_awarded = False
         if session['kind'] == 'quest' and session['phase'] == 'verification' and tally['success'] > tally['not_yet']:
-            c.execute('INSERT OR IGNORE INTO community_titles (guild_id,user_id,title_key,awarded_at,session_id) VALUES (?,?,?,?,?)', (guild_id, session['creator_id'], session['payload']['title_key'], now, session_id))
+            c.execute('INSERT OR IGNORE INTO community_titles (guild_id,user_id,title_key,awarded_at,session_id) VALUES (?,?,?,?,?)', (guild_id, session['subject_id'] or session['creator_id'], session['payload']['title_key'], now, session_id))
             title_awarded = c.rowcount == 1
         c.execute('UPDATE community_sessions SET phase=?,closed_at=?,result_text=?,generation_started_at=? WHERE guild_id=? AND id=?', (phase, now, fallback, now, guild_id, session_id))
         return _out('claimed', 'session', _session(c, guild_id, session_id), tally=tally, title_awarded=title_awarded)

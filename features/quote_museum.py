@@ -13,11 +13,11 @@ from features.humor_common import interaction_language, safe_text, text
 
 
 STRINGS = {
-    "invalid": ("Choose a human member's text message from this server, with 1–1,200 characters. System and attachment-only messages cannot be nominated.", "Alege un mesaj text al unui membru uman de pe acest server, cu 1–1.200 de caractere. Mesajele de sistem și cele doar cu atașamente nu pot fi nominalizate."),
+    "invalid": ("Provide a quote of 1–1,200 characters and choose a human member of this server as its author.", "Scrie un citat de 1–1.200 de caractere și alege ca autor un membru uman al acestui server."),
     "human": ("Only human members of this server can use this action.", "Doar membrii umani ai acestui server pot folosi această acțiune."),
     "nominated": ("I sent the author a private consent request. The quote stays unavailable until they accept within 24 hours.", "Am trimis autorului o cerere privată de acord. Citatul rămâne indisponibil până când acceptă în 24 de ore."),
-    "duplicate": ("This message already has a museum nomination or approval.", "Acest mesaj are deja o nominalizare sau aprobare în muzeu."),
-    "consent": ("🏛️ Quote Museum · #{id}\nThe preceding message is the complete quote snapshot from server {guild}, source channel ID {channel}.\nAccepting makes it available throughout that server, including to members who cannot see the source channel. Consent is for this quote only and expires after 24 hours: {deadline}.\nYou must still be a server member to accept. You can refuse now or withdraw later with the removal button, even after leaving the server. Deletion removes museum availability and active quizzes; it cannot recall screenshots or previously sent ordinary Discord messages.", "🏛️ Muzeul citatelor · #{id}\nMesajul precedent este copia completă a citatului de pe serverul {guild}, canalul sursă cu ID {channel}.\nAcceptarea îl face disponibil pe întregul server, inclusiv membrilor care nu pot vedea canalul sursă. Acordul este doar pentru acest citat și expiră după 24 de ore: {deadline}.\nTrebuie să fii încă membru al serverului pentru a accepta. Poți refuza acum sau retrage ulterior cu butonul de ștergere, chiar după părăsirea serverului. Ștergerea elimină disponibilitatea în muzeu și quizurile active; nu poate retrage capturi de ecran sau mesaje Discord obișnuite trimise anterior."),
+    "duplicate": ("This submission already has a museum nomination or approval.", "Această propunere are deja o nominalizare sau aprobare în muzeu."),
+    "consent": ("🏛️ Quote Museum · #{id}\nThe preceding message is the complete quote attributed to you, submitted in server {guild}, channel ID {channel}.\nAccepting confirms the attribution and makes it available throughout that server, including to members who cannot see the submission channel. Consent is for this quote only and expires after 24 hours: {deadline}.\nYou must still be a server member to accept. You can refuse now or withdraw later with the removal button, even after leaving the server. Deletion removes museum availability and active quizzes; it cannot recall screenshots or previously sent ordinary Discord messages.", "🏛️ Muzeul citatelor · #{id}\nMesajul precedent este citatul complet atribuit ție, propus pe serverul {guild}, canalul cu ID {channel}.\nAcceptarea confirmă atribuirea și îl face disponibil pe întregul server, inclusiv membrilor care nu pot vedea canalul propunerii. Acordul este doar pentru acest citat și expiră după 24 de ore: {deadline}.\nTrebuie să fii încă membru al serverului pentru a accepta. Poți refuza acum sau retrage ulterior cu butonul de ștergere, chiar după părăsirea serverului. Ștergerea elimină disponibilitatea în muzeu și quizurile active; nu poate retrage capturi de ecran sau mesaje Discord obișnuite trimise anterior."),
     "approved": ("Quote #{id} is approved for the entire source server. Only you can use this button to withdraw it, even after leaving. Deletion removes museum availability and active quizzes; it cannot recall screenshots or previously sent ordinary Discord messages.", "Citatul #{id} este aprobat pentru întregul server sursă. Doar tu poți folosi acest buton pentru a-l retrage, chiar după părăsirea serverului. Ștergerea elimină disponibilitatea în muzeu și quizurile active; nu poate retrage capturi de ecran sau mesaje Discord obișnuite trimise anterior."),
     "deleted": ("The quote was erased from the museum and related quizzes were revoked. Previously sent ordinary messages and screenshots cannot be recalled.", "Citatul a fost șters din muzeu și quizurile asociate au fost revocate. Mesajele obișnuite deja trimise și capturile de ecran nu pot fi retrase."),
     "declined": ("Consent refused. The pending quote was erased.", "Acord refuzat. Citatul în așteptare a fost șters."),
@@ -88,14 +88,12 @@ class QuoteMuseumFeature:
             self.client.add_view(QuoteConsentView(self, quote), message_id=quote["consent_message_id"])
             self._restored.add(key)
 
-    async def nominate(self, interaction, message):
+    async def nominate(self, interaction, content, author):
         await self._defer(interaction)
         language = await interaction_language(interaction)
         if not await self._admit(interaction, language):
             return None
-        author = getattr(message, "author", None)
-        content = getattr(message, "content", None)
-        if getattr(getattr(message, "guild", None), "id", None) != interaction.guild_id or getattr(getattr(getattr(message, "channel", None), "guild", None), "id", None) != interaction.guild_id or getattr(author, "bot", True) or getattr(author, "system", False) or message.is_system() or not isinstance(content, str) or not content.strip() or len(content) > 1200:
+        if getattr(getattr(author, "guild", None), "id", None) != interaction.guild_id or getattr(author, "bot", True) or getattr(author, "system", False) or not isinstance(content, str) or not content.strip() or len(content) > 1200:
             await self._reply(interaction, _t("invalid", language))
             return None
         quote = None
@@ -103,7 +101,7 @@ class QuoteMuseumFeature:
         try:
             author_language = await interaction_language(SimpleNamespace(user=author, locale=getattr(author, "locale", interaction.locale)))
             name = str(getattr(author, "display_name", None) or getattr(author, "name", None) or author.id).strip()[:100]
-            quote = await asyncio.to_thread(community.create_quote_request, interaction.guild_id, message.channel.id, message.id, interaction.user.id, author.id, content, name, author_language)
+            quote = await asyncio.to_thread(community.create_quote_request, interaction.guild_id, interaction.channel_id, interaction.id, interaction.user.id, author.id, content, name, author_language)
             if not quote["created"]:
                 await self._reply(interaction, _t("duplicate", language))
                 return None
@@ -366,11 +364,11 @@ class QuoteMuseumFeature:
         await self._expire_requests()
 
     def _register_commands(self):
+        @self.tree.command(name="quote-add", description="Submit a quote and its author to the museum for approval")
         @app_commands.guild_only()
-        async def nominate(interaction: discord.Interaction, message: discord.Message):
-            await self.nominate(interaction, message)
-
-        self.tree.add_command(app_commands.ContextMenu(name="Add to museum", callback=nominate))
+        @app_commands.describe(quote="Quote text, maximum 1,200 characters", user="Server member who said the quote")
+        async def quote_add(interaction: discord.Interaction, quote: str, user: discord.Member):
+            await self.nominate(interaction, quote, user)
 
         @self.tree.command(name="quote", description="Show an approved quote from this server's museum")
         @app_commands.guild_only()

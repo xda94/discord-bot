@@ -20,14 +20,13 @@ def interaction(user_id=42, guild_id=12, language="en", manage_messages=False, m
     channel = SimpleNamespace(id=channel_id, guild=guild, send=AsyncMock(return_value=message), fetch_message=AsyncMock(return_value=message))
     response = SimpleNamespace(is_done=MagicMock(return_value=False), defer=AsyncMock())
     response.defer.side_effect = lambda **kwargs: setattr(response.is_done, "return_value", True)
-    return SimpleNamespace(user=user, guild=guild, guild_id=guild_id, channel=channel, channel_id=channel_id, message=message, response=response, followup=SimpleNamespace(send=AsyncMock()), locale=language)
+    return SimpleNamespace(id=90, user=user, guild=guild, guild_id=guild_id, channel=channel, channel_id=channel_id, message=message, response=response, followup=SimpleNamespace(send=AsyncMock()), locale=language)
 
 
-def source(value, content="  Biscuits **escaped** @everyone\n ", author_id=45, language="en"):
-    channel = SimpleNamespace(id=67, guild=value.guild)
+def submission(value, content="  Biscuits **escaped** @everyone\n ", author_id=45, language="en"):
     sent = SimpleNamespace(id=101, channel=SimpleNamespace(id=102), delete=AsyncMock())
-    author = SimpleNamespace(id=author_id, bot=False, system=False, display_name="Ada", name="Ada", locale=language, send=AsyncMock(return_value=sent))
-    return SimpleNamespace(id=90, guild=value.guild, channel=channel, author=author, content=content, is_system=MagicMock(return_value=False))
+    author = SimpleNamespace(id=author_id, guild=value.guild, bot=False, system=False, display_name="Ada", name="Ada", locale=language, send=AsyncMock(return_value=sent))
+    return SimpleNamespace(author=author, content=content)
 
 
 def feature(value=None, games=None):
@@ -63,10 +62,10 @@ def external_mocks(monkeypatch):
 def test_registration_constructor_and_option_names():
     worker = feature()
     commands = worker.tree.get_commands()
-    assert {item.name for item in commands} == {"Add to museum", "quote", "who-said", "quote-delete"}
+    assert {item.name for item in commands} == {"quote-add", "quote", "who-said", "quote-delete"}
     assert all(item.guild_only for item in commands)
-    context = next(item for item in commands if isinstance(item, app_commands.ContextMenu))
-    assert context.type == discord.AppCommandType.message
+    assert all(isinstance(item, app_commands.Command) for item in commands)
+    assert [parameter.display_name for parameter in worker.tree.get_command("quote-add").parameters] == ["quote", "user"]
     assert worker.tree.get_command("quote-delete").parameters[0].display_name == "id"
     assert worker._startup_lock is None
 
@@ -74,18 +73,19 @@ def test_registration_constructor_and_option_names():
 @pytest.mark.parametrize("language", ["en", "ro"])
 def test_private_nomination_exact_snapshot_disclosure_and_language(tmp_db, language):
     value = interaction(language=language)
-    message = source(value, language=language)
-    row = asyncio.run(feature().nominate(value, message))
+    message = submission(value, language=language)
+    row = asyncio.run(feature().nominate(value, message.content, message.author))
     assert row["quote_text"] == message.content
     assert row["status"] == "pending" and row["language"] == language
     assert row["consent_expires_at"] == row["created_at"] + 86400
-    assert row["source_channel_id"] == 67 and row["consent_message_id"] == 101
+    assert row["source_channel_id"] == value.channel_id and row["source_message_id"] == value.id and row["consent_message_id"] == 101
     assert community.get_quote(12, row["id"], approved_only=True) is None
     assert community.choose_quote(12) is None
     calls = message.author.send.call_args_list
     assert calls[0].args[0] == message.content
     disclosure = calls[1].args[0]
-    assert "Secret Society" in disclosure and "67" in disclosure
+    assert "Secret Society" in disclosure and str(value.channel_id) in disclosure
+    assert ("attributed to you" if language == "en" else "atribuit ție") in disclosure
     assert "24" in disclosure and ("cannot see" if language == "en" else "nu pot vedea") in disclosure
     assert ("screenshots" if language == "en" else "capturi de ecran") in disclosure
     assert [button.custom_id for button in calls[1].kwargs["view"].children] == [f"museum:{row['id']}:accept", f"museum:{row['id']}:decline"]
@@ -99,9 +99,9 @@ def test_full_1200_character_snapshot_and_saved_author_language(tmp_db, monkeypa
     import db
 
     value = interaction(language="ro")
-    message = source(value, content="  " + "*" * 1196 + "\n ", language="ro")
+    message = submission(value, content="  " + "*" * 1196 + "\n ", language="ro")
     monkeypatch.setattr(db, "get_assistant_profile", lambda user_id: {"language": "en"} if user_id == 45 else None)
-    row = asyncio.run(feature().nominate(value, message))
+    row = asyncio.run(feature().nominate(value, message.content, message.author))
     assert row["language"] == "en"
     assert message.author.send.call_args_list[0].args[0] == message.content
     assert len(message.author.send.call_args_list[0].args[0]) == 1200
@@ -110,42 +110,43 @@ def test_full_1200_character_snapshot_and_saved_author_language(tmp_db, monkeypa
     assert value.followup.send.call_args.args[0] == museum._t("nominated", "ro")
 
 
-@pytest.mark.parametrize("invalid", ["bot", "system", "system_message", "guild", "channel", "empty", "attachment", "large"])
+@pytest.mark.parametrize("invalid", ["bot", "system", "guild", "channel", "empty", "missing", "large"])
 def test_nomination_validation(tmp_db, invalid):
     value = interaction()
-    message = source(value)
+    message = submission(value)
     if invalid in ("bot", "system"):
         setattr(message.author, invalid, True)
-    elif invalid == "system_message":
-        message.is_system.return_value = True
     elif invalid == "guild":
-        message.guild = SimpleNamespace(id=13)
+        message.author.guild = SimpleNamespace(id=13)
     elif invalid == "channel":
-        message.channel.guild = SimpleNamespace(id=13)
+        value.channel.guild = SimpleNamespace(id=13)
     else:
-        message.content = {"empty": "\n ", "attachment": "", "large": "a" * 1201}[invalid]
-    assert asyncio.run(feature().nominate(value, message)) is None
+        message.content = {"empty": "\n ", "missing": None, "large": "a" * 1201}[invalid]
+    assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
     assert community.list_pending_quotes() == []
     message.author.send.assert_not_called()
     value.channel.send.assert_not_called()
 
 
-@pytest.mark.parametrize("method", ["quote", "quiz", "delete"])
+@pytest.mark.parametrize("method", ["nominate", "quote", "quiz", "delete"])
 def test_guild_only_and_human_admission(tmp_db, method):
     worker = feature()
     for guild_id, bot in [(None, False), (12, True)]:
         value = interaction(guild_id=guild_id)
         value.user.bot = bot
         args = (value, 1) if method == "delete" else (value,)
+        if method == "nominate":
+            proposed = submission(value)
+            args = (value, proposed.content, proposed.author)
         assert asyncio.run(getattr(worker, method)(*args)) is None
         value.channel.send.assert_not_called()
 
 
 def test_blocked_dm_erases_pending_and_leaks_nothing(tmp_db):
     value = interaction()
-    message = source(value, content="private reason")
+    message = submission(value, content="private reason")
     message.author.send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "blocked")
-    assert asyncio.run(feature().nominate(value, message)) is None
+    assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
     assert community.list_pending_quotes() == []
     value.channel.send.assert_not_called()
     assert "private reason" not in value.followup.send.call_args.args[0]
@@ -155,10 +156,10 @@ def test_blocked_dm_erases_pending_and_leaks_nothing(tmp_db):
 
 def test_partial_dm_failure_erases_quote_and_previous_snapshot(tmp_db):
     value = interaction()
-    message = source(value)
+    message = submission(value)
     sent = message.author.send.return_value
     message.author.send.side_effect = [sent, RuntimeError("private detail")]
-    assert asyncio.run(feature().nominate(value, message)) is None
+    assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
     assert community.list_pending_quotes() == []
     sent.delete.assert_awaited_once()
     assert "private detail" not in str(museum.record.call_args_list)
@@ -166,9 +167,9 @@ def test_partial_dm_failure_erases_quote_and_previous_snapshot(tmp_db):
 
 def test_bind_failure_erases_nomination_and_messages(tmp_db, monkeypatch):
     value = interaction()
-    message = source(value)
+    message = submission(value)
     monkeypatch.setattr(community, "bind_quote_consent_message", lambda *args: {"status": "missing", "quote": None})
-    assert asyncio.run(feature().nominate(value, message)) is None
+    assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
     assert community.list_pending_quotes() == []
     assert message.author.send.return_value.delete.await_count == 2
 
@@ -176,10 +177,31 @@ def test_bind_failure_erases_nomination_and_messages(tmp_db, monkeypatch):
 def test_duplicate_does_not_send_another_dm(tmp_db):
     row = quote()
     value = interaction()
-    message = source(value)
-    assert asyncio.run(feature().nominate(value, message)) is None
+    message = submission(value)
+    assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
     message.author.send.assert_not_called()
     assert community.get_quote(12, row["id"])["status"] == "pending"
+
+
+def test_quote_add_callback_accepts_text_and_member_for_separate_submissions(tmp_db):
+    value = interaction()
+    proposed = submission(value)
+    worker = feature()
+
+    async def run():
+        command = worker.tree.get_command("quote-add")
+        await command.callback(value, proposed.content, proposed.author)
+        value.id += 1
+        await command.callback(value, "Another quote", proposed.author)
+
+    asyncio.run(run())
+    pending = community.list_pending_quotes()
+    assert len(pending) == 2
+    assert {row["source_message_id"] for row in pending} == {90, 91}
+    assert {row["quote_text"] for row in pending} == {proposed.content, "Another quote"}
+    assert all(row["author_id"] == proposed.author.id for row in pending)
+    assert proposed.author.send.await_count == 4
+    value.channel.send.assert_not_called()
 
 
 @pytest.mark.parametrize("invalid", ["wrong_user", "bot", "guild", "message", "channel", "record_guild"])

@@ -236,6 +236,100 @@ def test_private_quest_requires_actual_membership(tmp_db):
     value.channel.send.assert_not_called()
 
 
+@pytest.mark.parametrize("language", ["en", "ro"])
+def test_assigned_quest_recipient_controls_and_title(tmp_db, language):
+    async def run():
+        assigner = interaction(language=language)
+        recipient = interaction(user_id=45, language=language)
+        worker = feature(assigner)
+        await worker.tree.get_command("quest").callback(assigner, recipient.user)
+        row = community.list_sessions(12)[0]
+        assert row["creator_id"] == assigner.user.id and row["subject_id"] == recipient.user.id
+        assert row["phase"] == "pending" and row["message_id"] == 99
+        assert row["deadline"] == row["created_at"] + 86400
+        sent = assigner.channel.send.call_args
+        assert "<@45>" in sent.args[0] and row["payload"]["challenge_" + language] in sent.args[0]
+        assert [user.id for user in sent.kwargs["allowed_mentions"].users] == [45]
+        assert sent.kwargs["allowed_mentions"].everyone is False and sent.kwargs["allowed_mentions"].roles is False
+        await sent.kwargs["view"].children[0].callback(assigner)
+        assert community.get_session(12, row["id"])["phase"] == "pending"
+        assert assigner.followup.send.call_args.args[0] == games.text("not_owner", language)
+        restored = feature(assigner)
+        await restored.handle_control(recipient, 12, row["id"], "accept")
+        current = community.get_session(12, row["id"])
+        assert current["phase"] == "active" and current["message_id"] == 99
+        assert 604795 < current["deadline"] - time.time() <= 604800
+        recipient.channel.send.assert_not_called()
+        await restored.handle_control(assigner, 12, row["id"], "completed")
+        assert community.get_session(12, row["id"])["phase"] == "active"
+        await restored.handle_control(recipient, 12, row["id"], "completed")
+        assert community.get_session(12, row["id"])["phase"] == "verification"
+        await restored.handle_control(recipient, 12, row["id"], "success")
+        assert community.session_tally(12, row["id"]) == {"success": 0, "not_yet": 0}
+        assert community.cast_vote(12, row["id"], recipient.user.id, "success")["status"] == "forbidden"
+        await restored.handle_control(assigner, 12, row["id"], "success")
+        with community._connect(commit=True) as cursor:
+            cursor.execute("UPDATE community_sessions SET deadline=0 WHERE id=?", (row["id"],))
+        await restored._finish_session(row)
+        assert len(community.list_titles(12, recipient.user.id)) == 1
+        assert community.list_titles(12, assigner.user.id) == []
+    asyncio.run(run())
+    games.generate_humor.assert_not_called()
+
+
+@pytest.mark.parametrize("action,phase", [("decline", "declined"), ("abandon", "cancelled")])
+def test_assigned_quest_can_be_declined_or_abandoned(tmp_db, action, phase):
+    async def run():
+        assigner, recipient = interaction(), interaction(user_id=45)
+        worker = feature(assigner)
+        row = await worker.quest(assigner, recipient.user)
+        if action == "abandon":
+            await worker.handle_control(recipient, 12, row["id"], "accept")
+        await worker.handle_control(assigner, 12, row["id"], action)
+        assert community.get_session(12, row["id"])["phase"] == ("active" if action == "abandon" else "pending")
+        await worker.handle_control(recipient, 12, row["id"], action)
+        assert community.get_session(12, row["id"])["phase"] == phase
+    asyncio.run(run())
+
+
+def test_assigned_quest_reuses_recipient_quest_without_affecting_assigner(tmp_db):
+    async def run():
+        assigner, recipient, other = interaction(), interaction(user_id=45), interaction(user_id=60)
+        worker = feature(assigner)
+        own = await worker.quest(assigner)
+        row = await worker.quest(assigner, recipient.user)
+        assert row["id"] != own["id"]
+        assert (await worker.quest(other, recipient.user))["id"] == row["id"]
+        assert (await worker.quest(recipient))["id"] == row["id"]
+        assert "view" not in recipient.followup.send.call_args.kwargs
+        assert "https://discord.com/channels/12/23/99" in recipient.followup.send.call_args.args[0]
+        assert (await worker.quest(assigner, assigner.user))["id"] == own["id"]
+        assert community.create_session(12, 23, recipient.user.id, "quest", "en", quest_payload())["id"] == row["id"]
+        assigner.channel.send.assert_awaited_once()
+        other.channel.send.assert_not_called()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid", ["bot", "system", "guild"])
+def test_assigned_quest_rejects_invalid_recipient(tmp_db, invalid):
+    value = interaction()
+    recipient = interaction(user_id=45).user
+    if invalid == "guild":
+        recipient.guild.id = 13
+    else:
+        setattr(recipient, invalid, True)
+    assert asyncio.run(feature(value).quest(value, recipient)) is None
+    assert community.list_sessions(12) == []
+    value.channel.send.assert_not_called()
+
+
+def test_assigned_quest_send_failure_cancels_invitation(tmp_db):
+    value = interaction()
+    value.channel.send.side_effect = OSError("failed")
+    assert asyncio.run(feature(value).quest(value, interaction(user_id=45).user)) is None
+    assert community.list_sessions(12)[0]["phase"] == "cancelled"
+
+
 @pytest.mark.parametrize("success,negative,title", [(0, 0, False), (1, 1, False), (1, 2, False), (2, 1, True)])
 def test_quest_verification_and_idempotent_symbolic_award(tmp_db, success, negative, title):
     row = session("quest", phase="active")

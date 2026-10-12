@@ -24,10 +24,11 @@ ROOT = Path(__file__).resolve().parent.parent
 COMMANDS = {
     "tribunal": ("accused", "accusation"),
     "meeting": ("subject", "options"),
-    "quest": (),
+    "quest": ("user",),
     "bingo": (),
     "bingo-habit": ("text-ro", "text-en", "id"),
     "bingo-habit-delete": ("id",),
+    "quote-add": ("quote", "user"),
     "quote": (),
     "who-said": (),
     "quote-delete": ("id",),
@@ -98,9 +99,9 @@ def test_real_command_payloads_and_constructor_dependencies(tmp_db, monkeypatch)
         assert payload["description"].isascii()
         assert all(option["description"].isascii() for option in payload.get("options", []))
     contexts = [command for command in tree.get_commands() if isinstance(command, app_commands.ContextMenu)]
-    assert len(contexts) == 1
-    assert contexts[0].to_dict(tree)["name"] == "Add to museum"
-    assert contexts[0].type == discord.AppCommandType.message and contexts[0].guild_only
+    assert not contexts
+    quote_add = tree.get_command("quote-add").to_dict(tree)
+    assert [option["type"] for option in quote_add["options"]] == [discord.AppCommandOptionType.string.value, discord.AppCommandOptionType.user.value]
     private_generation.assert_not_called()
     shared_generation.assert_not_called()
     query.assert_not_called()
@@ -110,7 +111,7 @@ def test_real_command_payloads_and_constructor_dependencies(tmp_db, monkeypatch)
 
 def test_optional_arguments_are_typing_optional_and_payloads_match(tmp_db):
     _, tree, _ = registered_features()
-    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme")):
+    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme"), ("quest", "user")):
         command = tree.get_command(name)
         annotation = get_type_hints(command.callback)[parameter]
         assert get_origin(annotation) is Union
@@ -149,8 +150,8 @@ def test_help_and_start_discover_community_with_profile_language(tmp_db, name, l
         full_label = "Toate comenzile" if language == "ro" else "Complete reference"
         full_event = interaction(language=language)
         await next(child for child in discovered.children if child.label == full_label).callback(full_event)
-        assert "Add to museum" in "\n".join(sent_content(full_event))
-        assert "/Add to museum" not in "\n".join(sent_content(full_event))
+        assert "/quote-add" in "\n".join(sent_content(full_event))
+        assert "Add to museum" not in "\n".join(sent_content(full_event))
         current.stop()
         discovered.stop()
     asyncio.run(run())
@@ -196,9 +197,8 @@ def test_complete_reference_handles_real_message_context_menu(tmp_db, language, 
         assert all(len(chunk) <= 1900 for chunk in chunks)
         for name in COMMANDS:
             assert f"**/{name}**" in content
-        assert "Add to museum" in content and "/Add to museum" not in content
-        assert ("Mesaje → Aplicații" if language == "ro" else "Messages → Apps") in content
-        assert "24" in content
+        assert "Add to museum" not in content
+        assert "<quote> <user>" in content
         assert all(call.kwargs["ephemeral"] for call in event.response.send_message.await_args_list + event.followup.send.await_args_list)
         current.stop()
     asyncio.run(run())
@@ -226,7 +226,8 @@ def test_bilingual_community_guide_and_onboarding_return_layout(tmp_db, language
         assert all(len(chunk) <= 1900 for chunk in chunks)
         assert all(len(paragraph) <= 1900 for paragraph in COMMUNITY_GUIDE[language].split("\n\n"))
         assert all(f"/{name}" in content for name in COMMANDS)
-        assert "Add to museum" in content and "600" in content and "9–50" in content
+        assert "/quote-add" in content and "600" in content and "9–50" in content
+        assert "Add to museum" not in content
         assert "30" in content and "24" in content
         if edit_message:
             event.response.send_message.assert_not_awaited()
@@ -251,8 +252,8 @@ def test_bilingual_community_guide_and_onboarding_return_layout(tmp_db, language
 def test_static_reference_keeps_all_community_features_in_each_memory_mode(automatic, disabled):
     text = build_help_text(automatic, disabled)
     assert all(f"**/{name}**" in text for name in COMMANDS)
-    assert "Messages → Apps → Add to museum" in text
-    assert "/Add to museum" not in text
+    assert "**/quote-add** `<quote>` `<user>`" in text
+    assert "Add to museum" not in text
     assert "natural-language mention commands" in text
     assert "calculated buy-or-wait verdict" in text
     assert all(len(chunk) <= 1900 for chunk in _chunk_text(text))
