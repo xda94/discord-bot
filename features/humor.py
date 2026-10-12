@@ -120,7 +120,8 @@ class HumorFeature:
             return
         fallback = EXCUSE_FALLBACKS[style][language == "ro"].format(reason=safe_text(reason.strip(), 1000))
         result = await generate_humor("excuse", language, {"reason": reason.strip(), "style": style}, fallback)
-        await _private_reply(interaction, result)
+        request = text("excuse_request", language, reason=safe_text(reason.strip(), 1500), style=EXCUSE_STYLES[style][language == "ro"])
+        await _private_reply(interaction, request + "\n\n" + text("excuse_result", language) + "\n" + result, mention_requester=True)
 
     async def purchase(self, interaction, url):
         await interaction.response.defer(ephemeral=True)

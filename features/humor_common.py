@@ -27,6 +27,8 @@ CATALOG = {
     "abandon": ("Abandon", "Abandonează"),
     "remove": ("Remove", "Șterge"),
     "excuse_invalid": ("Provide a reason of 1–500 characters and a supported style.", "Scrie un motiv de 1–500 de caractere și alege un stil disponibil."),
+    "excuse_request": ("**Your reason:** {reason}\n**Style:** {style}", "**Motivul tău:** {reason}\n**Stil:** {style}"),
+    "excuse_result": ("**Excuse:**", "**Scuză:**"),
     "wishlist_missing": ("That URL is not in your saved wishlist. Add it with /wishlist-item first.", "Linkul nu există în lista ta salvată. Adaugă-l întâi cu /wishlist-item."),
     "url_invalid": ("Provide a URL of at most 1,500 characters.", "Scrie un link de cel mult 1.500 de caractere."),
     "purchase_advocate": ("Purchase advocate", "Avocatul cumpărăturii"),
