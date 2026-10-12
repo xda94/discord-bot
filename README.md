@@ -80,6 +80,8 @@ LLM_MEMORY_ENABLED=0
 | `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm-set`. A single-server setup normally lists one alias. |
 | `NATURAL_LLM_ENABLED` | No | Defaults to disabled. Set `1` only after the deployed model passes the read-only bilingual corpus evaluation; deterministic mention commands remain available. |
 | `LLAMA_CPP_TIMEOUT` | No | Default capacity queue deadline and HTTP generation timeout, in seconds. Default: `180`; the HTTP timeout begins after admission activates. |
+| `LLAMA_CPP_VISION_TIMEOUT` | No | HTTP generation timeout for requests containing an image. Defaults to the larger of `600` seconds and `LLAMA_CPP_TIMEOUT`. Explicit per-call timeouts take precedence. Does not change the capacity queue deadline. |
+| `LLM_IMAGE_MAX_EDGE` | No (bot) | Maximum width or height sent for image mentions. Default: `1280` pixels. Larger images are resized proportionally; increase for fine text at the cost of more image processing. |
 | `LLM_CAPACITY_DIR` | No | Shared POSIX lock directory for bot/API LLM capacity. Defaults to `.llm-capacity` beside `DB_FILE`; Compose uses `/data/.llm-capacity` for both services. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
@@ -573,8 +575,10 @@ Successful flight observations, price history, budget crossing state, and any ne
 Vision requests accept JPEG, PNG, GIF, WebP, BMP, and TIFF directly attached to
 the mention, using the first image that can be processed in attachment order.
 Animated images and multipage TIFFs use only the first frame or page. The actual
-image bytes determine the format; valid static JPEG/PNG files are preserved, and the
-other supported formats are normalized locally to RGB/RGBA PNG. Input and
+image bytes determine the format. Static JPEG/PNG files within `LLM_IMAGE_MAX_EDGE`
+are preserved; larger images are resized proportionally, with EXIF orientation
+applied. Resized JPEGs remain JPEG; other supported formats are normalized locally
+to RGB/RGBA PNG, preserving transparency. Input and
 prepared output are each limited to 8 MiB, with at most 25 megapixels. Invalid,
 unsupported, oversized, or unavailable images are skipped so a later valid
 attachment can be used. URLs, replied-to images, and multi-image reasoning are
@@ -587,6 +591,14 @@ downloaded only after a job is admitted, are never logged or persisted, and are
 never included in memory consolidation. Vision jobs reserve more model context
 for image tokens by limiting memory plus recent history to 4,000 characters
 instead of the normal 6,000.
+
+Image inference uses `LLAMA_CPP_VISION_TIMEOUT` (600 seconds by default) to allow
+more processing time on CPU hosts. An HTTP timeout produces a localized message
+stating the elapsed wait limit and suggesting a crop of the relevant area.
+Timeouts are not retried automatically: the server may still be processing the
+original request. Image preparation logs input/output dimensions and byte counts,
+without image contents. Resizing can lose small text; use a crop or raise
+`LLM_IMAGE_MAX_EDGE` when needed. These limits do not guarantee a completion time.
 
 If a vision reply claims that no image is available, the bot retries once with
 the same image and current question, without old chat or memory that might

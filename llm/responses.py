@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from assistant_profiles import AssistantProfile, DEFAULT_PROFILE, profile_prompt_preferences
 from llm import client
-from llm.client import LlamaCppError, get_default_model, get_mention_model
+from llm.client import LlamaCppError, LlamaCppTimeoutError, get_default_model, get_mention_model
 from llm.capacity import CapacityError
 from mention_utils import strip_leading_reply_labels
 
@@ -616,6 +616,8 @@ def generate_mention_result(
                 username,
                 type(exc).__name__,
             )
+            if image_bytes is not None and isinstance(exc, LlamaCppTimeoutError):
+                raise
             if attempt == 0 and "empty response" in str(exc).casefold():
                 continue
             return None

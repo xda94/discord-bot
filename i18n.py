@@ -28,6 +28,7 @@ def language_for(text: str = '', profile=None, fallback: str = 'en') -> str:
 
 
 CATALOG = {
+ 'image_timeout': ('The model did not finish analyzing the image within {seconds} seconds. Try cropping the image to the relevant area.', 'Modelul nu a terminat analiza imaginii în {seconds} de secunde. Încearcă să decupezi poza la zona relevantă.'),
  'invalid': ('I could not interpret that action. Use /help for examples.', 'Nu am putut interpreta cererea. Folosește /help pentru exemple.'),
  'failed': ('I could not complete that action. Please try again.', 'Nu am putut finaliza acțiunea. Încearcă din nou.'),
  'private_failed': ('I could not send the private result. Enable DMs or use {command}.', 'Nu am putut trimite rezultatul privat. Activează mesajele private sau folosește {command}.'),
