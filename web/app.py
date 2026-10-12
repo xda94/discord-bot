@@ -66,10 +66,12 @@ def create_app(config: dict | None = None) -> Flask:
     app.after_request(format_discord_ids)
 
     from web.routes.administration import blueprint as administration
+    from web.routes.community import blueprint as community
     from web.routes.flights import blueprint as flights
     from web.routes.memory_llm import blueprint as memory_llm
     from web.routes.wishlist import blueprint as wishlist
 
+    app.register_blueprint(community)
     app.register_blueprint(administration)
     app.register_blueprint(memory_llm)
     app.register_blueprint(wishlist)

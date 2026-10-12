@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, bounded natural-language commands, global per-user assistant profiles, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, bilingual community games and private humor tools, bounded natural-language commands, global per-user assistant profiles, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -292,6 +292,14 @@ asks for the Discord sponsor password; its tier routes use the bearer token.
 The HTML and static assets remain loadable so the login screen can open. All
 dashboard data and mutations use the existing bearer-protected REST routes.
 
+The **Community games / Jocuri de comunitate** page shows sessions with aggregate
+vote counts, deadlines, results and delivery errors; the current bingo board
+and bilingual habits; approved museum quotes and only a count of pending
+requests; and symbolic titles. Operators can cancel a session, manage habits,
+remove quotes and remove titles. Destructive actions ask for confirmation.
+The page includes an English/Romanian command guide; switching guilds prevents
+older requests from replacing the newly selected guild's content.
+
 ---
 
 ## Background tasks
@@ -307,6 +315,8 @@ dashboard data and mutations use the existing bearer-protected REST routes.
 | Tracking notifications | 30 s | Drains the durable outbox, respecting opt-in quiet hours and daily digests |
 | Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm-inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
+| Community sessions | 15 s | Restore persistent controls, close due votes, reconcile cancellations, retry original-message result edits and clean completed history |
+| Quote consent | 15 s | Restore consent/removal controls and erase expired unapproved quote requests |
 | Teases | On message | Random mood lines rewritten via llama.cpp |
 
 ---
@@ -435,6 +445,86 @@ Refresh preserves existing cooldowns and saved-history graphs. Unmatched mention
 use the existing model worker; structured model execution is opt-in through
 `NATURAL_LLM_ENABLED=1` after the read-only evaluation passes. See the bilingual
 delivery guide above for migrations, limitations, and rollout checks.
+
+### Community games and private humor
+
+`/help` and `/start` include **Community games / Jocuri de comunitate**, with
+the full guide in English or Romanian. Private replies use the saved profile
+language, then Discord locale; shared sessions retain their creator's language,
+while button acknowledgments use the clicking member's language. User text is
+kept as written. These features use slash commands and the message context
+menu; natural-language mention parsing does not support them.
+
+| Invocation | Behavior |
+|---|---|
+| `/tribunal acuzat:@member acuzatie:Who hid the coffee?` | Joke accusation, maximum 500 characters. The accused alone can accept or decline within 24 hours; voting begins only after acceptance. |
+| `/sedinta subiect:Lunch optiuni:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
+| `/quest` | Private voluntary safe challenge; acceptance publishes it. Submit completion within seven days, or abandon it. One active quest per member/server. |
+| `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |
+| `/bingo-obicei text:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
+| `/bingo-obicei-sterge id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
+| Message menu → Apps → **Pune în muzeu** | Nominate one text message for the author-consented Quote Museum. This is a Messages context action, not a slash command. |
+| `/citat` | Show a random approved quote from this server, its author and quote ID. |
+| `/cine-a-zis` | Ten-minute quiz identifying the author of an approved quote; requires at least two distinct approved authors and offers 2–4 choices. |
+| `/citat-sterge id:12` | Withdraw as quote author or a moderator with Manage Messages. |
+| `/scuza motiv:I missed the meeting stil:corporate` | DM a private excuse in corporate, grandmother, gamer or public-servant style; reason at most 500 characters. |
+| `/merita url:https://shop.example/item` | DM purchase-advocate and household-accountant commentary using only the requesting user's saved wishlist observations. |
+| `/horoscop tema:work` | Local daily deterministic forecast; themes are general, work, gaming and household. |
+
+Shared games, museum commands, bingo and horoscope require a server. `/scuza`
+and `/merita` also work in DMs. Their content goes by DM; server acknowledgments
+are ephemeral. If DMs are blocked, a private error exposes no generated
+content in the server. Private excuse reasons and generated responses are not
+saved. `/merita` never refreshes prices, scrapes a page or makes a purchase.
+It reports saved price, native currency, stock, last check and valid historical
+sample count/range/minimum/median. Missing/stale observations are explicit;
+one observation establishes no price movement. Historical currency is not
+stored, so historical units are not assumed comparable to the current native
+currency and no conversion is invented.
+
+All votes last exactly **600 seconds** from opening, including after restart.
+Each eligible human has one stored, changeable vote. Tribunal and meeting
+ties or no votes are neutral. A quest owner cannot vote on their own completion;
+only a strict positive majority grants the catalog's symbolic title, once.
+Ties/no votes grant none. Titles are stored awards, not Discord roles; they
+remain until explicitly removed by an administrator. A quiz reveals the
+correct author and counts when it closes.
+
+Bingo uses the bot's **local calendar date and ISO week beginning Monday**.
+One guild/week board snapshots nine bilingual habits; edits affect future
+boards. Keep 9–50 active habits. The first marker records a cell, and another
+human member must confirm it before any line counts. Confirmed or old-week
+cells cannot be changed. It does not watch channel messages, infer habits from
+memory or post unsolicited weekly boards. Horoscope also uses the bot's local
+date: the same guild/member/date/theme gives the same result across restart;
+changing language changes rendering only. Bingo, quest selection, quizzes and
+horoscope make no model calls.
+
+Museum nominations snapshot only message text, at most 1,200 characters; bot,
+system, empty and attachment-only messages are rejected, and attachments are
+never downloaded. The author receives the exact snapshot and source server by
+DM and has **24 hours** to accept or refuse. Acceptance explicitly makes the
+quote **available throughout that guild, including to members who cannot see
+the source channel**. The author must still belong to the server when accepting.
+Blocked DMs cancel the request. Nothing is selected from chat history or
+conversation memory automatically. Approved quotes remain until deletion;
+unapproved text is erased on refusal or expiry. An approved consent DM keeps a
+persistent author-only removal button, so withdrawal works even after leaving
+the server. Deletion clears stored text and revokes related quizzes. It cannot
+recall screenshots or already sent ordinary Discord messages.
+
+Session and consent controls are restored after restart. Overdue votes close
+promptly, and results edit the original public message rather than posting a
+second result. Transient edit failures retry that same message; inaccessible
+or deleted messages produce safe delivery errors in the dashboard. Humor uses
+one short llama.cpp call through shared capacity, with thinking disabled, at
+most 220 output tokens and a 30-second generation timeout. Busy, timed-out or
+invalid generation uses a deterministic local fallback. A vote is frozen and
+its fallback persisted before generation; an interrupted attempt recovers the
+fallback without another model call. Completed sessions are kept for **30 days
+after closure**; bingo history for **30 days after the local ISO week ends**.
+Active work is retained. Approved quotes and symbolic titles
+follow the explicit-deletion rules above.
 
 ### Birthdays
 
@@ -881,6 +971,31 @@ privacy changes therefore take effect without restarting the Discord process.
 Channel and preference controls govern automatic mode; the API remains available
 in manual mode for inspecting, deleting, or preconfiguring retained data.
 
+### Community administration
+
+All routes use the existing operator bearer token and a positive `guild_id`.
+GET requests take it as a query parameter; mutations include it in the JSON
+body. Session, quote and title lists are bounded to 100 rows; habits to 50.
+Session tallies contain no voter identities, and pending quote text is never
+returned. The API offers no vote, quote-approval or private-generation endpoint.
+
+| Method | Path | Body / notes |
+|---|---|---|
+| `GET` | `/community/sessions?guild_id=<id>` | Sessions, phases/deadlines, aggregate tally, results and delivery state; optional `limit=1..100`. |
+| `POST` | `/community/sessions/<id>/cancel` | `{ "guild_id" }`; cancel pending/active work, with controls reconciled on the next bot tick. |
+| `GET` | `/community/bingo?guild_id=<id>` | Current board, marks and active habits. |
+| `POST` | `/community/bingo/habits` | `{ "guild_id", "text_en", "text_ro" }`; add bilingual habit. |
+| `PUT` | `/community/bingo/habits/<id>` | Same fields; edit future-board habit text. |
+| `DELETE` | `/community/bingo/habits/<id>` | `{ "guild_id" }`; keep at least nine active habits. |
+| `GET` | `/community/quotes?guild_id=<id>` | Approved quotes plus pending count; optional `limit=1..100`. |
+| `DELETE` | `/community/quotes/<id>` | `{ "guild_id" }`; remove quote and revoke related quizzes. |
+| `GET` | `/community/titles?guild_id=<id>` | Symbolic awards; optional `limit=1..100`. |
+| `DELETE` | `/community/titles/<user_id>/<title_key>` | `{ "guild_id" }`; explicitly remove an award. |
+
+Malformed requests return 400, missing/wrong-guild objects 404, prohibited
+transitions 409 and database unavailability 503 with sanitized errors. The
+dashboard uses `X-Discord-ID-Format: string` for precise Discord snowflakes.
+
 ### Wishlist
 
 | Method | Path | Body / notes |
@@ -983,3 +1098,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `onboarding.py` | `OnboardingFeature`, `OnboardingView`, `HelpView` | Guided private `/start`, timezone selectors, and feature navigation |
 | `natural_language_help.py` | `NaturalLanguageHelpView` | Reusable read-only bilingual mention-command examples |
 | `help_feature.py` | `HelpFeature` | `/help` and `/natural-language` |
+| `social_games.py` | `SocialGamesFeature`, `SessionView` | Persistent tribunal, meeting, quest and quote quiz lifecycle |
+| `bingo.py` | `BingoFeature`, `BingoView` | Weekly bilingual habits and independent confirmation |
+| `quote_museum.py` | `QuoteMuseumFeature`, `QuoteConsentView` | Explicit author consent and persistent quote withdrawal |
+| `humor.py`, `humor_common.py` | `HumorFeature` | Private excuses/wishlist commentary, deterministic horoscope and bilingual catalogs |

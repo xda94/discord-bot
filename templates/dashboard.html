@@ -33,6 +33,7 @@
       <button class="nav-item" data-page="keywords"><span>#</span>Keywords</button>
       <button class="nav-item" data-page="reminders"><span>◷</span>Reminders</button>
       <button class="nav-item" data-page="birthdays"><span class="birthday-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M4 15c2 2 4 2 6 0 2 2 4 2 6 0 1.5 1.5 3 1.9 4 1M8 11V7m4 4V7m4 4V7M8 4v1m4-1v1m4-1v1"/></svg></span>Birthdays</button>
+      <button class="nav-item" data-page="community"><span>♧</span>Community games</button>
       <button class="nav-item" data-page="jokes"><span>☺</span>Jokes</button>
       <button class="nav-item" data-page="wishlist"><span>♡</span>Wishlist</button>
       <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
@@ -98,6 +99,26 @@
           <article class="panel"><div class="panel-title"><div><h3>Save birthday</h3><p>Edits the selected user above.</p></div><span class="scope-pill">user</span></div><form id="birthday-form" class="form-stack"><label>Birthday<input name="date" required placeholder="25.12" inputmode="numeric"></label><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+" placeholder="Discord channel or DM ID"></label><label>Server ID <small class="cell-muted">Leave blank for a DM destination.</small><input name="guild_id" inputmode="numeric" pattern="[0-9]+" placeholder="Optional Discord server ID"></label><div class="button-row"><button class="button primary">Save birthday</button><button type="button" class="button danger ghost" data-action="delete-selected-birthday">Remove</button></div></form></article>
           <article class="panel table-panel"><div class="panel-title"><div><h3>Saved birthdays</h3><p>One registration per Discord user.</p></div><span class="scope-pill global">global</span></div><div id="birthdays-list" class="empty">Loading birthdays…</div></article>
         </div>
+      </section>
+
+      <section class="page" id="page-community" data-title="Community games">
+        <div class="page-heading"><div><p class="eyebrow">SELECTED SERVER</p><h2>Community games</h2><p>Manage shared games, weekly habits, approved quotes, and symbolic titles.</p></div><button class="button secondary" data-action="load-community">Refresh</button></div>
+        <article class="panel"><h3>Command guide</h3><ul>
+          <li><code>/tribunal</code> <span>Accused-only acceptance before a ten-minute Guilty/Innocent vote; ties and no votes are neutral.</span></li>
+          <li><code>/sedinta</code> <span>Choose two to five options separated by |; ten-minute voting, neutral ties.</span></li>
+          <li><code>/quest</code> <span>Accept a safe challenge, submit within seven days, then a ten-minute vote awards a symbolic title only for a positive majority.</span></li>
+          <li><code>/bingo</code> <span>A weekly 3×3 board; another member confirms each mark. Manage habits with /bingo-obicei and /bingo-obicei-sterge.</span></li>
+          <li><code>/citat</code> <span>Approved guild quotes. Use the message menu action Pune în muzeu to request author consent within 24 hours; approval shares the quote guild-wide. /citat-sterge withdraws it and cancels quizzes, but cannot recall screenshots or earlier messages.</span></li>
+          <li><code>/cine-a-zis</code> <span>A ten-minute approved-quote author quiz with two to four choices.</span></li>
+          <li><code>/scuza</code> <span>A private excuse by DM in corporate, grandmother, gamer, or public-servant style.</span></li>
+          <li><code>/merita</code> <span>Private purchase commentary by DM using only your saved wishlist observations; no refresh or purchase.</span></li>
+          <li><code>/horoscop</code> <span>A deterministic daily guild horoscope. Horoscope uses the bot's local date; bingo weeks start Monday.</span></li>
+        </ul><p>Games require a guild. /scuza and /merita also work in DMs. Votes are changeable; quests cannot be self-verified. Titles grant no Discord role.</p></article>
+        <article class="panel table-panel"><h3>Sessions</h3><div id="community-sessions" class="empty">Enter a server ID above.</div></article>
+        <article class="panel table-panel"><h3>Weekly bingo</h3><div id="community-bingo" class="empty">Enter a server ID above.</div></article>
+        <div class="two-column"><article class="panel"><h3 id="community-habit-title">Add bilingual habit</h3><p>Keep between nine and fifty active habits. Edits affect future boards.</p><form id="community-habit-form" class="form-stack"><input name="habit_id" type="hidden"><label>English habit<textarea name="text_en" required maxlength="200"></textarea></label><label>Romanian habit<textarea name="text_ro" required maxlength="200"></textarea></label><div class="button-row"><button class="button primary">Save habit</button><button type="button" class="button secondary" data-action="new-community-habit" hidden>Cancel edit</button></div></form></article><article class="panel table-panel"><h3>Active habits</h3><div id="community-habits" class="empty">Enter a server ID above.</div></article></div>
+        <article class="panel table-panel"><h3>Approved quotes</h3><div id="community-quotes" class="empty">Enter a server ID above.</div></article>
+        <article class="panel table-panel"><h3>Symbolic titles</h3><div id="community-titles" class="empty">Enter a server ID above.</div></article>
       </section>
 
       <section class="page" id="page-jokes" data-title="Jokes">

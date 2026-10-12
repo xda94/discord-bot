@@ -33,6 +33,8 @@ The major capabilities are:
 - Inactivity nudges
 - Host system statistics
 - Romanian Orthodox calendar lookup through azisespala.ro
+- Bilingual tribunal, meeting, quest, weekly bingo, consent-based Quote Museum,
+  author quiz, private excuses/wishlist commentary and deterministic horoscope
 - Deployer-only daily usage analytics for commands, mentions, controls,
   automatic behavior, scheduled deliveries, background processing, feedback,
   natural-command outcomes, and delivery backlog state
@@ -61,8 +63,8 @@ When Discord signals `on_ready`, command sync, catalog refresh, and each backgro
 ### `api.py`
 
 `api.py` is the executable wrapper for a separate threaded Flask process.
-`web/app.py` creates the application, and four blueprints group administration,
-wishlist, flight, and memory/LLM routes. The process:
+`web/app.py` creates the application with domain blueprints, including community
+administration. The process:
 
 - Requires `HOST` and a numeric `PORT` at import/startup time.
 - Requires `API_TOKEN` bearer authentication for all protected data/configuration routes.
@@ -765,10 +767,111 @@ Provides host and process statistics through `/stats`, using `psutil`. It gather
 
 Provides a Romanian calendar lookup backed by annual JSON files from azisespala.ro. Calendar data is cached in memory by year, fetched in a worker thread, and attributed in replies as required by the source.
 
+### Community features and persistence
+
+`bot.py` constructs `SocialGamesFeature` before `QuoteMuseumFeature` and passes
+the games instance to the museum for quiz creation. `BingoFeature` and
+`HumorFeature` register commands without background tasks. Only social games
+and museum join the existing `BACKGROUND_FEATURES`; message dispatch, reaction
+listeners and natural-language parsing remain unchanged. Community slash and
+context-menu demand uses `AnalyticsCommandTree`; successful button mutations
+use `control`, result delivery uses `scheduled`, and safe operational errors
+use `failure` without retaining sensitive inputs.
+
+Commands and examples:
+
+| Invocation | Flow |
+|---|---|
+| `/tribunal acuzat:@member acuzatie:Who stole the biscuits?` | Accused-only joke consent within 24 hours; then a 600-second Guilty/Innocent vote. |
+| `/sedinta subiect:Lunch optiuni:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
+| `/quest` | Private safe catalog offer; voluntary acceptance publishes a seven-day challenge, completion opens ten-minute verification. |
+| `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
+| `/bingo-obicei text:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
+| `/bingo-obicei-sterge id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
+| Messages → Apps → **Pune în muzeu** | Explicitly nominate one text-only message, maximum 1,200 characters, for author consent by DM. |
+| `/citat` / `/cine-a-zis` / `/citat-sterge id:12` | Approved guild quote; ten-minute author quiz with 2–4 distinct choices; author/Manage Messages removal. |
+| `/scuza motiv:I missed the meeting stil:corporate` | Private corporate/grandmother/gamer/public-servant excuse, reason at most 500 characters. |
+| `/merita url:https://shop.example/item` | Private purchase-advocate/accountant humor from only the user's saved wishlist observations. |
+| `/horoscop tema:work` | Stable local daily general/work/gaming/household forecast. |
+
+Shared games, museum, bingo and horoscope are guild-only. Excuses and wishlist
+humor also work in DMs, always deliver content by DM and acknowledge guild
+invocations ephemerally. Blocked DMs report a private error without exposing
+content. Private reasons/responses are not persisted. `/merita` only reads
+requester-owned `get_scraped_item` and `get_price_history`; no scrape, refresh,
+purchase or history mutation. Saved numeric facts render outside model prose:
+price/native currency, stock, last check, valid finite positive historical
+sample count/range/minimum/median. Sparse or stale data stays explicit;
+historical currency is unknown, with no assumed conversion or price movement
+from one observation.
+
+`features/humor_common.py` owns bilingual text, safe catalogs, local calendar
+date and ISO week. Saved profile then Discord locale selects private language;
+session creators' language is persisted, click acknowledgments use the member's
+language. Horoscope selections use SHA-256 of guild/member/local-date/theme and
+survive restart; language affects rendering only. Bingo, quest selection,
+quiz and horoscope never invoke a model. `llm/humor.py` uses existing shared
+llama.cpp capacity through `asyncio.to_thread`, one call with thinking disabled,
+at most 220 tokens and a 30-second timeout. Private calls use interactive
+capacity; automatic verdict/minutes use background capacity. Empty, malformed,
+oversized, busy or timed-out output falls back locally with no repair/retry call.
+
+`db/community_schema.py` is an additive idempotent migration invoked by
+`init_db`. `db/community.py` returns dictionaries from guild-scoped helpers
+using the existing connection layer. Tables store sessions, one changeable
+vote per member/session, symbolic titles, bilingual habits/board snapshots,
+marks and author-consented quotes. Async community handlers call synchronous
+helpers through `asyncio.to_thread`. Conditional transactions enforce deadlines,
+consent, close claims, independent confirmation and idempotent title awards.
+
+Votes last exactly 600 seconds from opening, even after restart. Tribunal and
+meeting ties/no votes are neutral; quest owners cannot self-verify, and only a
+strict positive majority awards a symbolic title. Titles never create Discord
+roles and remain until administrator removal. One active quest per guild/member
+prevents competing assignments. No bingo chat surveillance, automatic quote
+gathering, message-history scraping or memory-derived habits are introduced.
+Bingo uses the bot's local ISO week beginning Monday; confirmed and old-week
+cells cannot be mutated, and edits do not change existing snapshots.
+
+`SessionView` and `QuoteConsentView` use stable IDs and persistent controls.
+Guarded 15-second tasks restore views once, close overdue work, erase expired
+consent requests and reconcile cancellations. Public sessions are votable only
+after message binding. Closing freezes voting and saves a deterministic fallback
+before any model attempt; restart after interrupted generation uses that fallback
+without another call. Final results edit the original public message. Transient
+edits retry the same message; deleted/inaccessible messages store safe delivery
+errors for administration. Individual database/model failures do not stop later
+ticks. All content disables mentions and link previews where supported.
+
+Museum consent DMs include the exact snapshot and source guild and warn that
+approval shares it guild-wide, including with members lacking source-channel
+access. The author must still be a member to accept within 24 hours. Bots,
+system authors, empty/attachment-only messages are rejected; attachments are
+not downloaded. Refusal, expiry or blocked-DM nomination removes pending text.
+Approved quotes alone can be selected, and quizzes require two distinct approved
+authors. Authors have a persistent removal button in the consent DM after
+approval, including after leaving the guild. Author/moderator/operator deletion
+clears stored content and related quiz snapshots/results and cancels open
+quizzes, which recheck approval on render/close. Deletion cannot recall
+screenshots or previously sent ordinary Discord messages.
+
+Completed sessions are retained 30 days after closure; bingo history is retained
+30 days after the local ISO week ends. Active work survives cleanup. Pending
+unapproved quotes last only to the 24-hour consent deadline; approved quotes
+remain until deletion, titles until explicit administration removal.
+
 ### `features/help_feature.py`
 
 Provides `/help`. The help text includes assistant-profile and bounded natural
 command behavior and is split into chunks below Discord's 2,000-character limit.
+The English static reference includes all community commands in every memory
+mode. `HelpView` also provides the full bilingual community guide with bounded
+chunks and respects Discord's five buttons per row/five rows, including the
+onboarding return control on row 4. Complete reference handles
+`app_commands.ContextMenu` before slash-command descriptions/parameters and
+renders its Messages menu invocation. Existing categories, settings and the
+natural-language guide remain available; community features have no mention
+parser support.
 
 ### `mention_utils.py` and the `llm` package
 
@@ -798,6 +901,8 @@ command behavior and is split into chunks below Discord's 2,000-character limit.
 | Flight tracker | 5 hours | Check at most one tracker per user |
 | Wishlist scraper | 12 hours | Refresh price/stock and issue alerts |
 | Exchange rates | 24 hours | Refresh EUR-relative conversion rates |
+| Community sessions | 15 seconds | Restore views, close votes, reconcile cancellation/results and clean completed history |
+| Museum consent | 15 seconds | Restore pending consent/approved removal controls and erase expired pending text |
 
 Discord task loops run once shortly after being started. Features contain guards where an immediate post-restart run could waste quota or duplicate work.
 
@@ -999,6 +1104,37 @@ Natural-command analytics separately reports intent, language, parser/model rout
 executed/clarification/invalid/unsupported/unavailable/failed outcomes, timeout
 and abandoned-clarification counts, and global reminder/notification delivery
 health.
+
+### Community administration
+
+`web/routes/community.py` registers an authenticated domain blueprint. Every
+request requires a positive `guild_id`, in the query for GET and JSON for
+mutations, with bounded list limits (1–100, and at most 50 habits). Wrong-guild
+objects return 404, malformed payloads 400, prohibited transitions 409, and DB
+unavailability a sanitized 503. Snowflakes use the dashboard's precise string-ID
+response mode. Pending quote content and voter identities are excluded.
+
+| Method | Route | Body / result |
+|---|---|---|
+| `GET` | `/community/sessions?guild_id=<id>` | Phases, deadlines, aggregate tallies, results and delivery state. |
+| `POST` | `/community/sessions/<id>/cancel` | `{guild_id}`; bot reconciles disabled controls on next tick. |
+| `GET` | `/community/bingo?guild_id=<id>` | Current board, marks, active habits. |
+| `POST` | `/community/bingo/habits` | `{guild_id,text_en,text_ro}`. |
+| `PUT` | `/community/bingo/habits/<id>` | Same bilingual fields; future snapshots only. |
+| `DELETE` | `/community/bingo/habits/<id>` | `{guild_id}`; enforce nine-habit minimum. |
+| `GET` | `/community/quotes?guild_id=<id>` | Approved quotes plus pending count. |
+| `DELETE` | `/community/quotes/<id>` | `{guild_id}`; revoke related quizzes too. |
+| `GET` | `/community/titles?guild_id=<id>` | Symbolic awards. |
+| `DELETE` | `/community/titles/<user_id>/<title_key>` | `{guild_id}`; explicitly remove award. |
+
+There are no admin vote, consent, private humor generation or tribunal-consent
+bypass routes. The dashboard preserves its operator trust model and uses
+existing bearer/session storage. **Community games / Jocuri de comunitate**
+shows these four panels, delivery errors and a compact bilingual command guide;
+operators can cancel sessions, manage habits and remove quotes/titles after
+concrete confirmation for destructive actions. Request-version and guild
+snapshots suppress stale results/errors after a new load or guild switch, and
+all user content is escaped.
 
 ### Dashboard and host stats
 
