@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 COMMANDS = {
     "tribunal": ("accused", "accusation"),
     "meeting": ("subject", "options"),
-    "quest": ("user",),
+    "quest": ("user", "text"),
     "bingo": (),
     "bingo-habit": ("text-ro", "text-en", "id"),
     "bingo-habit-delete": ("id",),
@@ -111,7 +111,7 @@ def test_real_command_payloads_and_constructor_dependencies(tmp_db, monkeypatch)
 
 def test_optional_arguments_are_typing_optional_and_payloads_match(tmp_db):
     _, tree, _ = registered_features()
-    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme"), ("quest", "user")):
+    for name, parameter in (("bingo-habit", "id"), ("horoscope", "theme"), ("quest", "user"), ("quest", "text")):
         command = tree.get_command(name)
         annotation = get_type_hints(command.callback)[parameter]
         assert get_origin(annotation) is Union

@@ -18,12 +18,13 @@ STRINGS = {
     "invalid_tribunal": ("Choose a human member and an accusation of 1–500 characters.", "Alege un membru uman și o acuzație de 1–500 de caractere."),
     "invalid_meeting": ("Provide a subject of 1–200 characters and 2–5 distinct options, separated by |, each at most 80 characters.", "Scrie un subiect de 1–200 de caractere și 2–5 opțiuni distincte, separate prin |, fiecare de cel mult 80 de caractere."),
     "invalid_quest": ("Choose a human member of this server for the quest.", "Alege un membru uman al acestui server pentru quest."),
+    "invalid_quest_text": ("Provide quest text of 1–300 characters when assigning a quest to another member.", "Scrie textul questului, de 1–300 de caractere, când îl atribui altui membru."),
     "tribunal": ("⚖️ Tribunal · member {member}\n{content}", "⚖️ Tribunal · membrul {member}\n{content}"),
     "invitation": ("This is a joke. Only the accused can accept or decline. Voting opens after acceptance and lasts exactly 10 minutes. Invitation expires: {deadline}.", "Este o glumă. Doar acuzatul poate accepta sau refuza. Votul începe după acceptare și durează exact 10 minute. Invitația expiră: {deadline}."),
     "meeting": ("📝 Meeting: {content}", "📝 Ședință: {content}"),
-    "quest": ("🎯 Quest · member {member}\n{content}", "🎯 Quest · membrul {member}\n{content}"),
+    "quest": ("🎯 Quest · assigned to **{member}**\nAssigned by {assigner}\n{content}", "🎯 Quest · atribuit lui **{member}**\nDe către {assigner}\n{content}"),
     "offer": ("Accept to publish this challenge here. You then have seven days to submit completion. Offer expires: {deadline}.", "Acceptă pentru a publica provocarea aici. Ai apoi șapte zile să anunți finalizarea. Oferta expiră: {deadline}."),
-    "assigned_offer": ("Offered by member {assigner}. Only the recipient can accept or decline. Accept to start the seven-day challenge. Invitation expires: {deadline}.", "Propus de membrul {assigner}. Doar destinatarul poate accepta sau refuza. Acceptă pentru a începe provocarea de șapte zile. Invitația expiră: {deadline}."),
+    "assigned_offer": ("Only the recipient can accept or decline. Accept to start the seven-day challenge. Invitation expires: {deadline}.", "Doar destinatarul poate accepta sau refuza. Acceptă pentru a începe provocarea de șapte zile. Invitația expiră: {deadline}."),
     "quest_active": ("Only the owner can submit completion or abandon. Completion deadline: {deadline}. Community verification then lasts 10 minutes.", "Doar titularul poate anunța finalizarea sau abandona. Termen de finalizare: {deadline}. Verificarea comunității durează apoi 10 minute."),
     "vote": ("One changeable vote per human member. Voting closes: {deadline}.", "Un vot modificabil pentru fiecare membru uman. Votul se închide: {deadline}."),
     "verification": ("The quest owner cannot verify their own completion. A strict positive majority grants a symbolic title, with no Discord role.", "Titularul questului nu își poate verifica propria finalizare. O majoritate strict pozitivă acordă un titlu simbolic, fără rol Discord."),
@@ -162,7 +163,7 @@ class SocialGamesFeature:
             return None
         return await self._create_public(interaction, "sedinta", language, {"subject": subject.strip(), "options": choices})
 
-    async def quest(self, interaction, user=None, offer_new=False):
+    async def quest(self, interaction, user=None, challenge=None, offer_new=False):
         await self._defer(interaction)
         language = await interaction_language(interaction)
         if not await self._admit(interaction, language):
@@ -172,6 +173,9 @@ class SocialGamesFeature:
             await self._reply(interaction, _t("invalid_quest", language))
             return None
         assigned = recipient.id != interaction.user.id
+        if (assigned and challenge is None) or (challenge is not None and (not isinstance(challenge, str) or not 1 <= len(challenge.strip()) <= 300)):
+            await self._reply(interaction, _t("invalid_quest_text", language))
+            return None
         try:
             current = None
             after_id = 0
@@ -189,14 +193,17 @@ class SocialGamesFeature:
                     await self._reply(interaction, await self._render_session(current), SessionView(self, current) if current["phase"] == "pending" and current["message_id"] is None and not assigned else None)
                     return current
             titles = await asyncio.to_thread(community.list_titles, interaction.guild_id, recipient.id) if not assigned else []
-            if titles and not offer_new:
+            if titles and not offer_new and challenge is None:
                 catalog = {quest["title_key"]: quest["title_" + language] for quest in QUESTS}
                 names = ", ".join(safe_text(catalog.get(row["title_key"], row["title_key"]), 100) for row in titles)
                 await self._reply(interaction, _t("titles", language, titles=names)[:1900], QuestAgainView(self, interaction.user.id, language))
                 return None
-            seed = hashlib.sha256(f"{interaction.guild_id}:{recipient.id}:{time.time_ns()}".encode()).digest()
-            chosen = QUESTS[int.from_bytes(seed[:8], "big") % len(QUESTS)]
-            payload = {"challenge_en": chosen["text_en"], "challenge_ro": chosen["text_ro"], "title_key": chosen["title_key"], "title_en": chosen["title_en"], "title_ro": chosen["title_ro"]}
+            if challenge is not None:
+                payload = {"challenge_en": challenge.strip(), "challenge_ro": challenge.strip(), "title_key": "custom-quest", "title_en": "Quest Champion", "title_ro": "Campionul questurilor"}
+            else:
+                seed = hashlib.sha256(f"{interaction.guild_id}:{recipient.id}:{time.time_ns()}".encode()).digest()
+                chosen = QUESTS[int.from_bytes(seed[:8], "big") % len(QUESTS)]
+                payload = {"challenge_en": chosen["text_en"], "challenge_ro": chosen["text_ro"], "title_key": chosen["title_key"], "title_en": chosen["title_en"], "title_ro": chosen["title_ro"]}
             if assigned:
                 return await self._create_public(interaction, "quest", language, payload, subject_id=recipient.id)
             session = await asyncio.to_thread(community.create_session, interaction.guild_id, interaction.channel_id, interaction.user.id, "quest", language, payload)
@@ -338,24 +345,25 @@ class SocialGamesFeature:
             if current:
                 session = current
         language, phase, payload, kind = (session[key] for key in ("language", "phase", "payload", "kind"))
+        quest_header = _t("quest", language, member=f"<@{session['subject_id'] or session['creator_id']}>", assigner=f"<@{session['creator_id']}>", content=safe_text(payload.get("challenge_" + language, ""), 600)) if kind == "quest" else None
         if kind == "quiz":
             quote = await asyncio.to_thread(community.get_quote, session["guild_id"], payload.get("quote_id", 1), approved_only=True) if payload else None
             if not quote:
                 return _t("quote_removed", language)
         if phase in ("cancelled", "declined", "expired"):
-            return _t(phase, language)
+            return quest_header + "\n" + _t(phase, language) if quest_header else _t(phase, language)
         deadline = f"<t:{int(session['deadline'])}:F>"
         if kind == "tribunal":
             lines = [_t("tribunal", language, member=f"<@{session['subject_id']}>", content=safe_text(payload["accusation"], 650))]
         elif kind == "sedinta":
             lines = [_t("meeting", language, content=safe_text(payload["subject"], 260))]
         elif kind == "quest":
-            lines = [_t("quest", language, member=f"<@{session['subject_id'] or session['creator_id']}>", content=safe_text(payload["challenge_" + language], 350))]
+            lines = [quest_header]
         else:
             lines = [_t("quiz", language, content=safe_text(payload["quote_text"], 1250))]
         if phase == "pending":
             offer_key = "invitation" if kind == "tribunal" else "assigned_offer" if session["subject_id"] else "offer"
-            lines.append(_t(offer_key, language, deadline=deadline, assigner=session["creator_id"]))
+            lines.append(_t(offer_key, language, deadline=deadline))
             if kind == "quest" and session["message_id"]:
                 lines.append(f"https://discord.com/channels/{session['guild_id']}/{session['channel_id']}/{session['message_id']}")
         elif phase == "active" and kind == "quest":
@@ -521,6 +529,6 @@ class SocialGamesFeature:
 
         @self.tree.command(name="quest", description="Take a voluntary challenge or offer one to another server member")
         @app_commands.guild_only()
-        @app_commands.describe(user="Member to offer a quest to; omit to take one yourself")
-        async def quest(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-            await self.quest(interaction, user=user)
+        @app_commands.describe(user="Member to offer a quest to; omit to take one yourself", text="Quest text, maximum 300 characters; required when assigning to another member")
+        async def quest(interaction: discord.Interaction, user: Optional[discord.Member] = None, text: Optional[str] = None):
+            await self.quest(interaction, user=user, challenge=text)

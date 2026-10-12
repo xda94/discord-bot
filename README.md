@@ -461,7 +461,7 @@ except `/azi-se-spala`. Reply content remains bilingual.
 |---|---|
 | `/tribunal accused:@member accusation:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
 | `/meeting subject:Lunch options:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
-| `/quest [user:@member]` | Take a private voluntary challenge, or post an invitation tagging another human server member. Only the recipient can accept/decline, complete or abandon it. One open quest per recipient/server. |
+| `/quest [user:@member] [text:Organize a game night]` | Write a custom quest (1–300 characters); text is required when assigning to another member. Messages mention the recipient and assigner. Without arguments, take a private catalog challenge. One open quest per recipient/server. |
 | `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |
 | `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
 | `/bingo-habit-delete id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
@@ -525,9 +525,17 @@ persistent author-only removal button, so withdrawal works even after leaving
 the server. Deletion clears stored text and revokes related quizzes. It cannot
 recall screenshots or already sent ordinary Discord messages.
 
-With `/quest user:@member`, the selected member has **24 hours** to accept or
-decline the invitation in the command channel. `/quest` without a member keeps
-the private self-service offer. Acceptance starts a **seven-day** completion
+With `/quest user:@member text:Organize a game night`, you choose the quest text
+instead of a predefined challenge. The text is required for assignments to
+another member and must contain **1–300 characters**. The selected member has
+**24 hours** to accept or decline the invitation in the command channel.
+The invitation, active quest and final message mention both the recipient and
+assigner. Only the recipient is notified when the invitation is posted; text
+entered in the quest cannot ping other users or roles. Custom text is stored
+as written in both language variants, without automatic translation; successful
+custom quests award the symbolic **Quest Champion** title. `/quest` without
+arguments keeps the private catalog offer; `text` also supports a custom quest
+for yourself. Acceptance starts a **seven-day** completion
 window; verification lasts **ten minutes**. The recipient cannot self-verify,
 and any symbolic title is awarded to them. Repeated assignments show their
 existing open quest instead of creating another. Existing self-assigned quests
