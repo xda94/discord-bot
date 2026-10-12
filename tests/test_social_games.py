@@ -190,11 +190,14 @@ def test_quest_offer_private_then_single_public_acceptance(tmp_db):
         assert row["message_id"] is None and row["phase"] == "pending"
         value.channel.send.assert_not_called()
         assert value.followup.send.call_args.kwargs["ephemeral"] is True
+        assert "<@42>" in value.followup.send.call_args.args[0]
         await asyncio.gather(worker.handle_control(value, 12, row["id"], "accept"), worker.handle_control(value, 12, row["id"], "accept"))
         current = community.get_session(12, row["id"])
         assert current["phase"] == "active" and current["message_id"] == 99
         assert 604795 < current["deadline"] - time.time() <= 604800
         value.channel.send.assert_awaited_once()
+        assert "<@42>" in value.channel.send.call_args.args[0]
+        assert "<@42>" in value.message.edit.call_args.kwargs["content"]
         assert all(button.disabled for button in value.channel.send.call_args.kwargs["view"].children)
         assert all(not button.disabled for button in value.message.edit.call_args.kwargs["view"].children)
         repeated = await worker.quest(value)
