@@ -242,13 +242,16 @@ def test_assigned_quest_recipient_controls_and_title(tmp_db, language):
         assigner = interaction(language=language)
         recipient = interaction(user_id=45, language=language)
         worker = feature(assigner)
-        await worker.tree.get_command("quest").callback(assigner, recipient.user)
+        await worker.tree.get_command("quest").callback(assigner, recipient.user, "Organize a game night")
         row = community.list_sessions(12)[0]
         assert row["creator_id"] == assigner.user.id and row["subject_id"] == recipient.user.id
         assert row["phase"] == "pending" and row["message_id"] == 99
         assert row["deadline"] == row["created_at"] + 86400
         sent = assigner.channel.send.call_args
-        assert "<@45>" in sent.args[0] and row["payload"]["challenge_" + language] in sent.args[0]
+        assert "**<@45>**" in sent.args[0] and "<@42>" in sent.args[0]
+        assert "Organize a game night" in sent.args[0]
+        assert row["payload"]["challenge_en"] == row["payload"]["challenge_ro"] == "Organize a game night"
+        assert row["payload"]["title_key"] == "custom-quest"
         assert [user.id for user in sent.kwargs["allowed_mentions"].users] == [45]
         assert sent.kwargs["allowed_mentions"].everyone is False and sent.kwargs["allowed_mentions"].roles is False
         await sent.kwargs["view"].children[0].callback(assigner)
@@ -258,6 +261,9 @@ def test_assigned_quest_recipient_controls_and_title(tmp_db, language):
         await restored.handle_control(recipient, 12, row["id"], "accept")
         current = community.get_session(12, row["id"])
         assert current["phase"] == "active" and current["message_id"] == 99
+        assert "**<@45>**" in assigner.message.edit.call_args.kwargs["content"]
+        assert "<@42>" in assigner.message.edit.call_args.kwargs["content"]
+        assert "Organize a game night" in assigner.message.edit.call_args.kwargs["content"]
         assert 604795 < current["deadline"] - time.time() <= 604800
         recipient.channel.send.assert_not_called()
         await restored.handle_control(assigner, 12, row["id"], "completed")
@@ -273,6 +279,9 @@ def test_assigned_quest_recipient_controls_and_title(tmp_db, language):
         await restored._finish_session(row)
         assert len(community.list_titles(12, recipient.user.id)) == 1
         assert community.list_titles(12, assigner.user.id) == []
+        final = assigner.message.edit.call_args.kwargs["content"]
+        assert "<@45>" in final and "<@42>" in final and "Organize a game night" in final
+        assert ("Quest Champion" if language == "en" else "Campionul questurilor") in final
     asyncio.run(run())
     games.generate_humor.assert_not_called()
 
@@ -282,13 +291,15 @@ def test_assigned_quest_can_be_declined_or_abandoned(tmp_db, action, phase):
     async def run():
         assigner, recipient = interaction(), interaction(user_id=45)
         worker = feature(assigner)
-        row = await worker.quest(assigner, recipient.user)
+        row = await worker.quest(assigner, recipient.user, challenge="Organize a game night")
         if action == "abandon":
             await worker.handle_control(recipient, 12, row["id"], "accept")
         await worker.handle_control(assigner, 12, row["id"], action)
         assert community.get_session(12, row["id"])["phase"] == ("active" if action == "abandon" else "pending")
         await worker.handle_control(recipient, 12, row["id"], action)
         assert community.get_session(12, row["id"])["phase"] == phase
+        assert "<@45>" in assigner.message.edit.call_args.kwargs["content"]
+        assert "<@42>" in assigner.message.edit.call_args.kwargs["content"]
     asyncio.run(run())
 
 
@@ -297,9 +308,10 @@ def test_assigned_quest_reuses_recipient_quest_without_affecting_assigner(tmp_db
         assigner, recipient, other = interaction(), interaction(user_id=45), interaction(user_id=60)
         worker = feature(assigner)
         own = await worker.quest(assigner)
-        row = await worker.quest(assigner, recipient.user)
+        row = await worker.quest(assigner, recipient.user, challenge="Organize a game night")
         assert row["id"] != own["id"]
-        assert (await worker.quest(other, recipient.user))["id"] == row["id"]
+        assert (await worker.quest(other, recipient.user, challenge="Another task"))["id"] == row["id"]
+        assert community.get_session(12, row["id"])["payload"]["challenge_en"] == "Organize a game night"
         assert (await worker.quest(recipient))["id"] == row["id"]
         assert "view" not in recipient.followup.send.call_args.kwargs
         assert "https://discord.com/channels/12/23/99" in recipient.followup.send.call_args.args[0]
@@ -326,8 +338,40 @@ def test_assigned_quest_rejects_invalid_recipient(tmp_db, invalid):
 def test_assigned_quest_send_failure_cancels_invitation(tmp_db):
     value = interaction()
     value.channel.send.side_effect = OSError("failed")
-    assert asyncio.run(feature(value).quest(value, interaction(user_id=45).user)) is None
+    assert asyncio.run(feature(value).quest(value, interaction(user_id=45).user, challenge="Organize a game night")) is None
     assert community.list_sessions(12)[0]["phase"] == "cancelled"
+
+
+@pytest.mark.parametrize("challenge", [None, "", "  ", "x" * 301, 42])
+def test_assigned_quest_requires_valid_custom_text(tmp_db, challenge):
+    value = interaction()
+    assert asyncio.run(feature(value).quest(value, interaction(user_id=45).user, challenge=challenge)) is None
+    assert community.list_sessions(12) == []
+    value.channel.send.assert_not_called()
+    assert value.followup.send.call_args.args[0] == games._t("invalid_quest_text", "en")
+
+
+def test_custom_quest_preserves_full_text_without_extra_mentions(tmp_db):
+    value = interaction()
+    challenge = "@everyone <@123456789012345678> " + "*" * 268
+    assert len(challenge) == 300
+    row = asyncio.run(feature(value).quest(value, interaction(user_id=45).user, challenge=challenge))
+    assert row["payload"]["challenge_en"] == row["payload"]["challenge_ro"] == challenge
+    sent = value.channel.send.call_args
+    assert games.safe_text(challenge, 600) in sent.args[0]
+    assert "@everyone" not in sent.args[0] and "<@123456789012345678>" not in sent.args[0]
+    assert "<@45>" in sent.args[0] and "<@42>" in sent.args[0]
+    assert [user.id for user in sent.kwargs["allowed_mentions"].users] == [45]
+    assert len(sent.args[0]) <= 2000
+
+
+def test_custom_self_service_quest_uses_entered_text(tmp_db):
+    value = interaction()
+    row = asyncio.run(feature(value).quest(value, challenge="Finish the presentation"))
+    assert row["payload"]["challenge_en"] == row["payload"]["challenge_ro"] == "Finish the presentation"
+    assert "<@42>" in value.followup.send.call_args.args[0]
+    assert value.followup.send.call_args.kwargs["ephemeral"] is True
+    value.channel.send.assert_not_called()
 
 
 @pytest.mark.parametrize("success,negative,title", [(0, 0, False), (1, 1, False), (1, 2, False), (2, 1, True)])

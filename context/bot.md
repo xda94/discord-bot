@@ -784,7 +784,7 @@ Commands and examples:
 |---|---|
 | `/tribunal accused:@member accusation:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
 | `/meeting subject:Lunch options:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
-| `/quest [user:@member]` | Private self-service offer, or public invitation tagging another human server member. Only the recipient can accept/decline, complete or abandon; acceptance starts seven days, completion opens ten-minute verification. |
+| `/quest [user:@member] [text:Organize a game night]` | Custom text of 1–300 characters is required for assignments to another member. Messages mention the recipient and assigner. Without arguments, keep the private catalog offer. Acceptance starts seven days; completion opens ten-minute verification. |
 | `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
 | `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
 | `/bingo-habit-delete id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
@@ -853,7 +853,15 @@ replaces the legacy unique index with one keyed by the recipient, preserving
 existing quests without new columns. Invitations to other members are posted in the command
 channel with only the recipient mention enabled and persistent Accept/Decline
 controls. Acceptance edits that same message; invitations expire after 24 hours.
-Without `user`, `/quest` keeps its private offer and title-list behavior.
+`text` supplies a custom challenge, limited to 1–300 trimmed characters and
+required for assignments to another member. It populates both `challenge_en`
+and `challenge_ro` unchanged; no translation or model call is needed. Custom
+quests use title key `custom-quest` and the localized Quest Champion title.
+Rendering includes recipient and assigner mentions in every quest phase,
+including after acceptance and closure; custom text escapes mentions and Markdown.
+Only the recipient is notified on initial publication; subsequent edits disable
+mention notifications. Without arguments, `/quest` keeps its private catalog
+offer and title-list behavior; `text` can also customize a self-service quest.
 No bingo chat surveillance, automatic quote
 gathering, message-history scraping or memory-derived habits are introduced.
 Bingo uses the bot's local ISO week beginning Monday; confirmed and old-week
