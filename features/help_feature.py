@@ -152,7 +152,7 @@ HELP_TEXT = (
     "you which it is and names the day. Optionally pass a date (`ZZ.LL` or `ZZ.LL.AAAA`, "
     "e.g. `25.12`) to check another day.\n\n"
     "**/tribunal** `<acuzat>` `<acuzatie>`\n"
-    "Invite the accused to a joke tribunal; they have 24 hours to consent before "
+    "Invite the accused to Tribunal; they have 24 hours to consent before "
     "a 600-second vote starts. Humans can change one vote; ties/no votes are neutral.\n\n"
     "**/sedinta** `<subiect>` `<optiuni>`\n"
     "Start a 600-second meeting vote with 2–5 distinct options separated by |. "

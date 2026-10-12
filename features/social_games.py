@@ -16,7 +16,7 @@ STRINGS = {
     "human": ("Only server members who are not bots can use these controls.", "Doar membrii serverului care nu sunt boți pot folosi aceste butoane."),
     "invalid_tribunal": ("Choose a human member and an accusation of 1–500 characters.", "Alege un membru uman și o acuzație de 1–500 de caractere."),
     "invalid_meeting": ("Provide a subject of 1–200 characters and 2–5 distinct options, separated by |, each at most 80 characters.", "Scrie un subiect de 1–200 de caractere și 2–5 opțiuni distincte, separate prin |, fiecare de cel mult 80 de caractere."),
-    "tribunal": ("⚖️ Joke tribunal · member {member}\n{content}", "⚖️ Tribunal în glumă · membrul {member}\n{content}"),
+    "tribunal": ("⚖️ Tribunal · member {member}\n{content}", "⚖️ Tribunal · membrul {member}\n{content}"),
     "invitation": ("This is a joke. Only the accused can accept or decline. Voting opens after acceptance and lasts exactly 10 minutes. Invitation expires: {deadline}.", "Este o glumă. Doar acuzatul poate accepta sau refuza. Votul începe după acceptare și durează exact 10 minute. Invitația expiră: {deadline}."),
     "meeting": ("📝 Meeting: {content}", "📝 Ședință: {content}"),
     "quest": ("🎯 Quest · member {member}\n{content}", "🎯 Quest · membrul {member}\n{content}"),
@@ -337,7 +337,7 @@ class SocialGamesFeature:
         elif kind == "sedinta":
             lines = [_t("meeting", language, content=safe_text(payload["subject"], 260))]
         elif kind == "quest":
-            lines = [_t("quest", language, member=session["creator_id"], content=safe_text(payload["challenge_" + language], 350))]
+            lines = [_t("quest", language, member=f"<@{session['creator_id']}>", content=safe_text(payload["challenge_" + language], 350))]
         else:
             lines = [_t("quiz", language, content=safe_text(payload["quote_text"], 1250))]
         if phase == "pending":
@@ -491,7 +491,7 @@ class SocialGamesFeature:
         await self._tick()
 
     def _register_commands(self):
-        @self.tree.command(name="tribunal", description="Tribunal în glumă, cu acordul acuzatului / Joke tribunal with consent")
+        @self.tree.command(name="tribunal", description="Tribunal, cu acordul acuzatului / Tribunal with consent")
         @app_commands.guild_only()
         @app_commands.describe(acuzat="Membrul acuzat / Accused member", acuzatie="Acuzație în glumă / Joke accusation, maximum 500 characters")
         async def tribunal(interaction: discord.Interaction, acuzat: discord.Member, acuzatie: str):
