@@ -71,7 +71,7 @@ def external_mocks(monkeypatch):
 
 def test_command_registration():
     worker = feature()
-    assert {command.name for command in worker.tree.get_commands()} == {"tribunal", "sedinta", "quest"}
+    assert {command.name for command in worker.tree.get_commands()} == {"tribunal", "meeting", "quest"}
     assert all(command.guild_only for command in worker.tree.get_commands())
 
 

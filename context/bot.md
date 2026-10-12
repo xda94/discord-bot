@@ -782,28 +782,41 @@ Commands and examples:
 
 | Invocation | Flow |
 |---|---|
-| `/tribunal acuzat:@member acuzatie:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
-| `/sedinta subiect:Lunch optiuni:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
+| `/tribunal accused:@member accusation:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
+| `/meeting subject:Lunch options:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
 | `/quest` | Private safe catalog offer; voluntary acceptance publishes a seven-day challenge, completion opens ten-minute verification. |
 | `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
-| `/bingo-obicei text:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
-| `/bingo-obicei-sterge id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
-| Messages → Apps → **Pune în muzeu** | Explicitly nominate one text-only message, maximum 1,200 characters, for author consent by DM. |
-| `/citat` / `/cine-a-zis` / `/citat-sterge id:12` | Approved guild quote; ten-minute author quiz with 2–4 distinct choices; author/Manage Messages removal. |
-| `/scuza motiv:I missed the meeting stil:corporate` | Private corporate/grandmother/gamer/public-servant excuse, reason at most 500 characters. |
-| `/merita url:https://shop.example/item` | Private purchase-advocate/accountant humor from only the user's saved wishlist observations. |
-| `/horoscop tema:work` | Stable local daily general/work/gaming/household forecast. |
+| `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
+| `/bingo-habit-delete id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
+| Messages → Apps → **Add to museum** | Explicitly nominate one text-only message, maximum 1,200 characters, for author consent by DM. |
+| `/quote` / `/who-said` / `/quote-delete id:12` | Approved guild quote; ten-minute author quiz with 2–4 distinct choices; author/Manage Messages removal. |
+| `/excuse reason:I missed the meeting style:corporate` | Private corporate/grandmother/gamer/public-servant excuse, reason at most 500 characters. |
+| `/worth-it url:https://shop.example/item` | Private current/minimum/maximum/median prices, calculated verdict and actionable advocate/accountant advice. |
+| `/horoscope theme:work` | Stable local daily general/work/gaming/household forecast. |
 
 Shared games, museum, bingo and horoscope are guild-only. Excuses and wishlist
-humor also work in DMs, always deliver content by DM and acknowledge guild
-invocations ephemerally. Blocked DMs report a private error without exposing
-content. Private reasons/responses are not persisted. `/merita` only reads
+humor also work in DMs. For guild invocations, both defer ephemerally and deliver
+the full result as an ephemeral followup in the command channel, visible only
+to the requester with Discord's Dismiss message control. Neither sends a DM;
+blocked DMs do not affect these commands. Private reasons/responses are not
+persisted. `/worth-it` only reads
 requester-owned `get_scraped_item` and `get_price_history`; no scrape, refresh,
-purchase or history mutation. Saved numeric facts render outside model prose:
-price/native currency, stock, last check, valid finite positive historical
-sample count/range/minimum/median. Sparse or stale data stays explicit;
-historical currency is unknown, with no assumed conversion or price movement
-from one observation.
+purchase or history mutation. Current/minimum/maximum/median prices and signed
+differences from median/minimum render outside model prose. At least seven valid
+positive historical observations, a fresh known check, known currency and stock
+are required for a favorable verdict. Below median or at the minimum means buy;
+above median means wait; median or less than 1% range means neutral. Missing
+facts, stale/unknown checks or stock and out-of-stock items produce distinct
+non-buy outcomes. Comparisons assume the tracked item's native currency stayed
+the same; historical currency changes cannot be detected from the existing
+table. Both voices' action text is deterministic for the verdict. The LLM must
+echo its decision and may add only bounded numeric-free, advice-free humor;
+contradictory/invalid output falls back to the deterministic voices.
+
+All command names, public options and descriptions are English except
+`/azi-se-spala`; bilingual reply content remains profile-controlled. The museum
+message action is `Add to museum`. The stored session kind `sedinta` is retained
+for compatibility while its public command is `/meeting`.
 
 `features/humor_common.py` owns bilingual text, safe catalogs, local calendar
 date and ISO week. Saved profile then Discord locale selects private language;

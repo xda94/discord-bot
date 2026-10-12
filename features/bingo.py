@@ -31,7 +31,7 @@ STRINGS = {
     "invalid_habit": ("Provide both translations, each 1–200 characters, and a positive ID when editing.", "Scrie ambele traduceri, fiecare de 1–200 de caractere, și un ID pozitiv pentru editare."),
     "habit_saved": ("Habit ID {id} saved. Changes apply to future boards; this week's snapshot stays unchanged.", "Am salvat obiceiul cu ID {id}. Modificările se aplică tablelor viitoare; tabla săptămânii curente rămâne neschimbată."),
     "habit_deleted": ("Habit ID {id} removed from future boards; existing snapshots stay unchanged.", "Am eliminat obiceiul cu ID {id} din tablele viitoare; tablele existente rămân neschimbate."),
-    "habits": ("Active habits ({count}/50). Use these IDs with /bingo-obicei or /bingo-obicei-sterge:", "Obiceiuri active ({count}/50). Folosește aceste ID-uri cu /bingo-obicei sau /bingo-obicei-sterge:"),
+    "habits": ("Active habits ({count}/50). Use these IDs with /bingo-habit or /bingo-habit-delete:", "Obiceiuri active ({count}/50). Folosește aceste ID-uri cu /bingo-habit sau /bingo-habit-delete:"),
     "minimum": ("Keep at least nine active habits.", "Păstrează cel puțin nouă obiceiuri active."),
     "limit": ("The pool already has fifty active habits. Edit or remove an existing habit first.", "Lista are deja cincizeci de obiceiuri active. Editează sau elimină întâi un obicei existent."),
     "missing_habit": ("No active habit with that ID exists in this server.", "Nu există un obicei activ cu acest ID pe server."),
@@ -232,22 +232,22 @@ class BingoFeature:
             return None
 
     def _register_commands(self):
-        @self.tree.command(name="bingo", description="Bingo săptămânal cu confirmare umană / Weekly bingo with human confirmation")
+        @self.tree.command(name="bingo", description="Show the weekly bingo board with member confirmation")
         @app_commands.guild_only()
         async def bingo(interaction: discord.Interaction):
             await self.bingo(interaction)
 
-        @self.tree.command(name="bingo-obicei", description="Adaugă sau editează obiceiuri bilingve / Add or edit bilingual habits")
+        @self.tree.command(name="bingo-habit", description="Add or edit bilingual bingo habits")
         @app_commands.guild_only()
         @app_commands.default_permissions(manage_guild=True)
-        @app_commands.rename(text_en="text-en")
-        @app_commands.describe(text="Text românesc, 1–200 caractere / Romanian text, 1–200 characters", text_en="Text englezesc, 1–200 caractere / English text, 1–200 characters", id="ID pentru editare; omite pentru adăugare / Edit ID; omit to add")
-        async def bingo_obicei(interaction: discord.Interaction, text: str, text_en: str, id: Optional[int] = None):
-            await self.save_habit(interaction, text, text_en, id)
+        @app_commands.rename(text_ro="text-ro", text_en="text-en")
+        @app_commands.describe(text_ro="Romanian text, 1-200 characters", text_en="English text, 1-200 characters", id="Habit ID to edit; omit to add")
+        async def bingo_habit(interaction: discord.Interaction, text_ro: str, text_en: str, id: Optional[int] = None):
+            await self.save_habit(interaction, text_ro, text_en, id)
 
-        @self.tree.command(name="bingo-obicei-sterge", description="Șterge un obicei; păstrează minimum nouă / Remove a habit; keep at least nine")
+        @self.tree.command(name="bingo-habit-delete", description="Remove a bingo habit; keep at least nine")
         @app_commands.guild_only()
         @app_commands.default_permissions(manage_guild=True)
-        @app_commands.describe(id="ID obicei de eliminat / Habit ID to remove")
-        async def bingo_obicei_sterge(interaction: discord.Interaction, id: int):
+        @app_commands.describe(id="Habit ID to remove")
+        async def bingo_habit_delete(interaction: discord.Interaction, id: int):
             await self.delete_habit(interaction, id)

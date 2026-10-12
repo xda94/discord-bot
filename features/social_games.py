@@ -491,19 +491,19 @@ class SocialGamesFeature:
         await self._tick()
 
     def _register_commands(self):
-        @self.tree.command(name="tribunal", description="Tribunal: toți membrii votează imediat / All members vote immediately")
+        @self.tree.command(name="tribunal", description="Start a ten-minute tribunal vote for all server members")
         @app_commands.guild_only()
-        @app_commands.describe(acuzat="Membrul acuzat / Accused member", acuzatie="Acuzație în glumă / Joke accusation, maximum 500 characters")
-        async def tribunal(interaction: discord.Interaction, acuzat: discord.Member, acuzatie: str):
-            await self.tribunal(interaction, acuzat, acuzatie)
+        @app_commands.describe(accused="Accused member", accusation="Accusation, maximum 500 characters")
+        async def tribunal(interaction: discord.Interaction, accused: discord.Member, accusation: str):
+            await self.tribunal(interaction, accused, accusation)
 
-        @self.tree.command(name="sedinta", description="Vot de zece minute / Ten-minute meeting vote")
+        @self.tree.command(name="meeting", description="Start a ten-minute meeting vote")
         @app_commands.guild_only()
-        @app_commands.describe(subiect="Subiectul / Subject", optiuni="2–5 opțiuni separate prin | / 2–5 options separated by |")
-        async def sedinta(interaction: discord.Interaction, subiect: str, optiuni: str):
-            await self.meeting(interaction, subiect, optiuni)
+        @app_commands.describe(subject="Meeting subject", options="2-5 distinct options separated by |")
+        async def meeting(interaction: discord.Interaction, subject: str, options: str):
+            await self.meeting(interaction, subject, options)
 
-        @self.tree.command(name="quest", description="Provocare sigură și titluri simbolice / Safe challenge and symbolic titles")
+        @self.tree.command(name="quest", description="Take a voluntary challenge and earn symbolic titles")
         @app_commands.guild_only()
         async def quest(interaction: discord.Interaction):
             await self.quest(interaction)
