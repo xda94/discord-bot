@@ -15,9 +15,9 @@ from features.social_games import SocialGamesFeature
 
 def interaction(user_id=42, guild_id=12, language="en", manage_messages=False, message_id=99, channel_id=23):
     guild = SimpleNamespace(id=guild_id, name="Secret Society") if guild_id else None
-    user = SimpleNamespace(id=user_id, bot=False, guild=guild, guild_permissions=SimpleNamespace(manage_messages=manage_messages), send=AsyncMock())
+    user = SimpleNamespace(id=user_id, display_name="Robeeque", bot=False, guild=guild, guild_permissions=SimpleNamespace(manage_messages=manage_messages), send=AsyncMock())
     message = SimpleNamespace(id=message_id, edit=AsyncMock())
-    channel = SimpleNamespace(id=channel_id, guild=guild, send=AsyncMock(return_value=message), fetch_message=AsyncMock(return_value=message))
+    channel = SimpleNamespace(id=channel_id, name="secret-quotes", guild=guild, send=AsyncMock(return_value=message), fetch_message=AsyncMock(return_value=message))
     response = SimpleNamespace(is_done=MagicMock(return_value=False), defer=AsyncMock())
     response.defer.side_effect = lambda **kwargs: setattr(response.is_done, "return_value", True)
     return SimpleNamespace(id=90, user=user, guild=guild, guild_id=guild_id, channel=channel, channel_id=channel_id, message=message, response=response, followup=SimpleNamespace(send=AsyncMock()), locale=language)
@@ -81,32 +81,43 @@ def test_private_nomination_exact_snapshot_disclosure_and_language(tmp_db, langu
     assert row["source_channel_id"] == value.channel_id and row["source_message_id"] == value.id and row["consent_message_id"] == 101
     assert community.get_quote(12, row["id"], approved_only=True) is None
     assert community.choose_quote(12) is None
-    calls = message.author.send.call_args_list
-    assert calls[0].args[0] == message.content
-    disclosure = calls[1].args[0]
-    assert "Secret Society" in disclosure and str(value.channel_id) in disclosure
-    assert ("attributed to you" if language == "en" else "atribuit ție") in disclosure
+    message.author.send.assert_awaited_once()
+    call = message.author.send.call_args
+    card = call.kwargs["embed"]
+    assert card.title == museum._t("consent_title", language, id=row["id"])
+    quoted = "\n".join("> " + line for line in museum.safe_text(message.content, 3000).split("\n"))
+    assert card.description == f"**{museum._t('quote_label', language)}**\n{quoted}"
+    fields = {field.name: field.value for field in card.fields}
+    assert fields[museum._t("server_label", language)] == "Secret Society"
+    assert fields[museum._t("channel_label", language)] == "#secret-quotes"
+    assert fields[museum._t("nominator_label", language)] == "Robeeque · <@42>"
+    disclosure = fields[museum._t("consent_label", language)]
     assert "24" in disclosure and ("cannot see" if language == "en" else "nu pot vedea") in disclosure
     assert ("screenshots" if language == "en" else "capturi de ecran") in disclosure
-    assert [button.custom_id for button in calls[1].kwargs["view"].children] == [f"museum:{row['id']}:accept", f"museum:{row['id']}:decline"]
-    assert all(call.kwargs["allowed_mentions"].everyone is False and call.kwargs["suppress_embeds"] for call in calls)
+    assert [button.custom_id for button in call.kwargs["view"].children] == [f"museum:{row['id']}:accept", f"museum:{row['id']}:decline"]
+    assert call.kwargs["allowed_mentions"].everyone is False and call.kwargs["allowed_mentions"].users is False
+    assert call.kwargs["suppress_embeds"] is False
     value.channel.send.assert_not_called()
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     museum.record.assert_not_called()
 
 
-def test_full_1200_character_snapshot_and_saved_author_language(tmp_db, monkeypatch):
+@pytest.mark.parametrize("content", ["  " + "*" * 1196 + "\n ", "Q" + "\n" * 1199])
+def test_full_1200_character_snapshot_and_saved_author_language(tmp_db, monkeypatch, content):
     import db
 
     value = interaction(language="ro")
-    message = submission(value, content="  " + "*" * 1196 + "\n ", language="ro")
+    message = submission(value, content=content, language="ro")
     monkeypatch.setattr(db, "get_assistant_profile", lambda user_id: {"language": "en"} if user_id == 45 else None)
     row = asyncio.run(feature().nominate(value, message.content, message.author))
     assert row["language"] == "en"
-    assert message.author.send.call_args_list[0].args[0] == message.content
-    assert len(message.author.send.call_args_list[0].args[0]) == 1200
-    assert all(len(call.args[0]) <= 2000 for call in message.author.send.call_args_list)
-    assert "throughout that server" in message.author.send.call_args_list[1].args[0]
+    assert row["quote_text"] == content and len(row["quote_text"]) == 1200
+    card = message.author.send.call_args.kwargs["embed"]
+    quoted = "\n".join("> " + line for line in museum.safe_text(content, 3000).split("\n"))
+    assert card.description == f"**Quote attributed to you**\n{quoted}"
+    assert len(card.description) <= 4096 and len(card) <= 6000
+    assert all(len(field.value) <= 1024 for field in card.fields)
+    assert "throughout that server" in card.fields[-1].value
     assert value.followup.send.call_args.args[0] == museum._t("nominated", "ro")
 
 
@@ -154,15 +165,19 @@ def test_blocked_dm_erases_pending_and_leaks_nothing(tmp_db):
     assert museum.record.call_args.args[:2] == ("failure", "museum/nominate")
 
 
-def test_partial_dm_failure_erases_quote_and_previous_snapshot(tmp_db):
+def test_consent_card_escapes_quote_and_source_names(tmp_db):
     value = interaction()
-    message = submission(value)
-    sent = message.author.send.return_value
-    message.author.send.side_effect = [sent, RuntimeError("private detail")]
-    assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
-    assert community.list_pending_quotes() == []
-    sent.delete.assert_awaited_once()
-    assert "private detail" not in str(museum.record.call_args_list)
+    value.guild.name = "**Server** @everyone"
+    value.channel.name = "quotes_@here"
+    value.user.display_name = "**Admin** @everyone"
+    message = submission(value, content="First line\n> **Second line** @everyone <@&123>")
+    assert asyncio.run(feature().nominate(value, message.content, message.author))
+    card = message.author.send.call_args.kwargs["embed"]
+    assert "\n> \\> \\*\\*Second line\\*\\*" in card.description
+    assert "@everyone" not in card.description
+    assert card.fields[0].value == museum.safe_text(value.guild.name, 200)
+    assert card.fields[1].value == "#" + museum.safe_text(value.channel.name, 200)
+    assert card.fields[2].value == museum.safe_text(value.user.display_name, 200) + " · <@42>"
 
 
 def test_bind_failure_erases_nomination_and_messages(tmp_db, monkeypatch):
@@ -171,7 +186,7 @@ def test_bind_failure_erases_nomination_and_messages(tmp_db, monkeypatch):
     monkeypatch.setattr(community, "bind_quote_consent_message", lambda *args: {"status": "missing", "quote": None})
     assert asyncio.run(feature().nominate(value, message.content, message.author)) is None
     assert community.list_pending_quotes() == []
-    assert message.author.send.return_value.delete.await_count == 2
+    message.author.send.return_value.delete.assert_awaited_once()
 
 
 def test_duplicate_does_not_send_another_dm(tmp_db):
@@ -200,7 +215,7 @@ def test_quote_add_callback_accepts_text_and_member_for_separate_submissions(tmp
     assert {row["source_message_id"] for row in pending} == {90, 91}
     assert {row["quote_text"] for row in pending} == {proposed.content, "Another quote"}
     assert all(row["author_id"] == proposed.author.id for row in pending)
-    assert proposed.author.send.await_count == 4
+    assert proposed.author.send.await_count == 2
     value.channel.send.assert_not_called()
 
 
@@ -239,6 +254,7 @@ def test_approval_checks_membership_and_replaces_persistent_view(tmp_db):
     assert [button.custom_id for button in view.children] == [f"museum:{row['id']}:remove"]
     assert "aprobat" in value.followup.send.call_args.args[0]
     assert "approved" in value.message.edit.call_args.kwargs["content"]
+    assert value.message.edit.call_args.kwargs["embed"] is None
     assert museum.record.call_args.args[:2] == ("control", "museum/accept")
 
 
@@ -283,6 +299,7 @@ def test_decline_erases_snapshot(tmp_db):
     asyncio.run(feature().handle_control(value, 12, row["id"], "decline"))
     assert community.get_quote(12, row["id"]) is None
     assert all(button.disabled for button in value.message.edit.call_args.kwargs["view"].children)
+    assert value.message.edit.call_args.kwargs["embed"] is None
     assert museum.record.call_args.args[:2] == ("control", "museum/decline")
 
 
@@ -442,6 +459,7 @@ def test_expiry_erases_all_requests_despite_per_message_failure(tmp_db):
     assert community.get_quote(12, second["id"]) is None
     value.message.edit.assert_awaited_once()
     assert all(button.disabled for button in value.message.edit.call_args.kwargs["view"].children)
+    assert value.message.edit.call_args.kwargs["embed"] is None
     assert museum.record.call_args.args[:2] == ("failure", "museum/expiry")
 
 

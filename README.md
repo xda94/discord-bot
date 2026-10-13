@@ -514,8 +514,10 @@ horoscope make no model calls.
 
 Use `/quote-add quote:<text> user:<member>` to enter a quote of at most 1,200
 characters and select the human server member who said it. Empty quotes, bots
-and system users are rejected. The selected author receives the exact text and
-server by DM and has **24 hours** to accept or refuse the attribution.
+and system users are rejected. The selected author receives a single DM card
+with the full quote clearly framed, the server and channel names, and the
+submitting member's name and mention. Accept/Decline buttons appear on that
+same message, with **24 hours** to accept or refuse the attribution.
 Acceptance explicitly makes the
 quote **available throughout that guild, including to members who cannot see
 the submission channel**. The author must still belong to the server when accepting.
