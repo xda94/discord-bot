@@ -17,7 +17,13 @@ STRINGS = {
     "human": ("Only human members of this server can use this action.", "Doar membrii umani ai acestui server pot folosi această acțiune."),
     "nominated": ("I sent the author a private consent request. The quote stays unavailable until they accept within 24 hours.", "Am trimis autorului o cerere privată de acord. Citatul rămâne indisponibil până când acceptă în 24 de ore."),
     "duplicate": ("This submission already has a museum nomination or approval.", "Această propunere are deja o nominalizare sau aprobare în muzeu."),
-    "consent": ("🏛️ Quote Museum · #{id}\nThe preceding message is the complete quote attributed to you, submitted in server {guild}, channel ID {channel}.\nAccepting confirms the attribution and makes it available throughout that server, including to members who cannot see the submission channel. Consent is for this quote only and expires after 24 hours: {deadline}.\nYou must still be a server member to accept. You can refuse now or withdraw later with the removal button, even after leaving the server. Deletion removes museum availability and active quizzes; it cannot recall screenshots or previously sent ordinary Discord messages.", "🏛️ Muzeul citatelor · #{id}\nMesajul precedent este citatul complet atribuit ție, propus pe serverul {guild}, canalul cu ID {channel}.\nAcceptarea confirmă atribuirea și îl face disponibil pe întregul server, inclusiv membrilor care nu pot vedea canalul propunerii. Acordul este doar pentru acest citat și expiră după 24 de ore: {deadline}.\nTrebuie să fii încă membru al serverului pentru a accepta. Poți refuza acum sau retrage ulterior cu butonul de ștergere, chiar după părăsirea serverului. Ștergerea elimină disponibilitatea în muzeu și quizurile active; nu poate retrage capturi de ecran sau mesaje Discord obișnuite trimise anterior."),
+    "consent_title": ("🏛️ Quote Museum · #{id}", "🏛️ Muzeul citatelor · #{id}"),
+    "quote_label": ("Quote attributed to you", "Citat atribuit ție"),
+    "server_label": ("Server", "Server"),
+    "channel_label": ("Channel", "Canal"),
+    "nominator_label": ("Submitted by", "Propus de"),
+    "consent_label": ("Your approval", "Acordul tău"),
+    "consent": ("Accepting confirms the attribution and makes this quote available throughout that server, including to members who cannot see the submission channel.\n\nConsent is for this quote only and expires after 24 hours: {deadline}. You must still be a server member to accept.\n\nYou can refuse now or withdraw later with the removal button, even after leaving the server. Deletion removes museum availability and active quizzes; it cannot recall screenshots or previously sent ordinary Discord messages.", "Acceptarea confirmă atribuirea și face citatul disponibil pe întregul server, inclusiv membrilor care nu pot vedea canalul propunerii.\n\nAcordul este doar pentru acest citat și expiră după 24 de ore: {deadline}. Trebuie să fii încă membru al serverului pentru a accepta.\n\nPoți refuza acum sau retrage ulterior cu butonul de ștergere, chiar după părăsirea serverului. Ștergerea elimină disponibilitatea în muzeu și quizurile active; nu poate retrage capturi de ecran sau mesaje Discord obișnuite trimise anterior."),
     "approved": ("Quote #{id} is approved for the entire source server. Only you can use this button to withdraw it, even after leaving. Deletion removes museum availability and active quizzes; it cannot recall screenshots or previously sent ordinary Discord messages.", "Citatul #{id} este aprobat pentru întregul server sursă. Doar tu poți folosi acest buton pentru a-l retrage, chiar după părăsirea serverului. Ștergerea elimină disponibilitatea în muzeu și quizurile active; nu poate retrage capturi de ecran sau mesaje Discord obișnuite trimise anterior."),
     "deleted": ("The quote was erased from the museum and related quizzes were revoked. Previously sent ordinary messages and screenshots cannot be recalled.", "Citatul a fost șters din muzeu și quizurile asociate au fost revocate. Mesajele obișnuite deja trimise și capturile de ecran nu pot fi retrase."),
     "declined": ("Consent refused. The pending quote was erased.", "Acord refuzat. Citatul în așteptare a fost șters."),
@@ -105,9 +111,13 @@ class QuoteMuseumFeature:
             if not quote["created"]:
                 await self._reply(interaction, _t("duplicate", language))
                 return None
-            sent.append(await author.send(quote["quote_text"], allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True))
-            consent = _t("consent", author_language, id=quote["id"], guild=safe_text(getattr(interaction.guild, "name", interaction.guild_id), 200), channel=quote["source_channel_id"], deadline=f"<t:{int(quote['consent_expires_at'])}:F>")
-            sent.append(await author.send(consent, view=QuoteConsentView(self, quote), allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True))
+            quoted = "\n".join("> " + line for line in safe_text(quote["quote_text"], 3000).split("\n"))
+            consent = discord.Embed(title=_t("consent_title", author_language, id=quote["id"]), description=f"**{_t('quote_label', author_language)}**\n{quoted}", colour=discord.Colour.gold())
+            consent.add_field(name=_t("server_label", author_language), value=safe_text(interaction.guild.name, 200))
+            consent.add_field(name=_t("channel_label", author_language), value="#" + safe_text(interaction.channel.name, 200))
+            consent.add_field(name=_t("nominator_label", author_language), value=f"{safe_text(interaction.user.display_name, 200)} · <@{interaction.user.id}>", inline=False)
+            consent.add_field(name=_t("consent_label", author_language), value=_t("consent", author_language, deadline=f"<t:{int(quote['consent_expires_at'])}:F>"), inline=False)
+            sent.append(await author.send(embed=consent, view=QuoteConsentView(self, quote), allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=False))
             result = await asyncio.to_thread(community.bind_quote_consent_message, quote["guild_id"], quote["id"], sent[-1].id, sent[-1].channel.id)
             if result["status"] != "bound":
                 raise ValueError("bind_failed")
@@ -145,7 +155,7 @@ class QuoteMuseumFeature:
 
     async def _edit_control(self, interaction, quote, content, disabled=False):
         try:
-            await interaction.message.edit(content=content, view=QuoteConsentView(self, quote, disabled), allowed_mentions=discord.AllowedMentions.none(), suppress=True)
+            await interaction.message.edit(content=content, embed=None, view=QuoteConsentView(self, quote, disabled), allowed_mentions=discord.AllowedMentions.none(), suppress=True)
             if not disabled:
                 self._restore(quote)
         except Exception:
@@ -303,7 +313,7 @@ class QuoteMuseumFeature:
                         if channel is None:
                             channel = await self.client.fetch_channel(quote["consent_channel_id"])
                         message = await channel.fetch_message(quote["consent_message_id"])
-                        await message.edit(content=text("expired", quote["language"]), view=QuoteConsentView(self, quote, disabled=True), allowed_mentions=discord.AllowedMentions.none(), suppress=True)
+                        await message.edit(content=text("expired", quote["language"]), embed=None, view=QuoteConsentView(self, quote, disabled=True), allowed_mentions=discord.AllowedMentions.none(), suppress=True)
                     except Exception:
                         await self._record("expiry", quote["guild_id"])
                 if len(page) < 100:

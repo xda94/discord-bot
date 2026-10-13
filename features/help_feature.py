@@ -181,6 +181,7 @@ HELP_TEXT = (
     "habits; edits affect future boards.\n\n"
     "**/quote-add** `<quote>` `<user>`\n"
     "Enter a quote (maximum 1,200 characters) and the server member who said it. "
+    "Their DM card frames the full quote and shows the server, channel name and submitter. "
     "The selected author has 24 hours to approve the exact text and attribution "
     "by DM for guild-wide access, including members without source-channel access. "
     "Blocked DMs cancel nomination.\n\n"

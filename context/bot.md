@@ -896,7 +896,13 @@ edits retry the same message; deleted/inaccessible messages store safe delivery
 errors for administration. Individual database/model failures do not stop later
 ticks. All content disables mentions and link previews where supported.
 
-Museum consent DMs include the exact submitted text and guild and warn that
+Museum consent DMs use one embed card with a labeled blockquote of the full
+submitted text and separate server, channel-name and submitting-member fields.
+The submitter's display name and mention identify who proposed the attribution;
+mentions are disabled. Accept/Decline controls are bound to that same message.
+Quote text and source names escape Markdown and mentions without truncating
+valid quotes. Control updates clear the consent embed when showing status.
+The approval explanation uses separate paragraphs and warns that
 approval confirms the attribution and shares it guild-wide, including with
 members lacking submission-channel access. The author must still be a member
 to accept within 24 hours. Bots, system authors, nonmembers and empty or oversized
