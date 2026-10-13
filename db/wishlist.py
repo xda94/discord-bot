@@ -37,18 +37,11 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
         return None
     except Exception:
         logger.exception(f"Failed to add scrape item: {url}")
-        # False is an explicit database failure; None means the unique row
-        # already existed. Callers can now report those cases accurately.
         return False
 
 def delete_scraped_item(user_id, url):
     try:
         with _connect(commit=True) as c:
-            # `PRAGMA foreign_keys = ON` (set in `_connect`) now makes the
-            # `ON DELETE CASCADE` on `price_history.item_id` work, so the
-            # explicit `DELETE FROM price_history` is no longer strictly
-            # required. Kept as belt-and-braces in case a future caller
-            # opens its own connection and forgets the pragma.
             c.execute("SELECT id FROM scraped_items WHERE user_id = ? AND url = ?", (user_id, url))
             row = c.fetchone()
             if row:
@@ -360,7 +353,6 @@ def clean_old_price_history(days=180):
     except Exception:
         logger.exception("Failed to clean old price history")
 
-# --- Exchange Rate functions ---
 
 def set_exchange_rate(currency, rate_to_eur):
     """Persist `rate_to_eur` for `currency` (the API's native format:

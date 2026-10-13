@@ -89,8 +89,6 @@ def _serialize_memory_user(scope_id, user_id):
             }
             for entry_id, kind, content, _source, created_at, updated_at in entries
         ],
-        # Retained as an empty field for API compatibility. Raw chat is held
-        # only as pending synthesis input and is never exposed as a transcript.
         "transcript": [],
     }
 
@@ -131,8 +129,6 @@ def api_set_memory_channel(guild_id, channel_id):
     if not set_llm_memory_channel_enabled(guild_id, channel_id, enabled):
         return jsonify({"error": "Could not update memory channel"}), 500
     if not enabled:
-        # Prevent persisted observations from a disabled channel being learned
-        # if it is enabled again later.
         delete_llm_memory_channel_observations(guild_id, channel_id)
     return jsonify(
         {

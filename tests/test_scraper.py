@@ -22,15 +22,12 @@ def _parse(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "html.parser")
 
 
-# ---------------------------------------------------------------------------
-# _is_valid_http_url
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("url", [
     "https://example.com",
     "http://example.com/path",
     "https://shop.altex.ro/product/123",
-    "  https://example.com  ",  # leading/trailing whitespace stripped
+    "  https://example.com  ",
 ])
 def test_is_valid_http_url_accepts(url):
     assert _is_valid_http_url(url) is True
@@ -46,15 +43,12 @@ def test_is_valid_http_url_accepts(url):
     "ftp://example.com",
     "http://",
     "not a url at all",
-    123,  # non-string
+    123,
 ])
 def test_is_valid_http_url_rejects(url):
     assert _is_valid_http_url(url) is False
 
 
-# ---------------------------------------------------------------------------
-# PriceScraper._currency_from_tld
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("url,expected", [
     ("https://altex.ro/product", "RON"),
@@ -78,9 +72,6 @@ def test_currency_from_tld_unknown(url):
     assert PriceScraper._currency_from_tld(url) is None
 
 
-# ---------------------------------------------------------------------------
-# _extract_from_json_ld
-# ---------------------------------------------------------------------------
 
 def test_json_ld_basic_product():
     soup = _parse('''
@@ -197,9 +188,6 @@ def test_json_ld_preorder_treated_as_in_stock():
     assert in_stock is True
 
 
-# ---------------------------------------------------------------------------
-# Meta-tag extractors
-# ---------------------------------------------------------------------------
 
 def test_meta_title_from_og_property():
     soup = _parse('<meta property="og:title" content="Hello">')
@@ -231,9 +219,6 @@ def test_meta_currency_missing_returns_none():
     assert PriceScraper._extract_meta_currency(soup) is None
 
 
-# ---------------------------------------------------------------------------
-# Text-fallback availability detection
-# ---------------------------------------------------------------------------
 
 def test_text_availability_negative_keyword_wins():
     """If both positive ("add to cart") and negative ("stoc epuizat")
@@ -272,8 +257,6 @@ def test_fetch_ignores_script_tags():
     scraper._http_get = lambda url: DummyResponse()
     
     result = scraper.fetch("https://example.com/test")
-    # "stoc epuizat" is in the script, so if it's not stripped, it would win.
-    # Since it is stripped, the "in stoc" in the body should win.
     assert result.in_stock is True
 
 

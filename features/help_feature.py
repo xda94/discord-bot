@@ -5,10 +5,6 @@ from discord import app_commands
 
 logger = logging.getLogger("discord_bot")
 
-# Discord rejects any single slash-command response > 2000 chars (the
-# interaction silently times out, which looks like a broken command from
-# the user's side). 1900 leaves a small safety margin for invisible
-# formatting overhead.
 DISCORD_MESSAGE_LIMIT = 1900
 
 MANUAL_MEMORY_HELP_TEXT = (
@@ -187,7 +183,9 @@ HELP_TEXT = (
     "Blocked DMs cancel nomination.\n\n"
     "**/quote** / **/who-said** / **/quote-delete** `<id>`\n"
     "Show approved museum quotes, quiz the author for ten minutes (at least two "
-    "distinct authors), or withdraw as author/Manage Messages moderator. Authors "
+    "distinct authors), or withdraw as author/Manage Messages moderator. "
+    "Authors and quiz choices show member mentions; numbered answer buttons "
+    "distinguish members with the same name. Authors "
     "also have a persistent removal control in their consent DM, even after leaving. "
     "Deletion revokes quizzes and stored text but cannot recall screenshots or "
     "previous ordinary messages.\n\n"

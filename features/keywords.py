@@ -43,8 +43,6 @@ class KeywordsFeature:
         self.tree = tree
         self.gate = gate
         self.sponsors = sponsors
-        # Per (guild_id, keyword) so the same keyword in two servers doesn't
-        # share the "don't repeat last response" state.
         self._last_used: dict[str, str] = {}
         self._register_commands()
 

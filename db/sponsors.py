@@ -27,9 +27,6 @@ def _read_catalog_value(cursor) -> dict[str, dict[str, Any]]:
     row = cursor.fetchone()
     if row is None:
         return deepcopy(DEFAULT_SPONSOR_TIERS)
-    # decode_tier_catalog is deliberately called here rather than replacing a
-    # malformed value with defaults. Operators need to see and repair corrupt
-    # configuration instead of receiving a successful but misleading write.
     from sponsor_tiers import decode_tier_catalog
 
     return decode_tier_catalog(row[0])
@@ -60,7 +57,6 @@ def save_sponsor_tier(
     conn = sqlite3.connect(connection.DB_FILE, timeout=30)
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        # Serialize read/merge/write cycles across the bot and Flask process.
         conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         catalog = _read_catalog_value(cursor)
@@ -82,8 +78,6 @@ def save_sponsor_tier(
                 )
 
         catalog[tier_id] = tier
-        # Revalidate the merged catalog before writing, including duplicate
-        # names in any pre-existing custom/default data.
         catalog = validate_catalog(catalog)
         payload = _encode_saved_catalog(catalog)
         cursor.execute(

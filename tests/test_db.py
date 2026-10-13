@@ -214,9 +214,6 @@ def test_memory_entry_schema_migrates_to_all_memory_categories(tmp_path, monkeyp
     assert db.get_llm_memory_entries(100, 9)[0][1] == "opinion"
 
 
-# ---------------------------------------------------------------------------
-# Responses CRUD (per-guild)
-# ---------------------------------------------------------------------------
 
 def test_responses_add_get_remove(tmp_db):
     assert db.add_response("hello", "world", GUILD_A) is True
@@ -239,9 +236,6 @@ def test_responses_are_isolated_per_guild(tmp_db):
     assert db.get_all_responses(GUILD_B) == {"ping": ["guild-b"]}
 
 
-# ---------------------------------------------------------------------------
-# Birthday persistence
-# ---------------------------------------------------------------------------
 
 def test_birthdays_table_is_created_and_init_is_repeatable(tmp_db):
     with db._connect() as c:
@@ -330,14 +324,11 @@ def test_remove_response_returns_false_when_missing(tmp_db):
     assert db.remove_response("never_added", GUILD_A) is False
 
 
-# ---------------------------------------------------------------------------
-# Response TTL cache
-# ---------------------------------------------------------------------------
 
 def test_cache_invalidated_immediately_on_add(tmp_db):
     """An add in this process must be visible on the very next read,
     regardless of TTL — `add_response` calls `_invalidate_responses_cache`."""
-    db.get_all_responses(GUILD_A)  # warm the cache (empty)
+    db.get_all_responses(GUILD_A)
     db.add_response("kw", "value", GUILD_A)
     assert db.get_all_responses(GUILD_A) == {"kw": ["value"]}
 
@@ -368,7 +359,7 @@ def test_failed_response_write_preserves_cache_and_database(tmp_db, monkeypatch,
 
 def test_cache_invalidated_immediately_on_remove(tmp_db):
     db.add_response("kw", "value", GUILD_A)
-    db.get_all_responses(GUILD_A)  # warm the cache
+    db.get_all_responses(GUILD_A)
     db.remove_response("kw", GUILD_A)
     assert db.get_all_responses(GUILD_A) == {}
 
@@ -403,16 +394,12 @@ def test_cache_is_per_guild(tmp_db):
     assert db.get_all_responses(GUILD_B) is cached_b
 
 
-# ---------------------------------------------------------------------------
-# Scraped-item tri-state stock
-# ---------------------------------------------------------------------------
 
 def test_add_scraped_item_stock_true_stored_as_one(tmp_db):
     item_id = db.add_scraped_item(123, "https://example.com/a", stock=True)
     assert item_id
     items = db.get_user_scraped_items(123)
     assert len(items) == 1
-    # Tuple shape: (url, last_price, last_stock_status, title, currency)
     assert items[0][2] == 1
 
 
@@ -437,9 +424,6 @@ def test_add_scraped_item_rejects_duplicate_url(tmp_db):
     assert second is None
 
 
-# ---------------------------------------------------------------------------
-# update_scraped_item_status: COALESCE semantics
-# ---------------------------------------------------------------------------
 
 def test_update_preserves_fields_passed_as_none(tmp_db):
     """All five user-supplied fields must be COALESCE'd — passing `None` for
@@ -449,7 +433,6 @@ def test_update_preserves_fields_passed_as_none(tmp_db):
         123, "https://example.com/x",
         title="Original", price=10.0, stock=True, currency="EUR",
     )
-    # Partial update: only `price` carries new data.
     db.update_scraped_item_status(
         item_id, price=15.0, in_stock=None, title=None, currency=None,
     )
@@ -480,12 +463,9 @@ def test_update_stock_none_does_not_flip_status(tmp_db):
     must NOT silently flip a known in-stock item to OOS."""
     item_id = db.add_scraped_item(123, "https://example.com/x", stock=True)
     db.update_scraped_item_status(item_id, price=10.0, in_stock=None)
-    assert db.get_user_scraped_items(123)[0][2] == 1  # still in stock
+    assert db.get_user_scraped_items(123)[0][2] == 1
 
 
-# ---------------------------------------------------------------------------
-# Foreign-key cascade on delete
-# ---------------------------------------------------------------------------
 
 def test_delete_scraped_item_removes_price_history(tmp_db):
     """With `PRAGMA foreign_keys = ON` (set in `_connect`) the cascade on
@@ -520,9 +500,6 @@ def test_scraped_item_preferences_and_check_status_round_trip(tmp_db):
     assert cleared[9:12] == (None, None, 0)
 
 
-# ---------------------------------------------------------------------------
-# LLM response feedback
-# ---------------------------------------------------------------------------
 
 def test_llm_feedback_keeps_only_compact_rating_metadata(tmp_db):
     assert db.track_llm_response(1001, 123, "mention")
@@ -611,9 +588,6 @@ def test_llm_feedback_summary_failure_handling(monkeypatch, caplog, failure, opt
     assert record.exc_info[1] is error
 
 
-# ---------------------------------------------------------------------------
-# Persistent LLM user memory
-# ---------------------------------------------------------------------------
 
 def test_llm_memory_channel_configuration_defaults_off_and_is_scoped(tmp_db):
     assert db.is_llm_memory_channel_enabled(1, 10) is False
@@ -660,9 +634,6 @@ def test_llm_memory_preference_round_trip(tmp_db):
     assert db.get_llm_memory_preference(100, 7) is True
 
 
-# ---------------------------------------------------------------------------
-# Guild activity (used by InactivityFeature)
-# ---------------------------------------------------------------------------
 
 def test_guild_activity_upsert_per_guild(tmp_db):
     db.set_guild_activity(guild_id=1, last_time=100.0, channel_id=10)
@@ -693,24 +664,14 @@ def test_guild_inactivity_setting_is_isolated_per_guild(tmp_db):
     assert db.is_guild_inactivity_enabled(1) is True
 
 
-# ---------------------------------------------------------------------------
-# Exchange rates
-# ---------------------------------------------------------------------------
 
 def test_exchange_rate_round_trip(tmp_db):
-    # Stored rate is "units of <currency> per 1 EUR" — for DKK that's
-    # roughly 7.45. The round-trip just confirms persistence and the
-    # case-normalisation behaviour.
     db.set_exchange_rate("DKK", 7.45)
     assert db.get_exchange_rate("DKK") == 7.45
-    # Lookup is case-insensitive (storage normalises to upper).
     assert db.get_exchange_rate("dkk") == 7.45
     assert db.get_exchange_rate("XYZ") is None
 
 
-# ---------------------------------------------------------------------------
-# get_all_jokes regression: returns [] (not None) on error
-# ---------------------------------------------------------------------------
 
 def test_get_all_jokes_empty_when_no_data(tmp_db):
     """Smoke test that we get an empty list, not None — the API's `/jokes`
@@ -719,9 +680,6 @@ def test_get_all_jokes_empty_when_no_data(tmp_db):
     assert result == []
 
 
-# ---------------------------------------------------------------------------
-# Per-guild joke schedule (guild_joke_config)
-# ---------------------------------------------------------------------------
 
 def test_guild_joke_config_round_trip(tmp_db):
     """Activate one guild, read it back, verify field shape."""
@@ -751,7 +709,6 @@ def test_guild_joke_config_upsert_preserves_last_sent_date(tmp_db):
     joke fired would get a duplicate the next time the loop ticks."""
     db.set_guild_joke_config(111, 222, "09:00")
     db.set_guild_joke_last_sent(111, "2026-06-02")
-    # Re-activate with a different time but same day.
     db.set_guild_joke_config(111, 222, "11:00")
     cfg = db.get_guild_joke_config(111)
     assert cfg["last_sent_date"] == "2026-06-02"
@@ -807,15 +764,11 @@ def test_clear_guild_joke_config_preserves_sent_history(tmp_db):
     db.set_guild_joke_config(111, 222, "09:00")
     db.mark_guild_joke_sent(111, 1)
     db.clear_guild_joke_config(111)
-    # Sent row still there.
     with db._connect() as c:
         c.execute("SELECT COUNT(*) FROM guild_joke_sent WHERE guild_id = ?", (111,))
         assert c.fetchone()[0] == 1
 
 
-# ---------------------------------------------------------------------------
-# Per-guild sent tracking (guild_joke_sent)
-# ---------------------------------------------------------------------------
 
 def test_get_unsent_joke_for_guild_returns_unsent(tmp_db):
     db.add_joke("a")
@@ -828,8 +781,7 @@ def test_get_unsent_joke_for_guild_returns_unsent(tmp_db):
 def test_get_unsent_joke_for_guild_skips_already_sent_for_that_guild(tmp_db):
     db.add_joke("a")
     db.add_joke("b")
-    db.mark_guild_joke_sent(111, 1)  # mark "a" as sent in guild 111
-    # Repeatedly pick: must always return "b" (id=2) for guild 111.
+    db.mark_guild_joke_sent(111, 1)
     for _ in range(10):
         joke_id, text = db.get_unsent_joke_for_guild(111)
         assert joke_id == 2
@@ -854,7 +806,6 @@ def test_sent_tracking_is_per_guild(tmp_db):
     whole reason guild_joke_sent exists instead of jokes.sent."""
     db.add_joke("only joke")
     db.mark_guild_joke_sent(111, 1)
-    # Guild 222 hasn't sent anything — joke is still available there.
     result = db.get_unsent_joke_for_guild(222)
     assert result is not None
     assert result[0] == 1
@@ -865,7 +816,7 @@ def test_mark_guild_joke_sent_is_idempotent(tmp_db):
     sent_at, doesn't raise UNIQUE constraint."""
     db.add_joke("a")
     db.mark_guild_joke_sent(111, 1)
-    db.mark_guild_joke_sent(111, 1)  # must not raise
+    db.mark_guild_joke_sent(111, 1)
     with db._connect() as c:
         c.execute(
             "SELECT COUNT(*) FROM guild_joke_sent WHERE guild_id = ? AND joke_id = ?",
@@ -879,7 +830,6 @@ def test_reset_guild_joke_sent_only_clears_target_guild(tmp_db):
     db.mark_guild_joke_sent(111, 1)
     db.mark_guild_joke_sent(222, 1)
     db.reset_guild_joke_sent(111)
-    # Guild 111's pool is fresh; guild 222 still has the joke as sent.
     assert db.get_unsent_joke_for_guild(111) is not None
     assert db.get_unsent_joke_for_guild(222) is None
 

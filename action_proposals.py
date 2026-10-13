@@ -100,8 +100,6 @@ def authorize_proposal(proposal,text,replied_text=''):
         raise ValueError('Message does not authorize an action')
     if re.search(r"\b(?:si apoi|and then|apoi|then)\b|\b(?:and|si)\s+(?:track|watch|monitor|urmareste|show|list|arata|afiseaza|remind|aminteste|adu|set|seteaza|notify|anunta|delete|remove|sterge|cancel|anuleaza|refresh|actualizeaza|graph|grafic|compare|compara)\b",current):
         raise ValueError('Multiple actions')
-    # Require an action-bearing verb in the current message. A fabricated
-    # empty-slot list proposal from ordinary conversation must not execute.
     commands = {
         'track': r'(?:track|watch|monitor|follow|urmareste|monitorizeaza|adauga)',
         'wishlist': r'(?:show|list|display|arata|afiseaza|lista)',

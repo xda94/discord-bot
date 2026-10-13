@@ -162,7 +162,6 @@ def test_long_mention_reply_only_pings_requester_in_first_chunk():
     chunks = [first.args[0]] + [call.args[0] for call in channel.send.await_args_list]
     assert len(chunks) > 1
     assert chunks[0].startswith("<@123> ")
-    # The existing splitter trims whitespace at chunk boundaries.
     assert "".join(chunks).replace(" ", "") == ("<@123> " + text).replace(" ", "")
     assert all(len(chunk) <= DISCORD_SAFE_LIMIT for chunk in chunks)
     assert first.kwargs["allowed_mentions"].to_dict() == {"parse": [], "users": [123]}
@@ -378,7 +377,6 @@ def test_memory_scheduler_waits_only_remaining_rest_interval(monkeypatch):
     feature._memory_last_finished = None
 
     async def admit(_batch, _model, *, reservation):
-        # The worker finishes ten seconds after the first scan admits it.
         feature._memory_last_finished = clock[0] + 10
         reservation.release()
         return True

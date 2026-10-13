@@ -60,7 +60,6 @@ EXAMPLE_CASES = [
 @pytest.mark.parametrize("language,category,example,expected", EXAMPLE_CASES)
 def test_every_published_example_parses_exactly(language, category, example, expected, monkeypatch):
     monkeypatch.setattr("command_time.time.time", lambda: NOW)
-    # Reply examples explicitly carry exactly one URL; no invisible recent context.
     replied_text = f"Product: {URL}" if example in ("track this", "urmărește asta") else ""
     parsed = parse_natural_command(example, replied_text=replied_text)
     assert parsed == expected

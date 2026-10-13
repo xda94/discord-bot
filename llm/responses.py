@@ -84,7 +84,6 @@ def format_chat_line(
     if is_bot:
         return f'You ({author}) said: "{content}"'
     if bot_name:
-        # Small models miss that their own name in someone else's message means them.
         content = re.sub(
             rf"(?<!\w)@?{re.escape(bot_name)}(?!\w)",
             f"{bot_name} (you)",
@@ -245,8 +244,6 @@ def build_mention_prompt(
     json_reply: bool = False,
 ) -> str:
     """Build one user prompt that turns chat history into reply context."""
-    # Everything that varies per request comes after the shared head, so
-    # llama.cpp can skip re-reading the rules on every mention.
     prompt = build_mention_prompt_head(
         has_history=bool(context_messages),
         language=assistant_profile.language,
@@ -292,8 +289,6 @@ def build_mention_prompt(
             )
         prompt += "\n"
 
-    # Not in the shared head: history rarely repeats between mentions, and
-    # answers held up better with it right before the question.
     if context_messages:
         prompt += "<chat_history>\n"
         for msg in context_messages:
@@ -312,8 +307,6 @@ def build_mention_prompt(
     _, language_reminder = _language_rules(
         assistant_profile.language, bool(context_messages)
     )
-    # Small models follow the final lines most; these short reminders also
-    # stopped the bot from giving in when told it was wrong.
     return prompt + (
         f'<current_message from="{safe_username}">\n{safe_content}\n</current_message>\n\n'
         + ("Return JSON.\n\n" if json_reply else "")
@@ -387,8 +380,6 @@ REACTION_RESPONSE_SCHEMA = {
 
 
 def _normalized_comparison_text(value: str) -> str:
-    # Romanian chat often omits diacritics. Restoring them in the model output
-    # must not disguise a copied question as a new answer.
     decomposed = unicodedata.normalize("NFKD", html.unescape(value).casefold())
     unaccented = "".join(char for char in decomposed if not unicodedata.combining(char))
     return " ".join(re.findall(r"\w+", unaccented, flags=re.UNICODE))
@@ -401,8 +392,6 @@ def _is_obvious_echo(reply: str, current_message: str) -> bool:
         return False
     message_words = message_text.split()
     reply_words = reply_text.split()
-    # Reject exact copies at any length, including repeated copies. A reply
-    # that quotes the question and then actually answers it remains valid.
     repeats, remainder = divmod(len(reply_words), len(message_words))
     return repeats > 0 and remainder == 0 and reply_words == message_words * repeats
 
@@ -637,8 +626,6 @@ def generate_mention_result(
             rejection_reason = (
                 "malformed JSON" if isinstance(exc, json.JSONDecodeError) else str(exc)
             )
-            # Parser errors contain fixed validation messages or JSON positions,
-            # never the user's prompt or the generated response itself.
             logger.warning(
                 "Mention LLM attempt %s failed for user=%s model=%s (%s): %s",
                 attempt + 1,

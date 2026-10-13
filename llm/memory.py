@@ -16,16 +16,12 @@ logger = logging.getLogger("discord_bot")
 
 DM_SCOPE_ID = 0
 OBSERVATION_MESSAGE_MAX_CHARS = 2000
-# Keep extraction small enough for the CPU host's short context. These are
-# character budgets, not tokenizer-specific context guarantees.
 SYNTHESIS_CHUNK_MAX_CHARS = 3000
 SYNTHESIS_CHUNK_MAX_MESSAGES = 10
 SYNTHESIS_ENTRIES_MAX_CHARS = 2000
 PRIVATE_MESSAGE_CHUNK = 1900
 MEMORY_CYCLE_MIN_OBSERVATIONS = 50
 MEMORY_OBSERVATION_MIN_AGE_SECONDS = 10 * 60
-# Import-compatible alias for callers that imported the old constant. The
-# scheduler no longer uses a daily age threshold.
 MEMORY_SYNTHESIS_INTERVAL_SECONDS = MEMORY_OBSERVATION_MIN_AGE_SECONDS
 MEMORY_CONFIG_CACHE_SECONDS = 30
 MANUAL_MEMORY_ENTRY_MAX_CHARS = 200
@@ -170,7 +166,6 @@ class MemoryStore:
         scope_id = _scope_id(guild_id)
         preference = self._preference(scope_id, user_id)
         if guild_id is None:
-            # DMs have no server manager, so they require explicit user opt-in.
             return preference is True
         return (
             (guild_id, channel_id) in self._enabled_channels
@@ -181,8 +176,6 @@ class MemoryStore:
         self._generations[key] = self._generations.get(key, 0) + 1
         if clear:
             self._buffers.pop(key, None)
-            # Include rows written by the API or another process, not only
-            # this feature instance's deque.
             observation_ids = (
                 row[0]
                 for row in db.get_llm_memory_observations(*key)
@@ -297,7 +290,6 @@ class MemoryStore:
             overlap = len(query_words & self._search_words(content))
             ranked.append((overlap, updated, entry_id, kind, content))
         ranked.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-        # Retrieval, rather than storage eviction, keeps prompt input bounded.
         selected = ranked[:50]
         return "\n".join(
             f"- [{kind} #{entry_id}] {content}"
@@ -330,8 +322,6 @@ class MemoryStore:
         key = (scope_id, user_id)
         self._sync_buffer(key)
         profile = self._selected_entry_text(scope_id, user_id, query)
-        # A legacy profile created after startup remains readable until the
-        # next init_db migration (useful to API callers during a rolling update).
         if not profile:
             profile = db.get_llm_user_memory(scope_id, user_id) or ""
         observations = self._buffers.get(key)
@@ -458,7 +448,6 @@ class MemoryStore:
     def synthesis_chunks(batch: MemoryBatch) -> tuple[MemoryBatch, ...]:
         """Split one channel-cycle author group without dropping observations."""
         if len(batch.observation_ids) != len(batch.observations):
-            # Compatibility for manually constructed batches in callers/tests.
             return (batch,)
         chunks = []
         current_ids = []
@@ -536,9 +525,6 @@ class MemoryStore:
                 user_id not in invalidated_users
                 and self._preference(scope_id, user_id) is False
             ):
-                # A row may have been written by another process after the
-                # opt-out cache was populated. Remove it before it can block
-                # completion of an active channel cycle.
                 self._invalidate_key((scope_id, user_id), clear=True)
                 invalidated_users.add(user_id)
         return permitted

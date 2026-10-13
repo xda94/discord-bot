@@ -12,7 +12,6 @@ from db.connection import _connect
 
 logger = logging.getLogger("database")
 
-# --- Deployer analytics ----------------------------------------------------
 
 _ANALYTICS_CATEGORIES = {
     "command", "mention", "control", "automatic", "scheduled", "processing", "feedback",

@@ -142,9 +142,6 @@ def api_add_flight_tracker():
     )
     if not tracker_id:
         return jsonify({"error": "That exact tracker already exists"}), 409
-    # Unlike the Discord command, this data/config route intentionally does
-    # not make an immediate paid provider request. The normal bot cadence will
-    # pick it up using the user's stored credentials.
     return jsonify(get_flight_tracker(tracker_id, values["user_id"])), 201
 
 
@@ -200,7 +197,6 @@ def api_get_flight_tracker_history(tracker_id):
     )
 
 
-# --- Settings Routes ---
 
 
 @blueprint.route('/flights/trackers/<int:tracker_id>',methods=['PATCH'])

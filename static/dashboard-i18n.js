@@ -4,6 +4,7 @@
     "Community games":"Jocuri de comunitate",
     "Manage shared games, weekly habits, approved quotes, and symbolic titles.":"Gestionează jocurile comune, obiceiurile săptămânale, citatele aprobate și titlurile simbolice.",
     "Command guide":"Ghidul comenzilor",
+    "Discord game messages show member mentions and server/channel names. Quiz answer buttons use numbered names; quote and habit numbers remain management references.":"Mesajele jocurilor din Discord arată mențiunile membrilor și numele serverelor/canalelor. Butoanele quizului au nume numerotate; numerele citatelor și obiceiurilor rămân referințe pentru administrare.",
     "All human server members can vote Guilty/Innocent immediately for ten minutes; ties and no votes are neutral.":"Toți membrii umani ai serverului pot vota imediat Vinovat/Nevinovat timp de zece minute; egalitatea și lipsa voturilor sunt neutre.",
     "Choose two to five options separated by |; ten-minute voting, neutral ties.":"Alege două până la cinci opțiuni separate prin |; vot de zece minute, egalitățile sunt neutre.",
     "Privately list all accepted, unexpired active server quests. Optional user:@member filters by recipient. Links open the original message, where only the recipient can complete or abandon the quest.":"Afișează privat toate questurile acceptate, active și neexpirate din server. Câmpul opțional user:@membru filtrează după destinatar. Linkurile deschid mesajul original, unde doar destinatarul poate finaliza sau abandona questul.",
@@ -214,7 +215,6 @@
         let original = originals.get(node);
         if (!original && Object.hasOwn(ro, trimmed)) { original = node.textContent; originals.set(node, original); }
         if (!original) continue;
-        // A dynamic renderer may reuse a node. Discard stale source labels.
         if (trimmed !== original.trim() && trimmed !== ro[original.trim()]) {
           if (!Object.hasOwn(ro, trimmed)) { originals.delete(node); continue; }
           original = node.textContent; originals.set(node, original);

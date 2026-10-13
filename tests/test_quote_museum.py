@@ -412,21 +412,52 @@ def test_quiz_pool_paginates_to_find_second_author(tmp_db):
 def test_quiz_shared_display_names_remain_distinguishable_in_buttons(tmp_db):
     for index in range(4):
         quote(author=1234567890123456700 + index, approved=True, message_id=1000 + index, name="a" * 100)
-    worker = feature()
-    assert asyncio.run(worker.quiz(interaction())) == "quiz"
-    candidates = worker.games.create_quiz.call_args.args[2]
-    assert len({candidate["name"] for candidate in candidates}) == 4
-    assert all(len(candidate["name"]) <= 80 and str(candidate["user_id"]) in candidate["name"] for candidate in candidates)
+    value = interaction()
+    client = discord.Client(intents=discord.Intents.none())
+    games = SocialGamesFeature(client, app_commands.CommandTree(client))
+    row = asyncio.run(feature(value, games).quiz(value))
+    sent = value.channel.send.call_args
+    labels = [button.label for button in sent.kwargs["view"].children]
+    assert len(set(labels)) == 4 and all(len(label) <= 80 for label in labels)
+    for index, candidate in enumerate(row["payload"]["candidates"]):
+        assert labels[index].startswith(f"{index + 1}. ")
+        assert str(candidate["user_id"]) not in candidate["name"] and str(candidate["user_id"]) not in labels[index]
+        assert f"<@{candidate['user_id']}>" in sent.args[0]
+    assert sent.kwargs["allowed_mentions"].users is False
 
 
 def test_quiz_different_names_that_truncate_identically_are_distinguished(tmp_db):
     quote(approved=True, name="a" * 80 + "Alice")
     quote(author=46, approved=True, message_id=91, name="a" * 80 + "Bob")
-    worker = feature()
-    assert asyncio.run(worker.quiz(interaction())) == "quiz"
-    candidates = worker.games.create_quiz.call_args.args[2]
-    assert len({candidate["name"] for candidate in candidates}) == 2
-    assert all(str(candidate["user_id"]) in candidate["name"] for candidate in candidates)
+    value = interaction()
+    client = discord.Client(intents=discord.Intents.none())
+    games = SocialGamesFeature(client, app_commands.CommandTree(client))
+    row = asyncio.run(feature(value, games).quiz(value))
+    labels = [button.label for button in value.channel.send.call_args.kwargs["view"].children]
+    assert len(set(labels)) == 2 and all(len(label) <= 80 for label in labels)
+    assert all(str(candidate["user_id"]) not in candidate["name"] for candidate in row["payload"]["candidates"])
+
+
+@pytest.mark.parametrize("language", ["en", "ro"])
+@pytest.mark.parametrize("name", ["123456789012345678", "Ada (123456789012345678)"])
+def test_legacy_quote_author_ids_are_replaced_with_readable_names_and_mentions(tmp_db, language, name):
+    quote(author=123456789012345678, approved=True, name=name)
+    value = interaction(language=language)
+    assert asyncio.run(feature().quote(value))
+    content = value.channel.send.call_args.args[0]
+    assert "<@123456789012345678>" in content
+    assert "123456789012345678" not in content.replace("<@123456789012345678>", "")
+    assert ("Ada" if name.startswith("Ada") else museum.text("unknown_member", language)) in content
+    assert value.channel.send.call_args.kwargs["allowed_mentions"].users is False
+
+
+@pytest.mark.parametrize("language", ["en", "ro"])
+def test_nomination_without_author_name_does_not_store_an_id_label(tmp_db, language):
+    value = interaction()
+    proposed = submission(value, author_id=123456789012345678, language=language)
+    proposed.author.display_name = proposed.author.name = None
+    row = asyncio.run(feature().nominate(value, proposed.content, proposed.author))
+    assert row["author_name"] == museum.text("unknown_member", language)
 
 
 def test_real_social_quiz_integration_without_model(tmp_db, monkeypatch):

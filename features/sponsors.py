@@ -27,8 +27,6 @@ from sponsor_tiers import (
 
 logger = logging.getLogger("discord_bot")
 
-# Compatibility mapping for code/tests that imported the old module constant.
-# Runtime consumers use the persisted catalog through `_get_catalog` instead.
 SPONSOR_TIERS = {
     tier_id: {
         **deepcopy(tier),
@@ -51,8 +49,6 @@ def _catalog_items(catalog: dict[str, dict[str, Any]]):
 
 
 def _tier_price(tier: dict[str, Any]) -> str:
-    # The compatibility `price` key is intentionally honored for callers that
-    # still customize the old module-level mapping in tests/extensions.
     return tier.get("price") or format_annual_price(tier["price_per_year"])
 
 
@@ -212,8 +208,6 @@ class _SponsorTierModal(discord.ui.Modal, title="Edit Sponsor Tier"):
             return
 
         try:
-            # Re-check the selected ID against the latest catalog because the
-            # modal may have remained open while another process edited it.
             catalog = self._feature._get_catalog()
             if self._tier_id is not None and self._tier_id not in catalog:
                 raise UnknownTierError("That tier no longer exists; reopen the editor.")
@@ -257,12 +251,8 @@ class SponsorsFeature:
         self.sponsor: str | None = db.get_setting("sponsor") or None
         set_at = db.get_setting("sponsor_set_at")
         self.sponsor_set_at: float | None = float(set_at) if set_at else None
-        # Retain an unknown persisted ID so a temporarily missing custom tier
-        # is not silently rewritten; consumers apply the standard fallback.
         self.sponsor_tier: str = db.get_setting("sponsor_tier") or "standard"
         self.sponsor_custom_message: str | None = db.get_setting("sponsor_custom_message") or None
-        # Persisted so we don't re-announce the "expires in 1 day" warning on
-        # every bot restart that lands inside the final-day window.
         self.sponsor_warned: bool = db.get_setting("sponsor_warned") == "1"
 
         self._register_commands()
@@ -422,8 +412,6 @@ class SponsorsFeature:
             one_day_before = ONE_YEAR_SECONDS - ONE_DAY_SECONDS
 
             if elapsed >= one_day_before and not self.sponsor_warned:
-                # Persist *before* sending so a crash mid-broadcast still
-                # prevents a duplicate warning on the next bot start.
                 self.sponsor_warned = True
                 db.set_setting("sponsor_warned", "1")
                 for guild in self.client.guilds:

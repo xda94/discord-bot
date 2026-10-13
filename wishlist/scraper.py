@@ -27,22 +27,9 @@ from bs4 import BeautifulSoup
 from llm.client import query_llm
 from llm.capacity import CapacityError
 
-# Distinct logger name so the bot's "discord_bot" file handler and the API's
-# "flask_api" file handler can both pick this up via the setup wired in
-# `logger.py`. Without that attachment these messages go nowhere when the
-# module is imported from either process.
 logger = logging.getLogger("scraper")
 
 
-# ---------------------------------------------------------------------------
-# Optional curl_cffi for TLS fingerprint impersonation
-# ---------------------------------------------------------------------------
-#
-# `curl_cffi` mimics a real Chrome TLS+HTTP/2 fingerprint, which bypasses the
-# bot-detection used by most Romanian e-commerce sites (Altex, eMag, Cel.ro).
-# If it isn't installed we fall back to plain `requests` so the bot still
-# starts, just with the original "blocked by Cloudflare" limitation for those
-# sites. Install with `pip install curl_cffi`.
 
 try:
     from curl_cffi import requests as impersonated_http
@@ -58,13 +45,9 @@ except ImportError:
     )
 
 
-# ---------------------------------------------------------------------------
-# Result type
-# ---------------------------------------------------------------------------
 
-# Possible values for ScrapeResult.failure.
-FAILURE_BLOCKED = "blocked"          # transport-level: timeout, conn refused, 4xx/5xx
-FAILURE_UNSUPPORTED = "unsupported"  # HTML fetched OK but no structured data
+FAILURE_BLOCKED = "blocked"
+FAILURE_UNSUPPORTED = "unsupported"
 FAILURE_BUSY = "busy"
 FAILURE_DATABASE = "database-error"
 
@@ -123,14 +106,9 @@ class ScrapeResult:
 
     @property
     def has_data(self) -> bool:
-        # `in_stock` counts here too — a successful text-fallback stock read
-        # is a real signal even when price/title/currency are missing.
         return _normalize_price(self.price) is not None or isinstance(self.in_stock, bool)
 
 
-# ---------------------------------------------------------------------------
-# URL helpers
-# ---------------------------------------------------------------------------
 
 
 def _domain(url: str) -> str:
@@ -202,9 +180,6 @@ def _resolve_public_url(url):
     return parsed, host, port, addresses
 
 
-# ---------------------------------------------------------------------------
-# Scraper
-# ---------------------------------------------------------------------------
 
 
 class PriceScraper:
@@ -220,13 +195,8 @@ class PriceScraper:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
-    # Chrome version to impersonate via curl_cffi. Bumping this occasionally
-    # keeps the fingerprint fresh.
     IMPERSONATE_TARGET = "chrome124"
     MAX_PAGE_BYTES = 5 * 1024 * 1024
-    # These Romanian phrases are intentional — they're matched against the
-    # page HTML to detect stock status on RO e-commerce sites that don't
-    # provide structured data. Do not translate; add more languages instead.
     OUT_OF_STOCK_KEYWORDS = (
         "stoc epuizat", "indisponibil", "nu este in stoc",
         "lipsa stoc", "out of stock", "momentan indisponibil",
@@ -235,8 +205,6 @@ class PriceScraper:
         "in stoc", "în stoc", "disponibil",
         "adauga in cos", "adaugă în coș", "add to cart",
     )
-    # Keep this conservative — only TLDs that are unambiguously tied to one
-    # currency belong here. Avoid `.com`, multi-currency domains, etc.
     TLD_CURRENCY_FALLBACKS = {
         "dk": "DKK",
         "ro": "RON",
@@ -247,8 +215,6 @@ class PriceScraper:
         try:
             response = self._http_get(url)
         except Exception as e:
-            # Transport-level failure: timeout, conn refused, TLS reject, etc.
-            # Almost always a bot-block on Romanian e-commerce sites.
             logger.error(f"Scraping transport error for {url}: {e}")
             return ScrapeResult(failure=FAILURE_BLOCKED)
 
@@ -273,22 +239,14 @@ class PriceScraper:
             if in_stock is None:
                 in_stock = self._extract_meta_availability(soup)
             
-            # Strip out script and style elements before text fallback / LLM extraction
-            # This avoids falsely matching out-of-stock translation keys in JSON bundles.
             for element in soup(["script", "style"]):
                 element.decompose()
             clean_text = soup.get_text(separator=' ', strip=True)
 
             if in_stock is None:
                 in_stock = self._extract_text_availability(clean_text)
-            # NOTE: deliberately do NOT coerce `in_stock=None` to False here.
-            # Unknown stock status is propagated up so the scrape loop can
-            # leave the persisted value alone (via COALESCE) instead of
-            # mis-stamping the item as out-of-stock.
 
             if price is None and in_stock is None:
-                # Fall back to LLM extraction if standard methods failed
-                # Extract clean text and truncate to avoid huge context windows
                 llm_price, llm_title, llm_currency, llm_stock = self._extract_with_llm(
                     clean_text, capacity_policy=capacity_policy
                 )
@@ -395,9 +353,6 @@ class PriceScraper:
                     for offer in offer_list:
                         if not isinstance(offer, dict):
                             continue
-                        # Price may sit directly on the offer or inside a nested
-                        # PriceSpecification object (Schema.org's more formal
-                        # form used by Altex, eMag, and others).
                         spec = offer.get("priceSpecification") or {}
                         if isinstance(spec, list):
                             spec = spec[0] if spec else {}
@@ -470,8 +425,6 @@ class PriceScraper:
     @classmethod
     def _extract_text_availability(cls, html_text: str):
         text_lower = html_text.lower()
-        # Check negative keywords first so "out of stock" doesn't get overridden
-        # by a generic "in stoc" sitting elsewhere on the page.
         if any(k in text_lower for k in cls.OUT_OF_STOCK_KEYWORDS):
             return False
         if any(k in text_lower for k in cls.IN_STOCK_KEYWORDS):
@@ -480,7 +433,6 @@ class PriceScraper:
 
     @staticmethod
     def _extract_with_llm(text: str, *, capacity_policy="interactive") -> tuple[float | None, str | None, str | None, bool | None]:
-        # Truncate text to roughly 3000 words to save context
         words = text.split()
         if len(words) > 3000:
             text = " ".join(words[:3000])

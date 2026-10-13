@@ -35,16 +35,6 @@ from wishlist.scraper import (
 
 logger = logging.getLogger("discord_bot")
 
-# Size of the rolling per-item price-history window. At every scrape pass
-# the loop trims rows older than this many days, so each tracked item
-# always shows roughly the most recent N days of history regardless of how
-# long it's been tracked — items are NOT wiped on their 180-day anniversary,
-# the window just slides forward one pass at a time.
-#
-# At a 12 h scrape cadence and 100 tracked items this is ~36 k rows /
-# ~2.5 MB at steady state. Backed by
-# `idx_price_history_timestamp` so the periodic cleanup stays fast as
-# the table grows.
 PRICE_HISTORY_RETENTION_DAYS = GRAPH_MAX_DAYS
 MANUAL_REFRESH_COOLDOWN_SECONDS = 300
 
@@ -81,9 +71,6 @@ def _profile_currency(user_id: int) -> str | None:
     stored = db.get_assistant_profile(user_id)
     return stored.get("currency") if stored else None
 
-# ---------------------------------------------------------------------------
-# Feature wiring
-# ---------------------------------------------------------------------------
 
 
 class WishlistFeature:
@@ -265,9 +252,6 @@ class WishlistFeature:
         async def wishlist_refresh(
             interaction: discord.Interaction, url: Optional[str] = None
         ):
-            # Preserve the slash command's immediate response for an empty
-            # selection; actual refresh work and cooldown reservation stay in
-            # the shared requester-scoped helper below.
             interaction = localized_interaction(interaction)
             if url is not None:
                 has_items = await asyncio.to_thread(db.get_scraped_item, interaction.user.id, url) is not None
@@ -745,8 +729,6 @@ class WishlistFeature:
         png = render_multi_price_history_png(series, currency_label)
         return discord.File(io.BytesIO(png), filename="price_history_all.png")
 
-    # Politeness delay between item fetches so we're not hammering a host
-    # when a user has multiple URLs on the same domain in one pass.
     SCRAPE_LOOP_GAP_SECONDS = 1.0
 
     async def _process_scrape_item(self, item) -> None:
@@ -761,39 +743,24 @@ class WishlistFeature:
             old_price, old_stock_status, old_title, old_currency,
             old_alert_kind, old_alert_price,
         ) = item[:9]
-        # Older unit tests and pre-migration callers retain the original
-        # nine fields. Missing preferences safely mean legacy behaviour.
         target_price = item[9] if len(item) > 9 else None
         target_currency = item[10] if len(item) > 10 else None
         target_alerted = bool(item[11]) if len(item) > 11 else False
         restock_only = bool(item[12]) if len(item) > 12 else False
 
-        # Each `fetch` is up to ~15s of blocking I/O. Running it in a worker
-        # thread keeps the bot responsive to slash commands and messages
-        # during the scrape pass.
         result = await asyncio.to_thread(self.scraper.fetch, url, capacity_policy="background")
         await asyncio.to_thread(db.update_scraped_item_check_status, item_id, result.failure or "ok")
         await record("processing", "wishlist-check", scope_type="global")
 
         if result.failure == FAILURE_BUSY:
             return
-        # Transport-level failure (timeout, anti-bot block, 5xx): trust
-        # nothing, change nothing. Try again next pass.
         if result.failure == FAILURE_BLOCKED:
             await record("failure", "wishlist-check", scope_type="global")
             return
-        # Page reachable but literally nothing useful was parsed — same
-        # outcome. Don't overwrite known-good state with empty data.
         if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
             await record("failure", "wishlist-check", scope_type="global")
             return
 
-        # Detect what changed against the previously-persisted state.
-        #   - `price_changed`  requires both an old and a new price.
-        #   - `back_in_stock`  requires that we *previously knew* it was OOS
-        #     (old_stock_status is a concrete 0, not NULL/unknown) and that
-        #     we *now know* it's in stock (result.in_stock is literally True,
-        #     not None).
         price_changed = (
             old_price is not None
             and result.price is not None
@@ -805,10 +772,6 @@ class WishlistFeature:
             and result.in_stock is True
         )
 
-        # Classify the new price against historical data BEFORE we insert the
-        # fresh row. `_classify_price` excludes `current` from its input on
-        # the caller's behalf, so feeding it the not-yet-updated history is
-        # the cleanest way to compare against actually-prior values.
         prior_history = await asyncio.to_thread(db.get_price_history, user_id, url)
         prior_prices = [row[0] for row in prior_history]
         decision = _classify_price(
@@ -850,9 +813,6 @@ class WishlistFeature:
                 if back_in_stock:
                     msg += "✅ Item is now **BACK IN STOCK**!\n"
                 if price_changed:
-                    # Apply the same TLD currency fallback `/wishlist-show`
-                    # uses, so old rows with currency = NULL render in the
-                    # right unit instead of as a bare number.
                     old_src = _effective_currency(old_currency, url)
                     new_src = _effective_currency(result.currency, url)
                     old_str = (
@@ -880,9 +840,6 @@ class WishlistFeature:
                         if llm_msg:
                             msg += f"🤖 *{llm_msg}*\n"
                     except Exception:
-                        # Creative commentary is optional. The exact price
-                        # notification must still be sent if generation has
-                        # an unexpected failure.
                         logger.exception(
                             f"Unexpected LLM price-message failure for {url}"
                         )
@@ -918,24 +875,15 @@ class WishlistFeature:
             except Exception as e:
                 logger.error(f"Could not send DM to user {user_id}: {e}")
                 await record("failure", "wishlist-notification", scope_type="dm")
-                return  # Keep previous state so a failed enqueue can be retried.
+                return
 
         if target_reached is not None and target_reached != target_alerted:
             await asyncio.to_thread(db.update_scraped_item_target_state, item_id, target_reached)
 
-        # Persist the latest price / stock / title / currency snapshot. COALESCE
-        # inside the SQL means passing None for any field leaves the previous
-        # value intact — so a price-less stock-only scrape doesn't wipe the
-        # last-known price, and an unknown stock read doesn't flip the status
-        # to OOS.
         await asyncio.to_thread(db.update_scraped_item_status,
             item_id, result.price, result.in_stock, result.title, result.currency,
         )
 
-        # Persist the new alert zone unconditionally — even when no DM fires
-        # we want the state to reflect the current zone so the NEXT pass's
-        # transition logic is accurate (e.g. "we were in high, dropped to
-        # neutral → now armed to re-alert on the next HIGH crossing").
         if (
             decision.new_state != old_alert_kind
             or decision.new_state_price != old_alert_price
@@ -951,9 +899,6 @@ class WishlistFeature:
         markdown block ready to be appended to the main DM string.
         """
         if decision.alert_kind == "low":
-            # Re-alert (price drops further) vs first entry to the low zone:
-            # the former has `prev_alert_price` set, so we can show the
-            # delta; the latter just says "new all-time low".
             current_str = self.converter.format_with_conversions(
                 decision.new_state_price, source_currency,
             )
@@ -961,7 +906,6 @@ class WishlistFeature:
                 decision.all_time_low, source_currency,
             )
             if decision.prev_alert_price is not None and decision.prev_alert_price > (decision.new_state_price or 0):
-                # We've already alerted at a higher floor in this low period.
                 prev_alert_str = self.converter.format_with_conversions(
                     decision.prev_alert_price, source_currency,
                 )
@@ -996,15 +940,9 @@ class WishlistFeature:
             try:
                 await self._process_scrape_item(item)
             except Exception:
-                # Catch-all so one bad row never kills the whole pass. Logged
-                # with full traceback + URL context so we can investigate.
                 url = item[2] if len(item) > 2 else "<unknown>"
                 logger.exception(f"Unexpected error scraping {url}; skipping")
                 await record("failure", "wishlist-check", scope_type="global")
-            # Politeness sleep between fetches — even with `to_thread` we
-            # don't want to flood a host that has multiple tracked URLs in
-            # one pass. The bot's event loop stays responsive during the
-            # await regardless.
             await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
 
         await asyncio.to_thread(db.clean_old_price_history, days=PRICE_HISTORY_RETENTION_DAYS)

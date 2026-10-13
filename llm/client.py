@@ -235,8 +235,6 @@ def query_llm(
         "messages": messages,
         "stream": False,
         "max_tokens": DEFAULT_MAX_TOKENS,
-        # Thinking models (e.g. Gemma 4) otherwise spend short token budgets on
-        # hidden reasoning and return an empty, truncated answer.
         "chat_template_kwargs": {"enable_thinking": thinking},
     }
 
@@ -345,8 +343,6 @@ def query_llm(
 
     try:
         choice = data["choices"][0]
-        # Never acknowledge memory observations from a truncated extraction,
-        # even if the partial response happens to be valid JSON.
         if choice.get("finish_reason") == "length":
             logger.warning(
                 "LLM response hit token limit request=%s model=%s max_tokens=%d",

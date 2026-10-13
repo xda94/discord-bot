@@ -16,7 +16,6 @@ import db
 
 @pytest.fixture
 def client(tmp_db, monkeypatch):
-    # api.py validates process settings at import time. Build a fresh test app
     monkeypatch.setenv("HOST", "127.0.0.1")
     monkeypatch.setenv("PORT", "9999")
     api = importlib.import_module("api")

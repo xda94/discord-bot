@@ -127,7 +127,6 @@ def test_help_uses_locale_and_preserves_real_mention_for_guide_link(monkeypatch)
         assert view.language == "ro"
         assert sent.kwargs["ephemeral"] is True
         assert sent.kwargs["allowed_mentions"].to_dict() == discord.AllowedMentions.none().to_dict()
-        # The natural-language link remains available when all memory is disabled.
         button = next(child for child in view.children if getattr(child, "label", None) == t("natural_examples", "ro"))
         interaction.response.send_message.reset_mock()
         await button.callback(interaction)

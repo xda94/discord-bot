@@ -155,14 +155,6 @@ def api_remove_scrape():
 def api_get_all_scrapes():
     try:
         items = get_all_scraped_items()
-        # `get_all_scraped_items` returns a 15-tuple:
-        #   (id, user_id, url, last_price, last_stock_status, title,
-        #    currency, last_alert_kind, last_alert_price, target_price,
-        #    target_currency, target_alerted, restock_only, last_checked_at,
-        #    last_check_status)
-        # `len(i) > N` guards are belt-and-braces in case an older
-        # schema (pre-alerts migration) is queried before init_db has
-        # had a chance to ALTER the table.
         result = [
             {
                 "id": i[0],
@@ -316,6 +308,3 @@ def api_refresh_wishlist_item():
     refreshed = _serialize_scraped_item(get_scraped_item(user_id, data["url"]))
     refreshed["source"] = _domain(item[2])
     return jsonify(refreshed)
-
-
-# --- Flight tracker configuration ------------------------------------------

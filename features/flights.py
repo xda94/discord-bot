@@ -246,8 +246,6 @@ class FlightTrackerFeature:
         self._provider_factory = provider_factory or (
             lambda api_key: SerpApiFlightProvider(api_key=api_key)
         )
-        # Reuse HTTP sessions across one user's trackers. Cache entries are
-        # invalidated whenever that user logs in again or logs out.
         self._providers: dict[int, tuple[str, SerpApiFlightProvider]] = {}
         self._register_commands()
 
@@ -478,15 +476,11 @@ class FlightTrackerFeature:
         return offer
 
     async def _process_tracker(self, tracker: dict) -> None:
-        # Keep completed trips in `/flight-tracker-show` until the owner
-        # deletes them, but stop spending provider quota on dates that passed.
         if (
             tracker["last_checked_at"] is not None
             and time.time() - tracker["last_checked_at"]
             < FLIGHT_CHECK_INTERVAL_HOURS * 3600
         ):
-            # `tasks.loop` runs once immediately after every bot restart. This
-            # guard prevents restarts from consuming searches ahead of cadence.
             return
         if tracker["trip_days"]:
             await asyncio.to_thread(db.update_flight_tracker_result,

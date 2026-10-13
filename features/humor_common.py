@@ -13,6 +13,7 @@ CATALOG = {
     "dm_failed": ("I could not send a DM. Enable private messages and try again.", "Nu am putut trimite un mesaj privat. Activează mesajele private și încearcă din nou."),
     "failed": ("I could not complete this action. Please try again.", "Nu am putut finaliza acțiunea. Încearcă din nou."),
     "not_owner": ("This control belongs to another member.", "Acest buton aparține altui membru."),
+    "unknown_member": ("Unknown member", "Membru necunoscut"),
     "expired": ("This action has expired or is already closed.", "Această acțiune a expirat sau este deja închisă."),
     "saved": ("Saved.", "Am salvat."),
     "accept": ("Accept", "Acceptă"),
@@ -142,6 +143,14 @@ async def interaction_language(interaction):
 def safe_text(value, limit=1800):
     rendered = discord.utils.escape_markdown(discord.utils.escape_mentions(str(value or "")))
     return rendered if len(rendered) <= limit else rendered[:max(0, limit - 1)] + "…"
+
+
+def member_name(user_id, name, language):
+    name = str(name or "").strip()
+    suffix = f" ({user_id})"
+    if name.endswith(suffix):
+        name = name[:-len(suffix)].strip()
+    return name if name and name != str(user_id) else text("unknown_member", language)
 
 
 def local_day():

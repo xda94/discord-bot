@@ -474,6 +474,12 @@ except `/azi-se-spala`. Reply content remains bilingual.
 | `/worth-it url:https://shop.example/item` | Privately show current/minimum/maximum/median prices, a calculated buy-or-wait verdict, and actionable advice from both voices. |
 | `/horoscope theme:work` | Local daily deterministic forecast; themes are general, work, gaming and household. |
 
+Community replies identify members with mentions; server and channel references
+use names. `/who-said` shows candidate names and mentions with numbered answer
+buttons, including for duplicate names and restored quizzes. Quest shortcuts
+use labeled links. Quote and bingo-habit record numbers remain available for
+their management commands.
+
 Shared games, museum commands, bingo and horoscope require a server. `/excuse`
 and `/worth-it` also work in DMs. On a server, their full results appear in the
 command channel as ephemeral messages visible only to the requester, with

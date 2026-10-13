@@ -433,7 +433,6 @@ class LLMMentionFeature:
             self._process_queued_job,
             self._finish_queued_job,
         )
-        # Compatibility aliases for diagnostics and existing tests.
         self._queue = self._worker.queue
         self._queue_sequence = 0
         self._processing = False
@@ -589,7 +588,6 @@ class LLMMentionFeature:
                     getattr(self, "_processing", False),
                     getattr(getattr(self, "_queue", None), "qsize", lambda: 0)(),
                 )
-                # Retry soon without consuming a scheduled new-cycle scan.
                 wait_seconds = active_chunk_rest
                 continue
             try:
@@ -851,8 +849,6 @@ class LLMMentionFeature:
                     logger.info("Could not add mention reaction: %s", exc)
                     await record_for("failure", "mention-reaction", job.reply_to)
 
-        # Persistent memory is synthesized only by the background scheduler. A
-        # mention reply must not trigger early extraction or persist raw chat.
 
     async def _process_memory_job(self, job: MemoryJob) -> bool | None:
         if self.memory is None:
@@ -870,8 +866,6 @@ class LLMMentionFeature:
                 job.batch.user_id,
             )
             return None
-        # A cycle author group may contain several chunks. Process only one per
-        # scheduler pass so background work cannot pin the CPU continuously.
         batch = chunks[0]
         if not self.memory.can_process_batch(batch):
             logger.info(
@@ -1182,8 +1176,6 @@ class LLMMentionFeature:
             memory_batch = memory_context.batch
             memory_history = list(getattr(memory_context, "history", ()))
 
-        # Persistent per-user conversation precedes live channel context so
-        # the newest live messages win when the shared history budget is tight.
         context_messages = memory_history + context_messages
 
         mentioned_memories = (

@@ -35,7 +35,6 @@ _TIER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _CUSTOM_TIER_ID_RE = re.compile(r"^tier-[0-9a-f-]{36}$")
 
 
-# Keep these values in insertion order: it is the public plan-list order.
 DEFAULT_SPONSOR_TIERS = {
     "standard": {
         "id": "standard",
@@ -84,8 +83,6 @@ def _canonical_price(value: Any) -> str:
         raise TierValidationError("price_per_year must be nonnegative")
     if amount.as_tuple().exponent < -2:
         raise TierValidationError("price_per_year may have at most two decimal places")
-    # Fixed-point formatting avoids persisting scientific notation while
-    # retaining meaningful decimal places such as 12.50.
     return format(amount, "f")
 
 

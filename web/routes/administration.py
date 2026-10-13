@@ -155,7 +155,6 @@ def _validate_flight_tracker_payload(data):
     }
 
 
-# --- Keywords Routes ---
 
 @blueprint.route("/keywords/add", methods=["POST"])
 @require_token
@@ -244,7 +243,6 @@ def api_keywords_top():
     )
 
 
-# --- Reminder Routes ---
 
 @blueprint.route("/reminders/add", methods=["POST"])
 @require_token
@@ -301,7 +299,6 @@ def api_get_all_reminders():
         return jsonify({"error": "Internal server error"}), 500
 
 
-# --- Birthday Routes ---
 
 def _serialize_birthday(row):
     return {
@@ -371,7 +368,6 @@ def api_delete_birthday(user_id):
         return jsonify({"error": "Birthday not found"}), 404
     return jsonify({"status": "deleted", "user_id": user_id})
 
-# --- Joke Routes ---
 
 @blueprint.route("/jokes", methods=["GET"])
 @require_token
@@ -441,12 +437,6 @@ def api_reset_jokes():
     return jsonify({"status": "reset"})
 
 
-# --- Per-Guild Joke Schedule Routes ---
-#
-# `GET /jokes/guilds` — list every guild that has /joke-activation set
-# `GET /jokes/guilds/<guild_id>` — one guild's config, or 404
-# `PUT /jokes/guilds/<guild_id>` — activate / update (body: channel_id, send_time)
-# `DELETE /jokes/guilds/<guild_id>` — deactivate that guild
 
 def _serialize_guild_joke_config(cfg):
     """Public-facing shape for the per-guild config dicts the DB
@@ -533,7 +523,6 @@ def api_delete_guild_joke_config(guild_id):
     return jsonify({"status": "deleted", "guild_id": guild_id})
 
 
-# --- LLM and inactivity configuration --------------------------------------
 
 @blueprint.route("/inactivity/guilds/<int:guild_id>", methods=["GET"])
 @require_token
@@ -552,7 +541,6 @@ def api_set_guild_inactivity(guild_id):
     return jsonify({"status": "updated", "guild_id": guild_id, "enabled": enabled})
 
 
-# --- Persistent LLM memory administration ----------------------------------
 
 _SPONSOR_TIER_FIELDS = frozenset(("name", "price_per_year", "chance"))
 

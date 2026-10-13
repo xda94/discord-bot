@@ -22,16 +22,13 @@ def seeded_rates(tmp_db):
     <currency> per 1 EUR" — matching the format the live API returns.
     Numbers are illustrative, not market-accurate — tests only assert
     relative correctness."""
-    db.set_exchange_rate("EUR", 1.0)        # pivot
-    db.set_exchange_rate("DKK", 7.45)       # 1 EUR = 7.45 DKK
-    db.set_exchange_rate("USD", 1.10)       # 1 EUR = 1.10 USD
-    db.set_exchange_rate("RON", 4.95)       # 1 EUR = 4.95 RON
+    db.set_exchange_rate("EUR", 1.0)
+    db.set_exchange_rate("DKK", 7.45)
+    db.set_exchange_rate("USD", 1.10)
+    db.set_exchange_rate("RON", 4.95)
     return tmp_db
 
 
-# ---------------------------------------------------------------------------
-# _effective_currency
-# ---------------------------------------------------------------------------
 
 def test_effective_currency_prefers_stored():
     assert _effective_currency("EUR", "https://example.ro/x") == "EUR"
@@ -59,9 +56,6 @@ def test_effective_currency_empty_string_treated_as_missing():
     assert _effective_currency("", "https://example.ro/x") == "RON"
 
 
-# ---------------------------------------------------------------------------
-# _majority_currency
-# ---------------------------------------------------------------------------
 
 def test_majority_currency_picks_most_common():
     pairs = [
@@ -103,9 +97,6 @@ def test_majority_currency_uses_stored_over_tld():
     assert _majority_currency(pairs) == "USD"
 
 
-# ---------------------------------------------------------------------------
-# CurrencyConverter.convert
-# ---------------------------------------------------------------------------
 
 def test_convert_same_currency_returns_input(seeded_rates):
     cv = CurrencyConverter()
@@ -114,8 +105,6 @@ def test_convert_same_currency_returns_input(seeded_rates):
 
 def test_convert_via_eur_pivot(seeded_rates):
     cv = CurrencyConverter()
-    # Stored rates are "units per 1 EUR", so 100 EUR → RON is just the
-    # multiplication by the RON rate: 100 × 4.95 = 495 RON.
     assert cv.convert(100, "EUR", "RON") == pytest.approx(495.0, rel=1e-6)
 
 
@@ -148,9 +137,6 @@ def test_convert_non_numeric_price_returns_none(seeded_rates):
     assert cv.convert("not a number", "EUR", "DKK") is None
 
 
-# ---------------------------------------------------------------------------
-# CurrencyConverter.to_currency (best-effort wrapper)
-# ---------------------------------------------------------------------------
 
 def test_to_currency_same_currency(seeded_rates):
     cv = CurrencyConverter()
@@ -167,9 +153,6 @@ def test_to_currency_case_insensitive(seeded_rates):
     assert cv.to_currency(100, "eur", "EUR") == 100.0
 
 
-# ---------------------------------------------------------------------------
-# CurrencyConverter.format_in_currency
-# ---------------------------------------------------------------------------
 
 def test_format_unknown_source_marked_question_mark(seeded_rates):
     cv = CurrencyConverter()
@@ -183,7 +166,6 @@ def test_format_same_unit_no_conversion_suffix(seeded_rates):
 
 def test_format_successful_conversion(seeded_rates):
     cv = CurrencyConverter()
-    # 100 DKK → DKK is trivially 100. Non-trivial path:
     val = cv.format_in_currency(100, "EUR", "DKK")
     assert val == "745.00 DKK"
 

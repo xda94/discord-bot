@@ -10,15 +10,8 @@ from db.connection import _connect
 
 logger = logging.getLogger("database")
 
-# --- Response functions ---
-#
-# `get_all_responses(guild_id)` runs on EVERY message the bot sees in that
-# guild. We memoise per guild for a short TTL and invalidate explicitly
-# whenever *this process* mutates that guild's rows (add/remove).
-# Cross-process mutations (e.g. via the Flask API) become visible at most
-# TTL seconds later.
 
-_RESPONSES_CACHE_TTL = 30.0  # seconds
+_RESPONSES_CACHE_TTL = 30.0
 _responses_cache: dict[int, dict] = {}
 _responses_cache_at: dict[int, float] = {}
 
@@ -123,7 +116,6 @@ def get_random_response(keyword, guild_id: int):
         return None
 
 
-# --- Reminder functions ---
 
 def add_reminder(user_id, channel_id, remind_at, message):
     try:
@@ -169,7 +161,6 @@ def get_all_reminders():
         return []
 
 
-# --- Keyword usage functions ---
 
 def log_keyword_usage(keyword, user_id, guild_id):
     try:
@@ -211,7 +202,6 @@ def get_top_keywords_by_user(guild_id, user_id, limit=10):
         return []
 
 
-# --- Joke functions ---
 
 def add_joke(text):
     try:
@@ -295,12 +285,9 @@ def get_all_jokes():
             return c.fetchall()
     except Exception:
         logger.exception("Failed to fetch all jokes")
-        # Return an empty list instead of None so callers (e.g. the Flask
-        # API's `/jokes` route) can iterate the result unconditionally.
         return []
 
 
-# --- Settings functions ---
 
 def get_setting(key):
     try:
@@ -394,8 +381,6 @@ def get_all_guild_joke_configs():
         ]
     except Exception:
         logger.exception("Failed to fetch all guild joke configs")
-        # Return empty list (not None) so the check loop can iterate
-        # unconditionally.
         return []
 
 
@@ -608,5 +593,4 @@ def is_guild_inactivity_enabled(guild_id: int) -> bool:
         logger.exception(
             f"Failed to fetch inactivity configuration for guild {guild_id}"
         )
-        # A database failure should not cause unsolicited messages.
         return False

@@ -701,7 +701,7 @@
     }, "Saved."); });
     for (const input of $$("#flight-form [list='airport-options']")) {
       let timer; input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(async () => {
-        try { const rows=await api(`/flights/airports?q=${encodeURIComponent(input.value)}`); $("#airport-options").innerHTML=rows.map((row)=>`<option value="${escapeHtml(row.iata_code)}">${escapeHtml(row.municipality)} · ${escapeHtml(row.name)}</option>`).join(""); } catch (_error) { /* Manual IATA input stays available. */ }
+        try { const rows=await api(`/flights/airports?q=${encodeURIComponent(input.value)}`); $("#airport-options").innerHTML=rows.map((row)=>`<option value="${escapeHtml(row.iata_code)}">${escapeHtml(row.municipality)} · ${escapeHtml(row.name)}</option>`).join(""); } catch (_error) {}
       }, 250); });
     }
     $("#keyword-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => { await api("/keywords/add", { method: "POST", body: JSON.stringify({ guild_id: requireGuild(), keyword: data.get("keyword"), response: data.get("response") }) }); form.reset(); await loadKeywords(); }, "Keyword response added."); });

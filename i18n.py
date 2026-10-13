@@ -141,9 +141,6 @@ def t(key: str, language: str = 'en', **params) -> str:
     return pair[language == 'ro'].format(**params)
 
 
-# Legacy feature output is migrated at presentation boundaries. Longest labels
-# first prevents overlapping replacements. User-authored reminder text never
-# passes through this adapter.
 LABELS = {
  'You are not tracking any items.':'Nu urmărești niciun produs.',
  'Your tracked items':'Produsele urmărite', 'shown in each item\'s native currency':'în moneda originală a fiecărui produs',
@@ -300,7 +297,6 @@ def localize(text: str, language: str, *, protected=()) -> str:
             text = re.sub(r'(?<![\w/-])'+re.escape(source)+r'(?![\w/-])',lambda match:LABELS[source],text)
         else:
             text = text.replace(source, LABELS[source])
-    # Unmigrated parser usage hints are replaced with Romanian guidance.
     if text.startswith(('Use `', 'Include one HTTP', 'Use only one URL', 'Please provide exactly one', 'The reminder duration')):
         return t('invalid', language)
     for token, original in originals.items():

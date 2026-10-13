@@ -96,7 +96,6 @@ def test_db_flight_tracker_is_per_user_and_delete_cascades_history(tmp_db):
     start, end = _future_dates()
     tracker_id = db.add_flight_tracker(123, "OTP", "BKK", start, end)
     assert tracker_id
-    # Same watch is valid for another user, but not duplicated for this user.
     assert db.add_flight_tracker(456, "OTP", "BKK", start, end)
     assert db.add_flight_tracker(123, "OTP", "BKK", start, end) is None
 
@@ -264,7 +263,6 @@ def test_flight_tracker_add_show_delete_commands_work(tmp_db):
     assert "#1 OTP -> BKK" in show_interaction.response.messages[0][0]
     assert "599.00 EUR" in show_interaction.response.messages[0][0]
 
-    # Ownership is enforced by both command and SQL predicate.
     wrong_user = FakeInteraction(999)
     asyncio.run(tree.get_command("flight-tracker-delete").callback(wrong_user, 1))
     assert "not found" in wrong_user.response.messages[0][0].lower()

@@ -9,7 +9,7 @@ from discord.ext import tasks
 
 from analytics import record
 from db import community
-from features.humor_common import interaction_language, safe_text, text
+from features.humor_common import interaction_language, member_name, safe_text, text
 
 
 STRINGS = {
@@ -106,7 +106,7 @@ class QuoteMuseumFeature:
         sent = []
         try:
             author_language = await interaction_language(SimpleNamespace(user=author, locale=getattr(author, "locale", interaction.locale)))
-            name = str(getattr(author, "display_name", None) or getattr(author, "name", None) or author.id).strip()[:100]
+            name = member_name(author.id, getattr(author, "display_name", None) or getattr(author, "name", None), author_language)[:100]
             quote = await asyncio.to_thread(community.create_quote_request, interaction.guild_id, interaction.channel_id, interaction.id, interaction.user.id, author.id, content, name, author_language)
             if not quote["created"]:
                 await self._reply(interaction, _t("duplicate", language))
@@ -227,7 +227,8 @@ class QuoteMuseumFeature:
             if not quote:
                 await self._reply(interaction, _t("empty", language))
                 return None
-            header = _t("quote", language, id=quote["id"], author=safe_text(quote["author_name"], 200))
+            author = f"{safe_text(member_name(quote['author_id'], quote['author_name'], language), 200)} · <@{quote['author_id']}>"
+            header = _t("quote", language, id=quote["id"], author=author)
             await interaction.channel.send(header + quote["quote_text"], allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
             await self._reply(interaction, _t("published", language))
             return quote
@@ -246,14 +247,13 @@ class QuoteMuseumFeature:
             if not quote:
                 await self._reply(interaction, _t("empty", language))
                 return None
-            authors = {quote["author_id"]: str(quote["author_name"] or quote["author_id"]).strip()}
+            authors = {quote["author_id"]: member_name(quote["author_id"], quote["author_name"], language)}
             after_id = 0
             while len(authors) < 4:
                 page = await asyncio.to_thread(community.list_approved_quotes, interaction.guild_id, after_id=after_id)
                 for row in page:
-                    name = str(row["author_name"] or "").strip()
-                    if name and row["author_id"] not in authors:
-                        authors[row["author_id"]] = name
+                    if row["author_id"] not in authors:
+                        authors[row["author_id"]] = member_name(row["author_id"], row["author_name"], language)
                     if len(authors) == 4:
                         break
                 if len(page) < 100:
@@ -263,11 +263,6 @@ class QuoteMuseumFeature:
                 await self._reply(interaction, _t("pool", language))
                 return None
             candidates = [{"user_id": author_id, "name": name[:80]} for author_id, name in authors.items()]
-            duplicate_names = {candidate["name"].casefold() for candidate in candidates if sum(other["name"].casefold() == candidate["name"].casefold() for other in candidates) > 1}
-            for candidate in candidates:
-                if duplicate_names:
-                    suffix = f" ({candidate['user_id']})"
-                    candidate["name"] = candidate["name"][:80 - len(suffix)] + suffix
             random.shuffle(candidates)
             return await self.games.create_quiz(interaction, quote, candidates)
         except Exception:

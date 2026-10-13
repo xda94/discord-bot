@@ -1,5 +1,3 @@
-# Two services, one image: Discord bot + Flask API.
-# Create a .env file in this directory before `docker compose up -d`.
 
 services:
   bot:

@@ -76,8 +76,6 @@ class AnalyticsCommandTree(app_commands.CommandTree):
 
     async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
         if interaction.type is not discord.InteractionType.autocomplete:
-            # Discord may redeliver an interaction after an acknowledgment fails.
-            # Claim admission before any slash callback can mutate saved data.
             event_id = getattr(interaction, "id", None)
             if isinstance(event_id, int):
                 from db.reminders import claim_action
