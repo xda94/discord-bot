@@ -35,7 +35,6 @@ def _parse_birthday(value: str) -> Optional[tuple[int, int]]:
     day_number = int(day)
     month_number = int(month)
     try:
-        # 2000 is a leap year, so February 29 remains a valid registration.
         date_class(2000, month_number, day_number)
     except ValueError:
         return None
@@ -135,7 +134,6 @@ class BirthdaysFeature:
             try:
                 db.set_birthday(user_id, channel_id, guild_id, month, day)
             except sqlite3.Error:
-                # Keep the supplied date out of logs and analytics details.
                 logger.exception(
                     "Could not save birthday registration for user=%s", user_id
                 )

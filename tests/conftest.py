@@ -11,12 +11,11 @@ from pathlib import Path
 
 import pytest
 
-# Make `import db` etc. work without installing the project as a package.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import db  # noqa: E402  (sys.path tweak needs to happen first)
-from db import bot_data, connection  # noqa: E402
+import db
+from db import bot_data, connection
 
 
 @pytest.fixture(autouse=True)

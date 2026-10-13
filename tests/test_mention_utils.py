@@ -75,8 +75,6 @@ def test_extract_mention_text_resolves_other_user_mentions():
         role_mentions = []
         channel_mentions = []
 
-    # The bot's own mention is stripped; other users become readable names,
-    # so no raw <@id> reaches the LLM.
     assert extract_mention_text(FakeMessage(), 99) == "what did @Carol say?"
 
 

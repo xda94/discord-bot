@@ -41,7 +41,6 @@ def delivery_at(profile,now=None):
             if start>end and current>=start:
                 result+=timedelta(days=1)
             result=result.replace(hour=h,minute=m,second=0,microsecond=0)
-    # Move a nonexistent spring-forward time to the first valid minute.
     naive=result.replace(tzinfo=None)
     for _ in range(181):
         candidates=valid_local(naive,zone)
@@ -93,8 +92,6 @@ async def drain(client, user_id=None):
             user = await client.fetch_user(recipient)
             if user is None:
                 raise RuntimeError('User unavailable')
-            # Commit each accepted event/part separately. A later DM failure
-            # must not cause previously delivered events to be sent again.
             for event in events:
                 lang = language_for(profile=profile, fallback=event['language'])
                 observed = datetime.fromtimestamp(event['observed_at'], ZoneInfo(profile.timezone)).isoformat(timespec='minutes')

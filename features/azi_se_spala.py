@@ -9,24 +9,12 @@ from discord import app_commands
 
 logger = logging.getLogger("discord_bot")
 
-# azisespala.ro publishes the Romanian Orthodox calendar one JSON file per
-# year. Each file is keyed by month ("1".."12"); every month is an array of
-# day entries {date, text, isHoliday, noWashing}. `noWashing` is the bit this
-# command exists for: by tradition you don't do laundry on certain holy days.
 CALENDAR_URL = "https://azisespala.ro/data/holidays-{year}.json"
 
-# The API's usage terms ask that the data source be credited wherever it's
-# displayed. Shown as a footer on every reply that surfaces calendar data.
 ATTRIBUTION = "Date calendar: azisespala.ro"
 
-# Accept the day in the formats a Romanian would actually type. All resolve to
-# (day, month); the year always comes from the requested/`today` year so we
-# only ever fetch one calendar file.
 _DATE_FORMATS = ("%d.%m", "%d-%m", "%d/%m", "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y")
 
-# Per-year in-memory cache. The calendar is published once a year and never
-# changes mid-year, so there's no reason to re-fetch within a process lifetime.
-# Keyed by int year -> parsed JSON dict.
 _calendar_cache: dict[int, dict] = {}
 
 
@@ -54,8 +42,6 @@ def _fetch_calendar(year: int) -> dict:
     try:
         data = response.json()
     except ValueError as exc:
-        # Unpublished years come back as a 200 HTML page, not a 404, so a
-        # JSON-decode failure here means "that year isn't out yet".
         raise CalendarNotAvailable(year) from exc
     _calendar_cache[year] = data
     return data
@@ -109,8 +95,6 @@ def _parse_date(raw: Optional[str]) -> Optional[date]:
             parsed = datetime.strptime(raw, fmt)
         except ValueError:
             continue
-        # Day-only formats default the year to 1900; pin those to the
-        # current year so "25.12" means this Christmas, not 1900's.
         if "%Y" not in fmt:
             parsed = parsed.replace(year=datetime.now().year)
         return parsed.date()
@@ -131,7 +115,6 @@ async def _run(interaction: discord.Interaction, data: Optional[str]) -> None:
         )
         return
 
-    # Network round-trip; defer so we never race Discord's 3s window.
     await interaction.response.defer()
 
     try:

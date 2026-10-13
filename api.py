@@ -32,7 +32,7 @@ except (TypeError, ValueError):
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-from web import create_app  # noqa: E402
+from web import create_app
 
 app = create_app({"API_TOKEN": API_TOKEN})
 

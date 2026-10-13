@@ -249,6 +249,8 @@ def test_assigned_quest_recipient_controls_and_title(tmp_db, language):
         assert row["deadline"] == row["created_at"] + 86400
         sent = assigner.channel.send.call_args
         assert "**<@45>**" in sent.args[0] and "<@42>" in sent.args[0]
+        current_message = await worker._render_session(row)
+        assert f"[{games._t('quest_link', language)}](https://discord.com/channels/12/23/99)" in current_message
         assert "Organize a game night" in sent.args[0]
         assert row["payload"]["challenge_en"] == row["payload"]["challenge_ro"] == "Organize a game night"
         assert row["payload"]["title_key"] == "custom-quest"
@@ -735,9 +737,40 @@ def test_quiz_approval_hidden_author_and_changeable_answers(tmp_db):
         cursor.execute("UPDATE community_sessions SET deadline=0 WHERE id=?", (row["id"],))
     asyncio.run(worker._tick())
     content = value.message.edit.call_args.kwargs["content"]
-    assert "Correct author: Ada" in content and "Ada: 0" in content and "Bea: 1" in content
+    assert "Correct author: Ada · <@45>" in content and "Ada · <@45>: 0" in content and "Bea · <@46>: 1" in content
     assert community.list_titles(12) == []
     games.generate_humor.assert_not_called()
+
+
+@pytest.mark.parametrize("language", ["en", "ro"])
+@pytest.mark.parametrize("phase", ["active", "closed"])
+def test_restored_quiz_hides_legacy_id_labels_in_controls_and_results(tmp_db, language, phase):
+    async def run():
+        quote = approved_quote()
+        payload = {"quote_id": quote["id"], "quote_text": quote["quote_text"], "correct_author_id": 45, "candidates": [{"user_id": 45, "name": "Ada (45)"}, {"user_id": 46, "name": "46"}]}
+        row = community.create_session(12, 23, 42, "quiz", language, payload)
+        community.bind_session_message(12, row["id"], 99)
+        if phase == "closed":
+            community.claim_session_close(12, row["id"], "Done", now=row["deadline"] + 1)
+            community.save_session_result(12, row["id"], "Done")
+        row = community.get_session(12, row["id"])
+        worker = feature(interaction())
+        content = await worker._render_session(row)
+        assert "<@45>" in content and "<@46>" in content
+        assert "(45)" not in content and "\n2. 46" not in content and "\n46:" not in content
+        assert games.text("unknown_member", language) in content
+        view = games.SessionView(worker, row)
+        assert [button.label for button in view.children] == ["1. Ada", "2. " + games.text("unknown_member", language)]
+        assert view.is_persistent()
+        if phase == "closed":
+            assert all(button.disabled for button in view.children)
+            assert games._t("correct", language, name="Ada · <@45>") in content
+        else:
+            voter = interaction(user_id=60, language=language)
+            await view.children[1].callback(voter)
+            assert community.session_tally(12, row["id"])["46"] == 1
+        assert community.get_session(12, row["id"])["payload"] == payload
+    asyncio.run(run())
 
 
 def test_quote_revocation_clears_quiz_before_close_and_delivery(tmp_db):

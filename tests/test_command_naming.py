@@ -51,8 +51,6 @@ def test_registered_command_and_option_names_are_kebab_case():
                 if decorator.func.attr == "rename"
                 for keyword in decorator.keywords
             }
-            # The first callback argument is the Discord interaction itself;
-            # every later argument becomes a public slash-command option.
             for argument in node.args.args[1:]:
                 if "_" in argument.arg and argument.arg not in renamed:
                     violations.append(

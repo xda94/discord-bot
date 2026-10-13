@@ -16,10 +16,9 @@ from llm.responses import generate_inactivity_message
 
 logger = logging.getLogger("discord_bot")
 
-# How many recent messages to scan for someone to tag.
 INACTIVITY_HISTORY_LOOKBACK = 50
 
-INACTIVITY_THRESHOLD = 86400  # 24 hours, in seconds
+INACTIVITY_THRESHOLD = 86400
 
 
 def pick_chatter(messages: list[discord.Message]) -> discord.abc.User | None:
@@ -38,10 +37,6 @@ class InactivityFeature:
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
         self.client = client
         self.tree = tree
-        # `_state` is the hot in-memory cache (written on every message), but
-        # the source of truth lives in the `guild_activity` table — without
-        # that, a restart resets every guild's clock and a quiet server has
-        # to wait another 24h before the next nudge.
         self._state: dict[int, dict] = {
             guild_id: {"last_time": last_time, "channel_id": channel_id}
             for guild_id, last_time, channel_id in db.get_all_guild_activity()
@@ -115,8 +110,6 @@ class InactivityFeature:
     async def _check(self):
         try:
             now = time.time()
-            # Snapshot: _send_nudge awaits, during which handle_message may add
-            # a new guild to _state — iterating the live dict would then raise.
             for guild_id, guild_state in list(self._state.items()):
                 if not await asyncio.to_thread(db.is_guild_inactivity_enabled,guild_id):
                     continue
@@ -126,13 +119,9 @@ class InactivityFeature:
                 if channel is None:
                     continue
                 if not await self._send_nudge(channel):
-                    # Keep the guild overdue so the next scheduled check can
-                    # retry once llama.cpp is available again.
                     continue
                 await record("scheduled", "inactivity-nudge", guild_id=guild_id)
                 guild_state["last_time"] = now
-                # Mirror the in-memory reset so a restart right after a nudge
-                # doesn't fire it again from the stale DB row.
                 await asyncio.to_thread(db.set_guild_activity,guild_id, now, guild_state["channel_id"])
                 logger.info(f"Inactivity nudge sent in #{channel} (guild {guild_id})")
         except Exception:
@@ -142,8 +131,6 @@ class InactivityFeature:
         """Post an LLM-generated nudge and report whether it was sent."""
         target = await self._pick_recent_chatter(channel)
         bot_name = resolve_bot_display_name(getattr(channel, "guild", None), self.client)
-        # llama-server inference is blocking (and the model may be busy), so keep it off
-        # the event loop.
         text = await asyncio.to_thread(
             generate_inactivity_message,
             bot_name,

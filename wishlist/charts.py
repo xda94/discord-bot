@@ -19,7 +19,6 @@ TARGET = "#FBBF24"
 
 def _time_encoding(timestamps: list[datetime], language="en") -> dict:
     span = max(timestamps) - min(timestamps)
-    # Include hours for short histories and years when the range crosses one.
     date_format = (
         "%d %b %H:%M" if span.total_seconds() <= 2 * 86400
         else "%d %b %Y" if min(timestamps).year != max(timestamps).year
@@ -224,7 +223,6 @@ def render_multi_price_history_png(
     endpoints = []
     for index, (label, points) in enumerate(series, 1):
         short_label = f"{label[:37]}…" if len(label) > 38 else label
-        # Identity must never depend on a (possibly duplicate/truncated) title.
         series_label = f"{index}. {short_label}"
         baseline = float(points[0][1])
         if percentage and baseline <= 0:

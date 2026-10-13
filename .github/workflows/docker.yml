@@ -1,5 +1,3 @@
-# Verify the Docker image builds and docker-compose.yml is valid.
-# Does not run the bot or API (no Discord token / long-lived services).
 name: docker
 
 on:

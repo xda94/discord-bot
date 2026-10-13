@@ -822,6 +822,16 @@ All command names, public options and descriptions are English except
 submissions use `/quote-add` with `quote` and `user`. The stored session kind `sedinta` is retained
 for compatibility while its public command is `/meeting`.
 
+Community Discord messages show member mentions and server/channel names rather
+than raw Discord IDs. Quiz candidate names use `member_name` to remove legacy
+ID suffixes and replace missing/numeric ID labels with a localized unknown-member
+label. Quiz text includes each candidate's mention; buttons use numbered names
+to distinguish duplicates without exposing IDs. Restored views and final results
+use the same formatting without mutating saved payloads or voting keys.
+`/quote` includes the author's readable name and mention. Pending quest links
+are labeled Open quest. Quote and bingo-habit record IDs remain management
+references; Discord IDs remain internal in storage, control IDs and link targets.
+
 `features/humor_common.py` owns bilingual text, safe catalogs, local calendar
 date and ISO week. Saved profile then Discord locale selects private language;
 session creators' language is persisted, click acknowledgments use the member's

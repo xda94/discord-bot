@@ -195,9 +195,6 @@ def _parse_legacy_command(
     if not value:
         return None
 
-    # Wishlist reads and mutations intentionally use a small collection of
-    # complete, deterministic phrases.  Options are parsed in a fixed order;
-    # free-form prose never reaches a helper by accident.
     show_wishlist = re.fullmatch(
         r"(?:show\s+my\s+wishlist|arat[aă]-mi\s+wishlist-ul)"
         r"(?:\s+(?:in|în)\s+(\S+))?",
@@ -326,8 +323,6 @@ def _parse_legacy_command(
     if re.match(r"(?:refresh|actualizeaz[aă])\b", value, re.I):
         return NaturalCommandError("Use `refresh <URL>` or `refresh my wishlist`." )
 
-    # Graphs have a URL or one of the explicit "my wishlist" targets followed
-    # by an optional currency and then an optional whole-day period.
     graph_all = re.fullmatch(
         r"graph\s+my\s+wishlist(.*)|grafic\s+pentru\s+wishlist-ul\s+meu(.*)",
         value,
@@ -360,8 +355,6 @@ def _parse_legacy_command(
     if graph_url:
         url = graph_url.group(1) or graph_url.group(3)
         remainder = graph_url.group(2) if graph_url.group(1) else graph_url.group(4)
-        # `_urls` strips terminal punctuation; graph URL matching must retain
-        # the same strict no-trailing-instructions rule as mutations.
         if _urls(url) != [url]:
             return NaturalCommandError("Use one URL and no extra instructions.")
         currency, days, error = _graph_options(remainder)
@@ -430,7 +423,6 @@ def _parse_legacy_command(
             return NaturalCommandError("The reminder duration is too short.")
         return ReminderAction(seconds, amount, unit, message.strip())
 
-    # Recognized reminder openings get guidance rather than an LLM guess.
     if re.match(r"(?:please\s+)?remind me\b|(?:te rog\s+)?aminte[sș]te-mi\b", value, re.I):
         return NaturalCommandError(
             "Use `remind me in 20 minutes to stretch` or `amintește-mi peste 2 ore să sun acasă`."
@@ -515,7 +507,6 @@ def parse_natural_command(text: str, *, replied_text: str = "") -> NaturalReques
     from i18n import fold, language_for, t
     from command_time import duration, number, CURRENCY_ALIASES
     value = _clean_request(text)
-    # Keep a source map while normalizing whitespace for recognition.
     normalized, positions = [], []
     for token in re.finditer(r"\S+", value):
         if normalized:
@@ -554,14 +545,12 @@ def parse_natural_command(text: str, *, replied_text: str = "") -> NaturalReques
         if leading_text:
             base = opening.start(1) + (recurring.end() if recurring else 0)
             return NaturalClarification('when','reminder',{'text':original(base + leading_text.end()),'recurrence':recurrence},'time')
-        # The explicit to/sa delimiter prevents consuming duration fragments as text.
         split = re.search(r"\s+(?:sa|to)\s+", tail)
         if split:
             when = tail[:split.start()]
             base = opening.start(1) + (recurring.end() if recurring else 0)
             message = original(base + split.end()).strip()
         else:
-            # Legacy shorthand supports one duration followed by the message.
             compact = re.match(r"(?:peste|in)\s+([\w.,]+\s+(?:de\s+)?(?:minutes?|minut|ore|ora|hours?|days?|zile|zi|weeks?|saptamani))\s+(.+)", tail)
             if not compact:
                 return NaturalClarification('text', 'reminder', {'when': original_tail}, 'reminder_text')
@@ -593,7 +582,6 @@ def parse_natural_command(text: str, *, replied_text: str = "") -> NaturalReques
         operation = {'cancel':'cancel','delete':'cancel','anuleaza':'cancel','sterge':'cancel','snooze':'snooze','amana':'snooze','edit':'edit','modifica':'edit'}[manage[1]]
         return ReminderManageAction(operation,int(manage[2]),manage[3])
 
-    # Idiomatic price target phrasing accepts product titles and IDs as references.
     target = re.fullmatch(r"(?:anunta-ma cand|notify me when) (.+?) (?:scade|scad|drops|falls) (?:sub|below) (\S+)(?: (\S+))?", key)
     if target:
         price = number(target[2], lang)
@@ -615,21 +603,18 @@ def parse_natural_command(text: str, *, replied_text: str = "") -> NaturalReques
             return NaturalCommandError(t('currency',lang),'currency')
         return ShowWishlistAction(currency)
     key = re.sub(r'^(arata|afiseaza) mi ', r'\1-mi ', key)
-    # Translate aliases for deterministic legacy recognition, not user content.
     key = re.sub(r"lista (?:mea )?de dorinte(?: mea)?", "wishlist-ul", key)
     key = re.sub(r"(?:wishlistul|wishlist ul)", "wishlist-ul", key)
     key = re.sub(r"^(?:grafic pentru|compara|actualizeaza) wishlist-ul(?= |$)",lambda m:m[0]+" meu" if not key[m.end():].startswith(" meu") else m[0],key)
     key = re.sub(r"^ce produse urmaresc\??$", "arata-mi wishlist-ul", key)
     key = re.sub(r"^verifica pretul(?: pentru)? ", "actualizeaza ", key)
     key = re.sub(r"^adauga(?: in wishlist-ul)? ", "urmareste ", key)
-    # Recover original URLs before delegating. Romanian folding must not change paths.
     value=value.rstrip(".!? ")
     original_urls = _urls(value)
     folded_urls = _urls(key)
     for normalized, original in zip(folded_urls, original_urls):
         key = key.replace(normalized, original, 1)
     key = re.sub(r"\b(lei|leu|euro|euros|dolari|dollars|pounds|lire)\b", lambda m:CURRENCY_ALIASES[m[1]],key)
-    # Preserve localized monetary grouping on legacy target commands.
     price_match = re.search(r"(?: la| to) (\S+) (RON|EUR|DKK|USD|GBP)$", key, re.I)
     if price_match:
         amount = number(price_match[1],lang)
@@ -668,7 +653,6 @@ def parse_natural_command(text: str, *, replied_text: str = "") -> NaturalReques
             currency, days, error = _graph_options(graph[2])
             return error or WishlistGraphAction(graph[1],currency,days)
     parsed = _parse_legacy_command(key, replied_text=replied_text)
-    # More tracking verbs and title references still use the same owner-scoped helpers.
     if isinstance(parsed,NaturalCommandError):
         track = re.fullmatch(r"(?:urmareste|monitorizeaza|track|watch|monitor)(?: (.+))?", key)
         if track and not track[1] and not replied_text:

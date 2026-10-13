@@ -38,7 +38,6 @@ def strip_leading_reply_labels(
     for pattern in (leading_at_name, label):
         while match := pattern.match(cleaned):
             rest = cleaned[match.end():].lstrip()
-            # "@Bot is a Discord bot": the name is the sentence subject, not a ping.
             if pattern is leading_at_name and rest[:1].islower() and "," not in match.group(0):
                 break
             cleaned = rest

@@ -299,7 +299,6 @@ class NaturalCommandsFeature:
                 return await self.execute_parsed(message, NaturalClarification('timezone', 'reminder_edit', slots, 'timezone'), profile=profile, language=lang, route=route)
             if parsed.when and not (duration(parsed.when) or calendar_time(parsed.when, profile.timezone)):
                 return await self.execute_parsed(message, NaturalClarification('when', 'reminder_edit', slots, 'time'), profile=profile, language=lang, route=route)
-        # Resolve personal references from IDs/titles, never from model-owned IDs.
         if isinstance(parsed,(DeleteWishlistAction,WishlistTargetAction,ClearWishlistTargetAction,WishlistRestockAction,RefreshWishlistAction,WishlistGraphAction)) and parsed.url and not parsed.url.startswith(('https://','http://')):
             with _connect() as c:
                 rows=c.execute('SELECT id,url,title FROM scraped_items WHERE user_id=?',(message.author.id,)).fetchall()
@@ -529,8 +528,6 @@ class NaturalCommandsFeature:
                 return True
 
         except Exception:
-            # A recognized command is consumed even when its helper or private
-            # transport fails, so the ordinary LLM cannot duplicate the action.
             command = '/reminder-list' if isinstance(parsed,ReminderManageAction) and parsed.operation=='list' else '/wishlist-graph' if isinstance(parsed,WishlistGraphAction) and parsed.url else '/wishlist-graph-all' if isinstance(parsed,WishlistGraphAction) else None
             await self._reply_error(message,t('private_failed',lang,command=command) if command else t('failed',lang))
             return False

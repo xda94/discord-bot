@@ -75,8 +75,6 @@ class SerpApiFlightProvider:
         timeout: float | None = None,
         session=None,
     ):
-        # The key is supplied from the current Discord user's database row.
-        # It intentionally never falls back to a process-wide environment key.
         self.api_key = (api_key or "").strip()
         self.base_url = (
             base_url or os.getenv("SERPAPI_BASE_URL", "https://serpapi.com/search.json")

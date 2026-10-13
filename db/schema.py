@@ -33,9 +33,6 @@ def init_db():
                     response TEXT NOT NULL
                 )
             """)
-            # Per-guild keywords: each server has its own keyword → response
-            # map. Legacy DBs created before this column existed get it via
-            # ALTER below; rows left with NULL guild_id never match.
             c.execute("PRAGMA table_info(responses)")
             response_columns = {row[1] for row in c.fetchall()}
             if "guild_id" not in response_columns:
@@ -87,11 +84,6 @@ def init_db():
                     sent INTEGER NOT NULL DEFAULT 0
                 )
             """)
-            # Per-guild joke scheduling. Each guild that runs /joke-activation
-            # gets one row; missing row = no joke is sent for that guild.
-            # `last_sent_date` is the ISO date of the last successful send so
-            # the 30-second check loop fires exactly once per day per guild
-            # within the configured time window.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS guild_joke_config (
                     guild_id INTEGER PRIMARY KEY,
@@ -100,11 +92,6 @@ def init_db():
                     last_sent_date TEXT
                 )
             """)
-            # Per-guild record of which jokes have been sent in that guild.
-            # Preserves the "no repeats until pool exhausts" semantic per
-            # guild — the same joke can run in different guilds across time
-            # without one stealing it from the other. ON DELETE CASCADE on
-            # joke_id cleans up rows when /jokes/<id> DELETE is called.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS guild_joke_sent (
                     guild_id INTEGER NOT NULL,
@@ -154,20 +141,10 @@ def init_db():
                 c.execute("ALTER TABLE scraped_items ADD COLUMN title TEXT")
             if "currency" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN currency TEXT")
-            # Alert state used by the LOW / HIGH buy-signal DMs in
-            # `_process_scrape_item`. `last_alert_kind` is "low" / "high" /
-            # NULL; `last_alert_price` records the price at the time of the
-            # alert so the LOW re-alert threshold (≥1% lower than the
-            # previous alert) can be evaluated without re-scanning history.
             if "last_alert_kind" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN last_alert_kind TEXT")
             if "last_alert_price" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN last_alert_price REAL")
-            # Per-item notification preferences. A target contains both a
-            # number and currency so a user can, for example, track a Danish
-            # shop but ask to be notified below 400 RON. `target_alerted`
-            # makes the threshold a crossing alert rather than a 12-hour
-            # reminder while the price remains below it.
             if "target_price" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN target_price REAL")
             if "target_currency" not in columns:
@@ -182,9 +159,6 @@ def init_db():
                     "ALTER TABLE scraped_items ADD COLUMN restock_only "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
-            # These fields are updated even for a failed attempt, allowing
-            # `/wishlist-show` to distinguish fresh data from a blocked or
-            # unsupported source without retaining page contents.
             if "last_checked_at" not in columns:
                 c.execute("ALTER TABLE scraped_items ADD COLUMN last_checked_at REAL")
             if "last_check_status" not in columns:
@@ -199,13 +173,6 @@ def init_db():
                     FOREIGN KEY(item_id) REFERENCES scraped_items(id) ON DELETE CASCADE
                 )
             """)
-            # Indexes for the two access patterns that grow with retention:
-            #   - `get_price_history` filters by item_id (via JOIN) and orders
-            #     by timestamp. Without an index this becomes a full table
-            #     scan as the table grows toward ~36k rows at 6-month retention.
-            #   - `clean_old_price_history` does `WHERE timestamp < ?` every
-            #     12 h, which also benefits from the timestamp index.
-            # Both are `IF NOT EXISTS` so they're free to re-run on each boot.
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_price_history_item_id "
                 "ON price_history(item_id)"
@@ -245,10 +212,6 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_llm_feedback_guild "
                 "ON llm_response_feedback(guild_id, category, model, prompt_version)"
             )
-            # Persistent conversational memory is opt-in at the channel level.
-            # New user messages are retained only as pending observations until
-            # the daily synthesis commits; durable storage contains the
-            # synthesized entries rather than a conversation transcript.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS llm_memory_channels (
                     guild_id INTEGER NOT NULL,
@@ -262,9 +225,6 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_llm_memory_channels_guild "
                 "ON llm_memory_channels(guild_id, enabled)"
             )
-            # scope_id is the guild ID for server memory and 0 for the user's
-            # separate DM profile. Discord snowflakes are always positive, so
-            # zero cannot collide with a real guild.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS llm_user_memories (
                     scope_id INTEGER NOT NULL,
@@ -303,8 +263,6 @@ def init_db():
                 f"'{kind}'" not in memory_entries_definition
                 for kind in LLM_MEMORY_ENTRY_KINDS
             ):
-                # SQLite cannot widen a CHECK constraint in place. Rebuild the
-                # table once while preserving stable IDs and timestamps.
                 c.execute(
                     "ALTER TABLE llm_memory_entries "
                     "RENAME TO llm_memory_entries_legacy"
@@ -334,9 +292,6 @@ def init_db():
                     created_at REAL NOT NULL
                 )
             """)
-            # The transcript store was retired in favor of daily synthesis.
-            # Clear legacy rows during migration so raw chat does not remain
-            # after upgrading.
             c.execute("DELETE FROM llm_memory_transcript")
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_llm_memory_transcript_owner "
@@ -361,9 +316,6 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_llm_memory_observations_channel "
                 "ON llm_memory_observations(scope_id, channel_id, id)"
             )
-            # A channel cycle is deliberately separate from user memory. The
-            # checkpoint and endpoint survive a restart while source rows are
-            # deleted one author-sized chunk at a time.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS llm_memory_progress (
                     scope_id INTEGER NOT NULL,
@@ -374,9 +326,6 @@ def init_db():
                     PRIMARY KEY (scope_id, channel_id)
                 )
             """)
-            # Migrate the previous one-blob profile format. The old row is
-            # removed only after each complete fact has been copied, making
-            # repeated startup safe through the unique normalized value.
             c.execute(
                 "SELECT scope_id, user_id, profile, updated_at FROM llm_user_memories"
             )
@@ -418,8 +367,6 @@ def init_db():
                     "DELETE FROM llm_user_memories WHERE scope_id = ? AND user_id = ?",
                     (scope_id, user_id),
                 )
-            # Preferences live separately from profiles so a server-wide
-            # profile purge cannot silently opt users back in.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS llm_memory_preferences (
                     scope_id INTEGER NOT NULL,
@@ -429,19 +376,12 @@ def init_db():
                     PRIMARY KEY (scope_id, user_id)
                 )
             """)
-            # Migration from the decommissioned Amadeus integration. Those
-            # client-id/secret pairs cannot be used with SerpApi, so remove the
-            # obsolete credential table and require each user to log in again
-            # with one SerpApi key. Flight trackers themselves are preserved.
             c.execute("PRAGMA table_info(flight_api_credentials)")
             credential_columns = {row[1] for row in c.fetchall()}
             if credential_columns and "api_key" not in credential_columns:
                 c.execute("DROP TABLE flight_api_credentials")
                 logger.info("Removed obsolete per-user Amadeus credentials.")
 
-            # One SerpApi key per Discord user keeps account quotas isolated.
-            # Keys are never returned by commands or written to logs. Operators
-            # must restrict filesystem access to the SQLite database.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS flight_api_credentials (
                     user_id INTEGER PRIMARY KEY,
@@ -449,9 +389,6 @@ def init_db():
                     updated_at REAL NOT NULL
                 )
             """)
-            # Per-user fixed-date round-trip flight watches. ``trip_days`` is
-            # retained only for compatibility with the short-lived flexible
-            # tracker build; new trackers always store 0.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS flight_trackers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -495,11 +432,6 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_flight_price_history_tracker_id "
                 "ON flight_price_history(tracker_id)"
             )
-            # Migration: older builds stored rates relative to DKK
-            # (`rate_to_dkk` column). We now pivot through EUR — drop the
-            # legacy table so the daily refresh re-populates it with the
-            # new semantics. Safe because `exchange_rates` is a
-            # regenerable cache, not source-of-truth data.
             c.execute("PRAGMA table_info(exchange_rates)")
             existing_cols = {row[1] for row in c.fetchall()}
             if existing_cols and "rate_to_eur" not in existing_cols:
@@ -515,9 +447,6 @@ def init_db():
                     last_updated REAL NOT NULL
                 )
             """)
-            # Per-guild last-activity timestamp used by `InactivityFeature` to
-            # decide when to nudge a quiet channel. Persisted so the 24h
-            # threshold survives bot restarts.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS guild_activity (
                     guild_id INTEGER PRIMARY KEY,
@@ -525,9 +454,6 @@ def init_db():
                     channel_id INTEGER NOT NULL
                 )
             """)
-            # Per-guild switch for LLM inactivity nudges. Missing rows mean
-            # enabled so existing installations preserve their current
-            # behaviour after upgrading.
             c.execute("""
                 CREATE TABLE IF NOT EXISTS guild_inactivity_config (
                     guild_id INTEGER PRIMARY KEY,

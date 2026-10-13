@@ -9,10 +9,6 @@ load_dotenv()
 
 import discord
 
-# IMPORTANT: configure logging BEFORE importing any feature module. Some
-# feature modules (e.g. scraping) emit `logger.warning` at import time to
-# announce missing optional dependencies, and those warnings are lost if the
-# logger has no handlers attached yet.
 from logger import setup_logger
 
 logger = setup_logger("discord_bot", "bot.log")
@@ -70,9 +66,6 @@ except ValueError:
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Fail loud and early when required env vars are missing. discord.py raises an
-# opaque LoginFailure deep in its stack when handed an empty token; this
-# message is far easier to action.
 if not TOKEN:
     logger.critical(
         "DISCORD_TOKEN is not set. Add it to your .env file or environment "
@@ -88,12 +81,8 @@ tree = AnalyticsCommandTree(client)
 
 db.init_db()
 
-# Shared cooldown gate (keyword auto-responses and teases throttle off the same
-# clock so the bot never spams the channel).
 gate = ResponseGate()
 
-# Order matters only for dependencies: KeywordsFeature reads the sponsor suffix
-# from SponsorsFeature, so sponsors must be built first.
 sponsors = SponsorsFeature(client, tree)
 keywords = KeywordsFeature(client, tree, gate, sponsors)
 teases = TeasesFeature(client, tree)
@@ -147,16 +136,12 @@ logger.info(
     "disabled" if MEMORY_DISABLED else ("automatic" if AUTOMATIC_MEMORY_ENABLED else "manual"),
 )
 
-# Bounded natural commands claim supported mentions before the general LLM.
-# Keywords keep priority over occasional reactions; a sampled reaction then
-# suppresses the random tease for that message.
 MESSAGE_HANDLERS = (
     (inactivity, user_memory, natural_commands, llm_mention, keywords, context_reactions, teases)
     if AUTOMATIC_MEMORY_ENABLED
     else (inactivity, natural_commands, llm_mention, keywords, context_reactions, teases)
 )
 
-# Features that own background tasks needing to be kicked off in on_ready.
 BACKGROUND_FEATURES = (
     sponsors,
     inactivity,
@@ -197,8 +182,6 @@ async def on_message(message: discord.Message):
         return
     await record_message_mention(message, BOT_ID)
     for handler in MESSAGE_HANDLERS:
-        # A handler returns True if it produced a "real" response and wants the
-        # dispatch chain to stop (currently only KeywordsFeature does this).
         if await handler.handle_message(message):
             return
 
@@ -208,11 +191,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     await llm_feedback.handle_raw_reaction_add(payload)
 
 
-# discord.py's `client.run()` installs its own SIGINT handler and closes the
-# client cleanly on Ctrl+C / `pm2 stop`, but it does so silently. The
-# try/finally surface gives us a clear "shutting down" + "exited" pair in
-# `bot.log` so we can confirm a clean exit at a glance (and catch the case
-# where the process gets SIGKILL'd, which leaves the "exited" line missing).
 try:
     client.run(TOKEN)
 except KeyboardInterrupt:

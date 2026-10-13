@@ -90,7 +90,6 @@ def test_language_precedence_and_catalog_placeholders():
 
 
 def test_additive_migration_and_explicit_timezone(tmp_db):
-    # Simulate profile values left by the old application.
     with db._connect(commit=True) as c:
         c.execute("INSERT INTO assistant_profiles(user_id,timezone) VALUES(1,'Europe/Bucharest'),(2,'UTC')")
         c.execute('INSERT INTO reminders(user_id,channel_id,remind_at,message) VALUES(1,10,9999999999,"legacy")')

@@ -80,7 +80,6 @@ def test_graph_buttons_custom_days_and_percentage_replace_original_attachment():
         await view.children[4].callback(interaction)
         assert build.call_args.args == (45, True)
         assert view.children[4].label == "Show prices"
-        # A period without data removes the old image but leaves navigation.
         build.return_value = ("No observations", None)
         build.side_effect = None
         await view.update_graph(interaction, days=1)

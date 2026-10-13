@@ -97,8 +97,6 @@ def claim_due(now=None):
     now=time.time() if now is None else now
     with _connect(commit=True) as c:
         c.execute('BEGIN IMMEDIATE')
-        # A stale claim is uncertain, not automatically retried. The bot attempts
-        # reconciliation before an operator can explicitly retry it.
         c.execute("UPDATE reminders SET state='failed',last_error='uncertain-delivery',finished_at=? WHERE state='sending' AND claimed_at<?",(now,now-300))
         rows=[_row(r) for r in c.execute('SELECT '+','.join(_COLUMNS)+" FROM reminders WHERE state='pending' AND remind_at<=? AND COALESCE(next_attempt,remind_at)<=? ORDER BY remind_at LIMIT 50",(now,now)).fetchall()]
         for row in rows:

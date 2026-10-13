@@ -9,7 +9,7 @@ from discord.ext import tasks
 
 from analytics import record
 from db import community
-from features.humor_common import QUESTS, interaction_language, safe_text, text
+from features.humor_common import QUESTS, interaction_language, member_name, safe_text, text
 from llm.humor import generate_humor
 
 
@@ -24,6 +24,7 @@ STRINGS = {
     "active_quests_user": ("🎯 Active quests for {member}", "🎯 Questuri active pentru {member}"),
     "active_quests_empty": ("No active quests found.", "Nu există questuri active."),
     "active_quest_link": ("Open quest to complete or abandon", "Deschide questul pentru finalizare sau abandon"),
+    "quest_link": ("Open quest", "Deschide questul"),
     "active_quest_deadline": ("Completion deadline: {deadline}", "Termen de finalizare: {deadline}"),
     "tribunal": ("⚖️ Tribunal · member {member}\n{content}", "⚖️ Tribunal · membrul {member}\n{content}"),
     "invitation": ("This is a joke. Only the accused can accept or decline. Voting opens after acceptance and lasts exactly 10 minutes. Invitation expires: {deadline}.", "Este o glumă. Doar acuzatul poate accepta sau refuza. Votul începe după acceptare și durează exact 10 minute. Invitația expiră: {deadline}."),
@@ -64,7 +65,7 @@ def _options(session):
         return [(key, text(key, language)) for key in ("success", "not_yet")]
     if kind == "sedinta":
         return [(str(index), option) for index, option in enumerate(payload["options"])]
-    return [(str(candidate["user_id"]), candidate["name"]) for candidate in payload.get("candidates", [])]
+    return [(str(candidate["user_id"]), member_name(candidate["user_id"], candidate.get("name"), language)) for candidate in payload.get("candidates", [])]
 
 
 def _winner(tally):
@@ -83,8 +84,9 @@ class SessionView(discord.ui.View):
             actions = [(key, text(key, language)) for key in ("completed", "abandon")]
         else:
             actions = _options(session)
-        for action, label in actions:
-            button = discord.ui.Button(label=str(label)[:80], custom_id=f"social:{session['id']}:{action}", disabled=disabled or phase not in community.ACTIVE_PHASES)
+        for index, (action, label) in enumerate(actions):
+            label = f"{index + 1}. {str(label)[:77]}" if kind == "quiz" else str(label)[:80]
+            button = discord.ui.Button(label=label, custom_id=f"social:{session['id']}:{action}", disabled=disabled or phase not in community.ACTIVE_PHASES)
 
             async def callback(interaction, selected=action):
                 await feature.handle_control(interaction, session["guild_id"], session["id"], selected)
@@ -410,29 +412,30 @@ class SocialGamesFeature:
             lines = [quest_header]
         else:
             lines = [_t("quiz", language, content=safe_text(payload["quote_text"], 1250))]
+        options = {key: safe_text(label, 90) + (f" · <@{key}>" if kind == "quiz" else "") for key, label in _options(session)}
         if phase == "pending":
             offer_key = "invitation" if kind == "tribunal" else "assigned_offer" if session["subject_id"] else "offer"
             lines.append(_t(offer_key, language, deadline=deadline))
             if kind == "quest" and session["message_id"]:
-                lines.append(f"https://discord.com/channels/{session['guild_id']}/{session['channel_id']}/{session['message_id']}")
+                url = f"https://discord.com/channels/{session['guild_id']}/{session['channel_id']}/{session['message_id']}"
+                lines.append(f"[{_t('quest_link', language)}]({url})")
         elif phase == "active" and kind == "quest":
             lines.append(_t("quest_active", language, deadline=deadline))
         elif phase in ("active", "verification"):
             lines.append(_t("vote", language, deadline=deadline))
             if kind == "quest":
                 lines.append(_t("verification", language))
-            lines.extend(f"{index + 1}. {safe_text(label, 90)}" for index, (_, label) in enumerate(_options(session)))
+            lines.extend(f"{index + 1}. {label}" for index, label in enumerate(options.values()))
         else:
             tally = await asyncio.to_thread(community.session_tally, session["guild_id"], session["id"]) or {}
-            options = dict(_options(session))
             if kind == "quiz":
-                lines.append(_t("correct", language, name=safe_text(options.get(str(payload["correct_author_id"]), "—"), 90)))
+                lines.append(_t("correct", language, name=options.get(str(payload["correct_author_id"]), f"<@{payload['correct_author_id']}>")))
             elif kind == "quest":
                 lines.append(_t("title", language, title=safe_text(payload["title_" + language], 100)) if tally.get("success", 0) > tally.get("not_yet", 0) else _t("no_title", language))
             else:
                 winner = _winner(tally)
-                lines.append(_t("winner", language, option=safe_text(options[winner], 90)) if winner else text("neutral", language))
-            lines.extend(f"{safe_text(label, 90)}: {tally.get(key, 0)}" for key, label in options.items())
+                lines.append(_t("winner", language, option=options[winner]) if winner else text("neutral", language))
+            lines.extend(f"{label}: {tally.get(key, 0)}" for key, label in options.items())
             if session["result_text"]:
                 lines.append(session["result_text"][:400])
         return "\n".join(lines)[:2000]

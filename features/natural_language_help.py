@@ -12,8 +12,6 @@ CATEGORY_LABELS = {
     "flights": ("Saved flights", "Zboruri salvate"),
 }
 
-# Each example is published verbatim and checked against the deterministic
-# parser in test_natural_language_help.py. URL and ID values are placeholders.
 EXAMPLES = {
     "en": {
         "reminders": (

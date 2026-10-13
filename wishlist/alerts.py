@@ -82,6 +82,5 @@ def classify_price(
     )
 
 
-# Preserve the established internal name while callers migrate.
 _classify_price = classify_price
 

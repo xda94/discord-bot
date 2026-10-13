@@ -20,7 +20,6 @@ def number(value: str, language='en') -> float | None:
         return None
     decimal, grouping = (',', '.') if language == 'ro' else ('.', ',')
     if grouping in value:
-        # One separator with three trailing digits could mean 1.500 or 1,500.
         if decimal not in value and value.count(grouping) == 1:
             if len(value.split(grouping)[1]) == 3:
                 return None

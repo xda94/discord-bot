@@ -162,7 +162,6 @@ class RemindersFeature:
     @tasks.loop(seconds=10)
     async def _check(self):
         try:
-            # Reconcile uncertain sends using an occurrence marker in the embed.
             for row in await asyncio.to_thread(store.list_for):
                 if row['state']=='failed' and row['last_error']=='uncertain-delivery':
                     reconciled = getattr(self,'_reconciled',{})
@@ -202,8 +201,6 @@ class RemindersFeature:
                     if channel:
                         await record_for("failure","reminder-delivery",channel)
                 except Exception as exc:
-                    # Network errors after send are uncertain. Reconcile rather than
-                    # automatically duplicating a potentially delivered message.
                     uncertain=isinstance(exc,(TimeoutError,ConnectionError))
                     await asyncio.to_thread(store.fail,row,'uncertain-delivery' if uncertain else type(exc).__name__,permanent=uncertain)
                     if channel:

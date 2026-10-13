@@ -65,7 +65,6 @@ def main():
     cases = json.loads(args.corpus.read_text())
     generate = None
     if args.live:
-        # Enable the action *proposal schema* only in this read-only process.
         os.environ['NATURAL_LLM_ENABLED'] = '1'
         from llm.responses import generate_mention_result
         generate = lambda text: generate_mention_result('Corpus evaluation', text, context_messages=[], model=args.model)

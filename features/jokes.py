@@ -44,9 +44,6 @@ class JokesFeature:
         self._register_commands()
 
     async def start_tasks(self) -> None:
-        # Migration must run AFTER `on_ready` because it needs the
-        # client to be able to call `fetch_channel`. Running it inside
-        # `start_tasks` (called from `on_ready`) is the right hook.
         await self._migrate_legacy_config()
         if not self._check.is_running():
             self._check.start()
@@ -60,8 +57,6 @@ class JokesFeature:
 
         legacy_channel = db.get_setting("joke_channel_id")
         if not legacy_channel:
-            # Nothing to migrate, or a previous run already cleared the
-            # legacy keys. Mark done so we stop re-checking.
             self._migrated = True
             return
 
@@ -82,13 +77,10 @@ class JokesFeature:
                 f"Failed to fetch legacy joke channel {legacy_channel}; will "
                 f"retry on next bot start."
             )
-            # Don't mark migrated — give it another chance after a
-            # transient failure (e.g. network blip during fetch).
             return
 
         guild_id = getattr(channel, "guild", None) and channel.guild.id
         if guild_id is None:
-            # DM channel or some other non-guild target — can't migrate.
             logger.warning(
                 f"Legacy joke channel {legacy_channel} has no guild "
                 f"(probably a DM); clearing the legacy config."
@@ -105,10 +97,6 @@ class JokesFeature:
         if last_sent:
             db.set_guild_joke_last_sent(guild_id, last_sent)
 
-        # Clear the legacy keys so this branch becomes a no-op next time.
-        # Using empty string (falsy) rather than DELETE because the
-        # settings helper has no delete; empty value reads as None via
-        # the truthiness checks above.
         for key in self.LEGACY_SETTING_KEYS:
             db.set_setting(key, "")
 
@@ -259,7 +247,6 @@ class JokesFeature:
         try/except for the whole loop, but per-guild safety is cheap)."""
         result = db.get_unsent_joke_for_guild(guild_id)
         if result is None:
-            # Pool exhausted for this guild — recycle and retry.
             db.reset_guild_joke_sent(guild_id)
             result = db.get_unsent_joke_for_guild(guild_id)
             if result is None:

@@ -20,8 +20,6 @@ from discord import app_commands
 
 from features import azi_se_spala as m
 
-# A trimmed stand-in for the real calendar JSON: one no-wash holy day, one
-# ordinary wash day, both in June so the month key exists but day 28 doesn't.
 SAMPLE_CALENDAR = {
     "6": [
         {"date": "29", "text": "Sf. Ap. Petru și Pavel", "isHoliday": True, "noWashing": True},
@@ -66,9 +64,6 @@ def _clear_cache():
     m._calendar_cache.clear()
 
 
-# ---------------------------------------------------------------------------
-# _parse_date
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw", [None, "", "   "])
 def test_parse_date_blank_is_today(raw):
@@ -94,9 +89,6 @@ def test_parse_date_invalid_returns_none(raw):
     assert m._parse_date(raw) is None
 
 
-# ---------------------------------------------------------------------------
-# _lookup_day
-# ---------------------------------------------------------------------------
 
 def test_lookup_day_found():
     entry = m._lookup_day(SAMPLE_CALENDAR, date(2026, 6, 29))
@@ -111,9 +103,6 @@ def test_lookup_day_missing_month():
     assert m._lookup_day(SAMPLE_CALENDAR, date(2026, 1, 1)) is None
 
 
-# ---------------------------------------------------------------------------
-# _format_reply
-# ---------------------------------------------------------------------------
 
 def test_format_reply_no_washing():
     out = m._format_reply(date(2026, 6, 29), SAMPLE_CALENDAR["6"][0])
@@ -162,9 +151,6 @@ def test_command_registration_is_python_39_compatible():
     assert tree.get_command("azi-se-spala") is not None
 
 
-# ---------------------------------------------------------------------------
-# _fetch_calendar (requests mocked)
-# ---------------------------------------------------------------------------
 
 def test_fetch_calendar_success_and_caches(monkeypatch):
     calls = []
@@ -179,8 +165,8 @@ def test_fetch_calendar_success_and_caches(monkeypatch):
     second = m._fetch_calendar(2026)
 
     assert first == SAMPLE_CALENDAR
-    assert second is first          # served from cache
-    assert len(calls) == 1          # only one network round-trip
+    assert second is first
+    assert len(calls) == 1
 
 
 def test_fetch_calendar_404_raises_not_available(monkeypatch):
@@ -211,9 +197,6 @@ def test_fetch_calendar_network_error_propagates(monkeypatch):
         m._fetch_calendar(2026)
 
 
-# ---------------------------------------------------------------------------
-# _run (async handler; _fetch_calendar patched, no network)
-# ---------------------------------------------------------------------------
 
 def test_run_no_washing_day(monkeypatch):
     monkeypatch.setattr(m, "_fetch_calendar", lambda year: SAMPLE_CALENDAR)
