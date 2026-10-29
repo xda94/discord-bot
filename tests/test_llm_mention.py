@@ -726,7 +726,7 @@ def test_prepare_image_rejects_unsupported_decodable_format():
         prepare_image(_image_bytes("PPM"))
 
 
-@pytest.mark.parametrize("data", [b"", b"x" * (MAX_IMAGE_BYTES + 1)])
+@pytest.mark.parametrize("data", [b"", b"x" * (MAX_IMAGE_BYTES + 1)], ids=["empty", "oversized"])
 def test_prepare_image_enforces_input_byte_limit(data):
     with pytest.raises(ValueError, match="8 MiB"):
         prepare_image(data)
