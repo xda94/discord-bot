@@ -40,6 +40,11 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"page-wishlist" in page.data
     assert b"page-memory" in page.data
     assert b"page-birthdays" in page.data
+    assert b"page-users" in page.data
+    assert b'id="users-scope"' in page.data
+    assert b'id="users-list"' in page.data
+    assert b"page-community" not in page.data
+    assert b"profile-form" not in page.data
     assert b"sponsor-tier-form" in page.data
     assert b"sponsor-tiers-list" in page.data
     assert stylesheet.status_code == 200
@@ -67,6 +72,10 @@ def test_dashboard_and_assets_are_served(dashboard_client):
     assert b"birthdayParts" in script.data
     assert b"/sponsors/tiers" in script.data
     assert b"formatChancePercent" in script.data
+    assert b"/interactions" in script.data
+    assert b"open-user-feature" in script.data
+    assert b"/analytics/delivery" in script.data
+    assert b"/analytics/natural" not in script.data
     assert translations.status_code == 200
     assert b"qualified_for_review" in script.data
     assert b"likes_needed" in script.data
@@ -430,7 +439,47 @@ def test_new_data_routes_keep_bearer_auth(dashboard_client, monkeypatch):
     assert client.get("/wishlist/history?user_id=1&url=https://example.com").status_code == 401
     assert client.get("/memory/channels?guild_id=1").status_code == 401
     assert client.get("/birthdays").status_code == 401
+    assert client.get("/interactions").status_code == 401
     assert client.get("/system/stats", headers={"Authorization": "Bearer private-token"}).status_code == 200
+
+
+def test_interactions_route_filters_scope_and_formats_ids(dashboard_client):
+    from db.analytics import record_feature_interaction
+
+    _api, client = dashboard_client
+    record_feature_interaction(
+        1234567890123456789, "wishlist", "wishlist-show",
+        guild_id=8876543210987654321, user_name="Ana", guild_name="Home", occurred_at=100,
+    )
+    record_feature_interaction(
+        1234567890123456789, "flights", "flight-tracker-add", user_name="Ana", occurred_at=200,
+    )
+
+    exact = client.get("/interactions", headers={"X-Discord-ID-Format": "string"}).get_json()
+    direct = client.get("/interactions?scope=dm").get_json()
+    invalid = client.get("/interactions?scope=bad")
+
+    assert [item["feature"] for item in exact["interactions"]] == ["flights", "wishlist"]
+    assert exact["interactions"][1]["user_id"] == "1234567890123456789"
+    assert exact["interactions"][1]["guild_id"] == "8876543210987654321"
+    assert direct["interactions"] == [{
+        "user_id": 1234567890123456789, "feature": "flights", "scope_type": "dm",
+        "guild_id": None, "user_name": "Ana", "guild_name": "", "count": 1,
+        "first_at": 200.0, "last_at": 200.0, "last_action": "flight-tracker-add",
+    }]
+    assert invalid.status_code == 400
+    assert "error" in invalid.get_json()
+
+
+def test_delivery_analytics_replace_removed_admin_routes(dashboard_client):
+    _api, client = dashboard_client
+
+    delivery = client.get("/analytics/delivery")
+
+    assert delivery.status_code == 200
+    assert delivery.get_json() == {"reminders": {}, "notifications": {}}
+    assert client.get("/analytics/natural").status_code == 404
+    assert client.get("/assistant-profiles/1").status_code == 404
 
 
 def test_discord_ids_accept_strings_and_round_trip_exactly(dashboard_client):

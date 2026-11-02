@@ -494,6 +494,21 @@ def init_db():
                 "INSERT OR IGNORE INTO analytics_metadata (key, value) VALUES (?, ?)",
                 ("tracking_started_at", str(time.time())),
             )
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS feature_interactions (
+                    user_id INTEGER NOT NULL,
+                    feature TEXT NOT NULL CHECK (feature IN ('wishlist', 'flights')),
+                    scope_type TEXT NOT NULL CHECK (scope_type IN ('guild', 'dm')),
+                    guild_id INTEGER NOT NULL DEFAULT 0,
+                    user_name TEXT NOT NULL DEFAULT '',
+                    guild_name TEXT NOT NULL DEFAULT '',
+                    count INTEGER NOT NULL DEFAULT 0,
+                    first_at REAL NOT NULL,
+                    last_at REAL NOT NULL,
+                    last_action TEXT NOT NULL,
+                    PRIMARY KEY (user_id, feature, scope_type, guild_id)
+                )
+            """)
             from db.experience_schema import migrate
             migrate(c)
             from db import community_schema

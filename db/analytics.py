@@ -203,3 +203,74 @@ def get_analytics_summary(period="30d", guild_id=None, *, now: float | None = No
         "failures": failures,
         "daily": list(daily_map.values()),
     }
+
+
+def record_feature_interaction(
+    user_id: int,
+    feature: str,
+    action: str,
+    *,
+    guild_id: int | None = None,
+    user_name: str = "",
+    guild_name: str = "",
+    occurred_at: float | None = None,
+) -> None:
+    if feature not in ("wishlist", "flights"):
+        raise ValueError(f"Unsupported interaction feature: {feature}")
+    if not action or not isinstance(action, str):
+        raise ValueError("Interaction action must be a non-empty string")
+    scope_type = "guild" if guild_id is not None else "dm"
+    stored_guild_id = int(guild_id) if guild_id is not None else 0
+    timestamp = time.time() if occurred_at is None else float(occurred_at)
+    conn = sqlite3.connect(connection.DB_FILE, timeout=0.25)
+    try:
+        conn.execute(
+            """
+            INSERT INTO feature_interactions
+                (user_id, feature, scope_type, guild_id, user_name, guild_name,
+                 count, first_at, last_at, last_action)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(user_id, feature, scope_type, guild_id) DO UPDATE SET
+                count = feature_interactions.count + 1,
+                user_name = CASE WHEN excluded.user_name != ''
+                    THEN excluded.user_name ELSE feature_interactions.user_name END,
+                guild_name = CASE WHEN excluded.guild_name != ''
+                    THEN excluded.guild_name ELSE feature_interactions.guild_name END,
+                last_at = MAX(feature_interactions.last_at, excluded.last_at),
+                last_action = excluded.last_action
+            """,
+            (
+                int(user_id), feature, scope_type, stored_guild_id,
+                str(user_name or "")[:100], str(guild_name or "")[:100],
+                timestamp, timestamp, action[:100],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_feature_interactions(scope_type: str | None = None, limit: int = 500) -> list[dict]:
+    if scope_type not in (None, "guild", "dm"):
+        raise ValueError("scope must be one of: guild, dm")
+    query = (
+        "SELECT user_id, feature, scope_type, guild_id, user_name, guild_name, "
+        "count, first_at, last_at, last_action FROM feature_interactions"
+    )
+    params: list = []
+    if scope_type is not None:
+        query += " WHERE scope_type = ?"
+        params.append(scope_type)
+    query += " ORDER BY last_at DESC, user_id LIMIT ?"
+    params.append(int(limit))
+    with _connect() as c:
+        rows = c.execute(query, params).fetchall()
+    keys = (
+        "user_id", "feature", "scope_type", "guild_id", "user_name", "guild_name",
+        "count", "first_at", "last_at", "last_action",
+    )
+    items = [dict(zip(keys, row)) for row in rows]
+    for item in items:
+        if item["scope_type"] == "dm":
+            item["guild_id"] = None
+    return items

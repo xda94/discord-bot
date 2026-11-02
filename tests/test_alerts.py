@@ -467,3 +467,86 @@ def test_price_change_dm_survives_missing_llm_reaction(monkeypatch, tmp_db):
     sent_message = user.send.await_args.args[0]
     assert "Price changed: `100.00 RON` -> **120.00 RON**" in sent_message
     assert "🤖" not in sent_message
+
+
+def _compact_feature(monkeypatch, *, price, history, old_price, old_stock=1, in_stock=True, compact=True):
+    feature = object.__new__(WishlistFeature)
+    feature.scraper = MagicMock()
+    feature.scraper.fetch.return_value = ScrapeResult(price=price, in_stock=in_stock, title="Piper", currency="RON")
+    feature.converter = MagicMock()
+    feature.converter.format_in_currency.side_effect = lambda v, s, t: f"{v:.2f} {t}"
+    feature.converter.format_with_conversions.side_effect = lambda v, s: f"{v:.2f} {s}"
+    feature.client = MagicMock()
+    if compact:
+        db.set_assistant_profile(2, notification_style="compact")
+    sent = []
+
+    async def capture(client, user_id, source, item_id, event_kind, msg, protected=()):
+        sent.append(msg)
+
+    monkeypatch.setattr("features.wishlist.deliver_tracking", capture)
+    monkeypatch.setattr("features.wishlist.db.get_price_history", lambda *args: [(p, 0, None) for p in history])
+    monkeypatch.setattr("features.wishlist.db.add_price_history", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.update_scraped_item_status", MagicMock())
+    monkeypatch.setattr("features.wishlist.db.update_item_alert_state", MagicMock())
+    monkeypatch.setattr("features.wishlist.generate_price_change_message", lambda *args, **kwargs: None)
+    item = (1, 2, "https://shop.example/p", old_price, old_stock, "Piper", "RON", None, None)
+    asyncio.run(feature._process_scrape_item(item))
+    return sent
+
+
+BUY_HISTORY = [199.99, 210.0, 220.0, 230.0, 240.0, 250.0, 260.0]
+
+
+def test_compact_buy_alert_shows_price_and_previous_low(monkeypatch, tmp_db):
+    sent = _compact_feature(monkeypatch, price=189.99, history=BUY_HISTORY, old_price=189.99)
+    assert sent == ["🔔 **Piper**: buy window (previous low 199.99 RON). Price: **189.99 RON**. https://shop.example/p"]
+
+
+def test_compact_wait_alert_shows_price_and_median(monkeypatch, tmp_db):
+    sent = _compact_feature(monkeypatch, price=255.0, history=BUY_HISTORY, old_price=255.0)
+    assert "maybe wait (usual median 230.00 RON)" in sent[0]
+    assert "Price: **255.00 RON**" in sent[0]
+
+
+def test_compact_price_change_does_not_repeat_price(monkeypatch, tmp_db):
+    sent = _compact_feature(monkeypatch, price=189.99, history=BUY_HISTORY, old_price=205.0)
+    assert "205.00 RON → 189.99 RON" in sent[0]
+    assert " Price: " not in sent[0]
+
+
+def test_standard_restock_shows_current_price(monkeypatch, tmp_db):
+    sent = _compact_feature(monkeypatch, price=150.0, history=[], old_price=150.0, old_stock=0, compact=False)
+    assert "BACK IN STOCK" in sent[0]
+    assert "💵 Current price: **150.00 RON**" in sent[0]
+
+
+def test_romanian_compact_alert_localizes():
+    from i18n import localize
+
+    url = "https://shop.example/p"
+    msg = f"🔔 **Piper**: buy window (previous low 199.99 RON). Price: **189.99 RON**. {url}"
+    assert localize(msg, "ro", protected=("Piper", url)) == (
+        f"🔔 **Piper**: moment bun pentru cumpărare (minim anterior 199.99 RON). Preț: **189.99 RON**. {url}"
+    )
+
+
+@pytest.mark.parametrize("language, expected", [
+    ("en", "Observed at 01.11.2026 07:55 EET"),
+    ("ro", "Observat la 01.11.2026 07:55 EET"),
+])
+def test_observed_time_is_readable_local_time(tmp_db, language, expected):
+    from datetime import datetime, timezone
+
+    from db import notifications as store
+    from notifications import drain
+
+    db.set_assistant_profile(1, timezone="Europe/Bucharest", timezone_configured=True, language=language)
+    observed = datetime(2026, 11, 1, 5, 55, tzinfo=timezone.utc).timestamp()
+    store.enqueue(1, "wishlist", 7, "price", "🔔 Piper", language, 0, observed_at=observed)
+    user = MagicMock()
+    user.send = AsyncMock(return_value=MagicMock(id=99))
+    client = MagicMock()
+    client.fetch_user = AsyncMock(return_value=user)
+    asyncio.run(drain(client))
+    assert user.send.await_args.args[0].endswith(expected)

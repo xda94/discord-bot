@@ -231,38 +231,3 @@ async def send_graph(interaction, *, url, currency, days, percentage, converter,
         if file:
             file.close()
 
-
-async def send_graph_to_user(
-    user, *, url, currency, days, percentage, converter, effective_currency, language=None
-):
-    """Build and deliver a graph directly to the requester's DM.
-
-    Unlike the slash callback this path has no interaction response to defer;
-    the view is created after the worker-thread build and remains available
-    even when the selected period has no saved observations.
-    """
-    language = language or language_for(profile=db.get_assistant_profile(user.id))
-    validate_days(days)
-    build = partial(
-        build_graph, user.id, url, currency,
-        converter=converter, effective_currency=effective_currency, language=language,
-    )
-    file = None
-    try:
-        content, file = await asyncio.to_thread(build, days, percentage)
-        view = WishlistGraphView(
-            user.id, build, days=days, percentage=percentage,
-            allow_percentage=url is None, language=language,
-        )
-        kwargs = {
-            "content": content,
-            "view": view,
-            "allowed_mentions": discord.AllowedMentions.none(),
-            "suppress_embeds": True,
-        }
-        if file:
-            kwargs["file"] = file
-        await user.send(**kwargs)
-    finally:
-        if file:
-            file.close()

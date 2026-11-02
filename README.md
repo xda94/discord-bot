@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, bilingual community games and private humor tools, bounded natural-language commands, global per-user assistant profiles, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, global per-user assistant profiles, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -78,7 +78,6 @@ LLM_MEMORY_ENABLED=0
 | `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
 | `LLAMA_CPP_ALLOWED_MODELS` | Yes (bot) | Comma-separated llama.cpp model aliases offered by `/llm-set`. A single-server setup normally lists one alias. |
-| `NATURAL_LLM_ENABLED` | No | Defaults to disabled. Set `1` only after the deployed model passes the read-only bilingual corpus evaluation; deterministic mention commands remain available. |
 | `LLAMA_CPP_TIMEOUT` | No | Default capacity queue deadline and HTTP generation timeout, in seconds. Default: `180`; the HTTP timeout begins after admission activates. |
 | `LLAMA_CPP_VISION_TIMEOUT` | No | HTTP generation timeout for requests containing an image. Defaults to the larger of `600` seconds and `LLAMA_CPP_TIMEOUT`. Explicit per-call timeouts take precedence. Does not change the capacity queue deadline. |
 | `LLM_IMAGE_MAX_EDGE` | No (bot) | Maximum width or height sent for image mentions. Default: `1280` pixels. Larger images are resized proportionally; increase for fine text at the cost of more image processing. |
@@ -292,13 +291,12 @@ asks for the Discord sponsor password; its tier routes use the bearer token.
 The HTML and static assets remain loadable so the login screen can open. All
 dashboard data and mutations use the existing bearer-protected REST routes.
 
-The **Community games / Jocuri de comunitate** page shows sessions with aggregate
-vote counts, deadlines, results and delivery errors; the current bingo board
-and bilingual habits; approved museum quotes and only a count of pending
-requests; and symbolic titles. Operators can cancel a session, manage habits,
-remove quotes and remove titles. Destructive actions ask for confirmation.
-The page includes an English/Romanian command guide; switching guilds prevents
-older requests from replacing the newly selected guild's content.
+The **Users** page lists who uses wishlist and flight commands (including
+`/worth-it`): per user, server or direct message, with use counts, first and
+last use, and the last command. Filter by servers or direct messages, and open
+a row to jump to that user's wishlist or flights. Direct messages are uses
+outside your servers. The **Notifications** page shows pending and failed
+tracking notifications for the selected user.
 
 ---
 
@@ -315,8 +313,6 @@ older requests from replacing the newly selected guild's content.
 | Tracking notifications | 30 s | Drains the durable outbox, respecting opt-in quiet hours and daily digests |
 | Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm-inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
-| Community sessions | 15 s | Restore persistent controls, close due votes, reconcile cancellations, retry original-message result edits and clean completed history |
-| Quote consent | 15 s | Restore consent/removal controls and erase expired unapproved quote requests |
 | Teases | On message | Random mood lines rewritten via llama.cpp |
 
 ---
@@ -332,7 +328,6 @@ older requests from replacing the newly selected guild's content.
 | `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style and in the triggering message's language. |
 | `/help` | Localized categories and examples, with a complete command reference button. |
 | `/start` | Guided private language → optional timezone picker → ready flow, with feature navigation. |
-| `/natural-language` | Read-only English/Romanian examples guide for supported mention commands. |
 
 ### Reminders
 
@@ -344,9 +339,7 @@ older requests from replacing the newly selected guild's content.
 | `/reminder-cancel <reminder-id>` | Cancel a saved reminder. |
 | `/reminder-snooze <reminder-id>` | Create an independent ten-minute one-off. |
 
-### Assistant profile and natural commands
-
-Romanian commands, calendar reminders, reminder management, flight budgets, durable quiet-hour/digest notifications, bilingual dashboard controls, additive migrations, and rollout verification are documented in [Bilingual commands and delivery](docs/romanian-commands.md).
+### Setup
 
 `/start` guides you through English, Română, or Automatic, then a timezone
 dropdown and a ready screen in one private message. Choose a common timezone
@@ -357,222 +350,6 @@ recurring schedules require one, including when your choice is UTC. Language
 and timezone changes preserve your other preferences, and reopening `/start`
 begins with your current language setting. Controls belong to the requester
 and expire after ten minutes.
-
-`/natural-language` opens a private, read-only guide with English/Romanian
-controls that change only the guide's display language. Its categories cover
-relative/calendar/recurring reminders and their management, wishlist tracking
-and alerts, refreshes and price graphs (1–180 days), and listing saved flight
-trackers. Flight creation and management use the existing slash commands.
-Replace the example URLs and IDs with your own, and select the real bot account
-for every mention request, including DMs and clarification replies. Supported
-actions execute immediately and acknowledge success with ✅; lists and graphs
-arrive privately. If DMs are blocked, use the displayed private slash
-alternative. Missing details open a ten-minute clarification. The same guide
-is available from `/start` and `/help`.
-
-The new command becomes available after the bot's normal startup
-`on_ready` command sync; restart the bot after deploying this change.
-
-The implementation and runtime architecture are also summarized in
-[`bot.md`](bot.md), including event routing, persistence, delivery recovery,
-API routes, and deployment notes.
-
-### Current implementation status
-
-The repository now includes the deterministic Romanian/English command parser,
-shared localization catalogs, timezone-aware duration/calendar parsing,
-clarification and ownership controls, lifecycle-managed reminders, recurrence,
-retry/reconciliation, durable tracking notifications, wishlist IDs and target
-controls, flight budgets and airport autocomplete, guided `/start`, the
-read-only bilingual `/natural-language` guide, categorized help,
-the independent bilingual dashboard selector, and aggregate natural-command
-analytics. SQLite changes are additive and existing slash/API contracts remain
-compatible.
-
-The reviewed parser corpus contains 148 English/Romanian cases and currently
-passes at 100% with zero unauthorized actions. Regression coverage includes
-guided setup and every concrete example published in the natural-language
-guide. `NATURAL_LLM_ENABLED` remains disabled by default until a deployed
-model passes the read-only 100-case evaluation gate; the live model endpoint
-and a Discord test server still need to be exercised before enabling generated
-action execution.
-
-| Command | Description |
-|---|---|
-| `/assistant-profile` | Privately show your global assistant preferences. Reading defaults does not create a database row. |
-| `/assistant-profile-set [language] [tone] [currency] [timezone] [notification-style] [llm-behavior]` | Privately update only the supplied fields. Currency can be unset; timezone must be an IANA name such as `Europe/Bucharest`. |
-| `/assistant-profile-reset` | Delete your stored profile and return to defaults. |
-
-Profile defaults are language `auto`, tone `default`, no currency override,
-timezone `UTC`, notification style `standard`, and LLM behavior `balanced`.
-Profiles are global per Discord user and independent from conversational memory.
-Language, tone, and answer detail are snapshotted when a text, vision, or empty
-summon mention is queued; an explicit language request in the current message
-wins over the saved language. A saved currency is used only when a supported
-wishlist/flight command omits currency. `compact` shortens scheduled wishlist
-and flight DMs. Calendar reminders, recurrence, quiet hours, and daily digests
-require an explicitly configured timezone; relative one-off durations do not.
-Tracking delivery defaults to immediate with no quiet hours. The dashboard
-language preference is independent of the selected Discord user’s profile.
-
-When the bot is explicitly mentioned, it recognizes these complete English or
-Romanian phrases before falling through to the ordinary mention LLM:
-
-| Operation | English | Romanian |
-|---|---|---|
-| Track | `track <URL>` (or reply with `track this`) | `urmărește <URL>` (or reply with `urmărește asta`) |
-| Flights | `show my flights` | `arată-mi zborurile mele` |
-| Show wishlist | `show my wishlist [in EUR]` | `arată-mi wishlist-ul [în EUR]` |
-| Remove | `stop tracking <URL>` | `nu mai urmări <URL>` |
-| Target | `set target price for <URL> to 100 EUR` | `setează prețul țintă pentru <URL> la 100 EUR` |
-| Clear target | `clear target price for <URL>` | `șterge prețul țintă pentru <URL>` |
-| Restock only | `enable|disable restock only for <URL>` | `activează|dezactivează doar notificările de stoc pentru <URL>` |
-| Refresh | `refresh <URL>` / `refresh my wishlist` | `actualizează <URL>` / `actualizează wishlist-ul meu` |
-| Graph | `graph <URL> [in EUR] [for 30 days]` or `graph my wishlist [in EUR] [for 30 days]` | `grafic pentru <URL> [în EUR] [pentru 30 zile]` or `grafic pentru wishlist-ul meu [în EUR] [pentru 30 zile]` |
-| Compare | `compare my wishlist [for 30 days]` | `compară wishlist-ul meu [pentru 30 zile]` |
-| Reminder | `remind me in two hours to stretch` | `amintește-mi peste 2 ore să sun acasă` |
-
-Durations accept positive numbers, common written values, fractions, weeks,
-and compounds such as `o oră și 30 de minute`. Graph periods are whole days
-from 1 to 180. Complete actions execute immediately; missing or ambiguous fields
-start a ten-minute clarification. Every text follow-up requires a bot mention.
-Successful actions and requested private deliveries receive only ✅.
-
-Flight, wishlist, reminder, refresh, and graph results stay private. If DMs fail,
-the response names the exact slash command for an ephemeral alternative.
-Wishlist references accept owned IDs, titles, URLs, or unambiguous bot results.
-Refresh preserves existing cooldowns and saved-history graphs. Unmatched mentions
-use the existing model worker; structured model execution is opt-in through
-`NATURAL_LLM_ENABLED=1` after the read-only evaluation passes. See the bilingual
-delivery guide above for migrations, limitations, and rollout checks.
-
-### Community games and private humor
-
-`/help` and `/start` include **Community games / Jocuri de comunitate**, with
-the full guide in English or Romanian. Private replies use the saved profile
-language, then Discord locale; shared sessions retain their creator's language,
-while button acknowledgments use the clicking member's language. User text is
-kept as written. These features use slash commands; natural-language mention
-parsing does not support them.
-Command names, options and descriptions are English throughout the bot,
-except `/azi-se-spala`. Reply content remains bilingual.
-
-| Invocation | Behavior |
-|---|---|
-| `/tribunal accused:@member accusation:Who hid the coffee?` | Accusation, maximum 500 characters. Voting opens immediately for all human server members, including the accused, and lasts ten minutes. |
-| `/meeting subject:Lunch options:Pizza\|Soup\|Salad` | Immediate vote with 2–5 distinct options of at most 80 characters; subject at most 200. |
-| `/quest [user:@member] [text:Organize a game night]` | Write a custom quest (1–300 characters); text is required when assigning to another member. Messages mention the recipient and assigner. Without arguments, take a private catalog challenge. One open quest per recipient/server. |
-| `/quest-show-active [user:@member]` | Privately list all active quests in this server, or filter by recipient. Each entry links to the original message to complete or abandon it. |
-| `/bingo` | Shared weekly 3×3 habit board with manual marks and independent human confirmation. |
-| `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Add a bilingual habit, or edit the supplied ID; each translation is 1–200 characters. Requires Manage Server. |
-| `/bingo-habit-delete id:12` | Remove an active habit, respecting the nine-habit minimum. Requires Manage Server. |
-| `/quote-add quote:Coffee is a food group user:@member` | Submit quote text and the server member who said it for author approval by DM. |
-| `/quote` | Show a random approved quote from this server, its author and quote ID. |
-| `/who-said` | Ten-minute quiz identifying the author of an approved quote; requires at least two distinct approved authors and offers 2–4 choices. |
-| `/quote-delete id:12` | Withdraw as quote author or a moderator with Manage Messages. |
-| `/excuse reason:I missed the meeting style:corporate` | Privately show an excuse in corporate, grandmother, gamer or public-servant style; reason at most 500 characters. |
-| `/worth-it url:https://shop.example/item` | Privately show current/minimum/maximum/median prices, a calculated buy-or-wait verdict, and actionable advice from both voices. |
-| `/horoscope theme:work` | Local daily deterministic forecast; themes are general, work, gaming and household. |
-
-Community replies identify members with mentions; server and channel references
-use names. `/who-said` shows candidate names and mentions with numbered answer
-buttons, including for duplicate names and restored quizzes. Quest shortcuts
-use labeled links. Quote and bingo-habit record numbers remain available for
-their management commands.
-
-Shared games, museum commands, bingo and horoscope require a server. `/excuse`
-and `/worth-it` also work in DMs. On a server, their full results appear in the
-command channel as ephemeral messages visible only to the requester, with
-Discord's **Dismiss message** control. They do not send results by DM and work
-even when DMs are blocked. Private excuse reasons and generated responses are not
-saved. Both completed results mention only the requester. `/excuse` also shows
-the original reason and selected style above the generated excuse.
-`/worth-it` never refreshes prices, scrapes a page or makes a purchase.
-It reports the current saved price, recorded minimum, maximum and median, and
-percentage differences from the median and minimum. With at least seven valid
-positive observations, a fresh check and available stock, prices below the
-median or at the recorded minimum are favorable; above the median means wait;
-at the median or a range narrower than 1% means an ordinary price. Missing
-price/currency/history, unknown stock, a check older than a day and unavailable
-stock have explicit outcomes. Both voices give concrete actions matching the
-calculated verdict; LLM commentary cannot change it. Comparisons use the tracked
-item's recorded native units, assuming its currency has stayed the same. The
-historical table has no per-observation currency, so there is no conversion or
-way to detect historical currency changes. No future price drop is promised.
-
-All votes last exactly **600 seconds** from opening, including after restart.
-Each eligible human has one stored, changeable vote. Tribunal and meeting
-ties or no votes are neutral. A quest owner cannot vote on their own completion;
-only a strict positive majority grants the catalog's symbolic title, once.
-Ties/no votes grant none. Titles are stored awards, not Discord roles; they
-remain until explicitly removed by an administrator. A quiz reveals the
-correct author and counts when it closes.
-
-Bingo uses the bot's **local calendar date and ISO week beginning Monday**.
-One guild/week board snapshots nine bilingual habits; edits affect future
-boards. Keep 9–50 active habits. The first marker records a cell, and another
-human member must confirm it before any line counts. Confirmed or old-week
-cells cannot be changed. It does not watch channel messages, infer habits from
-memory or post unsolicited weekly boards. Horoscope also uses the bot's local
-date: the same guild/member/date/theme gives the same result across restart;
-changing language changes rendering only. Bingo, quest selection, quizzes and
-horoscope make no model calls.
-
-Use `/quote-add quote:<text> user:<member>` to enter a quote of at most 1,200
-characters and select the human server member who said it. Empty quotes, bots
-and system users are rejected. The selected author receives a single DM card
-with the full quote clearly framed, the server and channel names, and the
-submitting member's name and mention. Accept/Decline buttons appear on that
-same message, with **24 hours** to accept or refuse the attribution.
-Acceptance explicitly makes the
-quote **available throughout that guild, including to members who cannot see
-the submission channel**. The author must still belong to the server when accepting.
-Blocked DMs cancel the request. Nothing is selected from chat history or
-conversation memory automatically. Approved quotes remain until deletion;
-unapproved text is erased on refusal or expiry. An approved consent DM keeps a
-persistent author-only removal button, so withdrawal works even after leaving
-the server. Deletion clears stored text and revokes related quizzes. It cannot
-recall screenshots or already sent ordinary Discord messages.
-
-With `/quest user:@member text:Organize a game night`, you choose the quest text
-instead of a predefined challenge. The text is required for assignments to
-another member and must contain **1–300 characters**. The selected member has
-**24 hours** to accept or decline the invitation in the command channel.
-The invitation, active quest and final message mention both the recipient and
-assigner. Only the recipient is notified when the invitation is posted; text
-entered in the quest cannot ping other users or roles. Custom text is stored
-as written in both language variants, without automatic translation; successful
-custom quests award the symbolic **Quest Champion** title. `/quest` without
-arguments keeps the private catalog offer; `text` also supports a custom quest
-for yourself. Acceptance starts a **seven-day** completion
-window; verification lasts **ten minutes**. The recipient cannot self-verify,
-and any symbolic title is awarded to them. Repeating the same text shows the
-existing quest. Different text replaces a pending or active quest you assigned,
-cancels its old controls, and sends a new invitation requiring the recipient's
-acceptance. The recipient can also replace their own quest with custom text.
-Quests already in verification, or assigned by someone else, return an explicit
-conflict instead of silently ignoring the new text. Existing self-assigned
-quests also count toward the one-quest limit.
-
-`/quest-show-active` privately lists all accepted, unexpired active quests in
-the current server. Select the optional `user` field to show only that member's
-quests. Entries show the challenge, recipient, assigner and completion deadline,
-with a link to the original message. Only the recipient can use its Completed
-or Abandon buttons. Pending invitations and quests under verification are not
-included.
-
-Session and consent controls are restored after restart. Overdue votes close
-promptly, and results edit the original public message rather than posting a
-second result. Transient edit failures retry that same message; inaccessible
-or deleted messages produce safe delivery errors in the dashboard. Humor uses
-one short llama.cpp call through shared capacity, with thinking disabled, at
-most 220 output tokens and a 30-second generation timeout. Busy, timed-out or
-invalid generation uses a deterministic local fallback. A vote is frozen and
-its fallback persisted before generation; an interrupted attempt recovers the
-fallback without another model call. Completed sessions are kept for **30 days
-after closure**; bingo history for **30 days after the local ISO week ends**.
-Active work is retained. Approved quotes and symbolic titles
-follow the explicit-deletion rules above.
 
 ### Birthdays
 
@@ -664,6 +441,37 @@ Manual add/refresh fallback uses interactive LLM capacity. If capacity is unavai
 - Red — above historical median (“maybe wait”); one alert per high period until price returns to median or below.
 
 Flat prices do not trigger spurious “all-time low” messages.
+
+Every wishlist notification with a known current price shows that price once.
+Buy alerts also show the previous low and wait alerts the usual median, in both
+standard and compact styles. Notifications end with a readable observation time
+in your saved timezone, such as `Observed at 01.11.2026 07:55 EET` (UTC when no
+timezone is saved); flight notifications use the same format.
+
+| Command | Description |
+|---|---|
+| `/worth-it url:https://shop.example/item` | Privately show current/minimum/maximum/median prices, a calculated buy-or-wait verdict, and actionable advice from both voices. |
+
+`/worth-it` works in servers and DMs. On a server, the full result appears in
+the command channel as an ephemeral message visible only to the requester, with
+Discord's **Dismiss message** control. It does not send results by DM and works
+even when DMs are blocked. Generated responses are not saved, and the completed
+result mentions only the requester.
+`/worth-it` never refreshes prices, scrapes a page or makes a purchase.
+It reports the current saved price, recorded minimum, maximum and median, and
+percentage differences from the median and minimum. With at least seven valid
+positive observations, a fresh check and available stock, prices below the
+median or at the recorded minimum are favorable; above the median means wait;
+at the median or a range narrower than 1% means an ordinary price. Missing
+price/currency/history, unknown stock, a check older than a day and unavailable
+stock have explicit outcomes. Both voices give concrete actions matching the
+calculated verdict; LLM commentary cannot change it. Comparisons use the tracked
+item's recorded native units, assuming its currency has stayed the same. The
+historical table has no per-observation currency, so there is no conversion or
+way to detect historical currency changes. No future price drop is promised.
+Humor uses one short llama.cpp call through shared capacity, with thinking
+disabled, at most 220 output tokens and a 30-second generation timeout. Busy,
+timed-out or invalid generation uses a deterministic local fallback.
 
 **Target alerts and source status** — a target fires once when its price crosses
 at or below the chosen amount, then re-arms only after rising above it. The item
@@ -759,7 +567,7 @@ completed, not that visual accuracy has been verified; compare the answers.
 
 Bot and API coordinate through POSIX file locks in `LLM_CAPACITY_DIR`. The bot
 reserves capacity before queuing a job and holds the same reservation across
-retries and nested natural-command inference. Cancelling an async caller
+retries. Cancelling an async caller
 retains execution capacity while its HTTP worker thread is still running.
 Teases, ordinary reactions, inactivity nudges, birthday greetings, memory
 synthesis, and optional price-change prose run only when shared capacity is
@@ -912,6 +720,8 @@ IDs such as reminder, joke, item, and tracker IDs remain numeric.
 | `GET` | `/` | Local dashboard HTML; CSS and JavaScript are served below `/static/` |
 | `GET` | `/health` | Public API/database probe: `{ "status": "ok", "database": "ok" }` with HTTP 200; unavailable database returns HTTP 503. |
 | `GET` | `/system/stats` | CPU, temperature in Celsius, memory, disk, host uptime, platform, and server timezone; unavailable metrics are `null` |
+| `GET` | `/interactions?scope=guild\|dm` | Wishlist, flight and `/worth-it` usage per user and server or DM: count, first/last use and last command; omit `scope` for both. DM rows have `guild_id` `null`. Invalid scope returns 400. |
+| `GET` | `/analytics/delivery` | Reminder and tracking-notification counts by delivery state: `{ "reminders": {...}, "notifications": {...} }`. |
 ### Sponsor tiers
 
 | Method | Path | Body / notes |
@@ -1019,31 +829,6 @@ privacy changes therefore take effect without restarting the Discord process.
 Channel and preference controls govern automatic mode; the API remains available
 in manual mode for inspecting, deleting, or preconfiguring retained data.
 
-### Community administration
-
-All routes use the existing operator bearer token and a positive `guild_id`.
-GET requests take it as a query parameter; mutations include it in the JSON
-body. Session, quote and title lists are bounded to 100 rows; habits to 50.
-Session tallies contain no voter identities, and pending quote text is never
-returned. The API offers no vote, quote-approval or private-generation endpoint.
-
-| Method | Path | Body / notes |
-|---|---|---|
-| `GET` | `/community/sessions?guild_id=<id>` | Sessions, phases/deadlines, aggregate tally, results and delivery state; optional `limit=1..100`. |
-| `POST` | `/community/sessions/<id>/cancel` | `{ "guild_id" }`; cancel pending/active work, with controls reconciled on the next bot tick. |
-| `GET` | `/community/bingo?guild_id=<id>` | Current board, marks and active habits. |
-| `POST` | `/community/bingo/habits` | `{ "guild_id", "text_en", "text_ro" }`; add bilingual habit. |
-| `PUT` | `/community/bingo/habits/<id>` | Same fields; edit future-board habit text. |
-| `DELETE` | `/community/bingo/habits/<id>` | `{ "guild_id" }`; keep at least nine active habits. |
-| `GET` | `/community/quotes?guild_id=<id>` | Approved quotes plus pending count; optional `limit=1..100`. |
-| `DELETE` | `/community/quotes/<id>` | `{ "guild_id" }`; remove quote and revoke related quizzes. |
-| `GET` | `/community/titles?guild_id=<id>` | Symbolic awards; optional `limit=1..100`. |
-| `DELETE` | `/community/titles/<user_id>/<title_key>` | `{ "guild_id" }`; explicitly remove an award. |
-
-Malformed requests return 400, missing/wrong-guild objects 404, prohibited
-transitions 409 and database unavailability 503 with sanitized errors. The
-dashboard uses `X-Discord-ID-Format: string` for precise Discord snowflakes.
-
 ### Wishlist
 
 | Method | Path | Body / notes |
@@ -1089,8 +874,7 @@ Coverage highlights: the `db` package (CRUD, migrations, cascades, memory, fligh
 Reliability checks use the repository `.venv` (Python 3.9.6) and cover shared
 capacity across processes, cancellation, background skips, usable scraper
 evidence, SQLite initialization retry/rollback, and truthful write failures.
-The existing urllib3/LibreSSL compatibility warning remains. The reviewed bilingual
-parser corpus passed 148/148 cases (100%) with zero unauthorized actions.
+The existing urllib3/LibreSSL compatibility warning remains.
 Tests use isolated databases; no live Discord messages or production services
 were used.
 
@@ -1112,8 +896,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `sponsor_tiers.py` | Shared sponsor-tier validation, versioned catalog codec, decimal/percent formatting |
 | `wishlist/` | Scraping, refresh persistence, currency conversion, alerts, and chart rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
-| `assistant_profiles.py` | Discord-free assistant-profile validation, defaults, and prompt guidance |
-| `natural_commands.py` | Discord-free bounded English/Romanian command parser |
+| `assistant_profiles.py` | Discord-free assistant profile validation, defaults, and prompt guidance |
 | `db/` | SQLite connection, schema/migrations, and domain query modules |
 | `db/sponsors.py` | Atomic sponsor-tier catalog reads/writes using the global settings table |
 | `llm/` | llama.cpp client, response generation, memory extraction/store, and single-slot worker |
@@ -1136,17 +919,11 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `wishlist.py` | `WishlistFeature` | `/wishlist-*` commands, scrape loop, and Discord notifications |
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
-| `assistant_profiles.py` | `AssistantProfilesFeature` | Private global per-user preference commands |
-| `natural_commands.py` | `NaturalCommandsFeature` | Mention-only immediate actions and private requester delivery |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
 | `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
 | `user_memory.py` | `UserMemoryFeature` | Discord commands and event adapter for the shared memory store |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `onboarding.py` | `OnboardingFeature`, `OnboardingView`, `HelpView` | Guided private `/start`, timezone selectors, and feature navigation |
-| `natural_language_help.py` | `NaturalLanguageHelpView` | Reusable read-only bilingual mention-command examples |
-| `help_feature.py` | `HelpFeature` | `/help` and `/natural-language` |
-| `social_games.py` | `SocialGamesFeature`, `SessionView` | Persistent tribunal, meeting, quest and quote quiz lifecycle |
-| `bingo.py` | `BingoFeature`, `BingoView` | Weekly bilingual habits and independent confirmation |
-| `quote_museum.py` | `QuoteMuseumFeature`, `QuoteConsentView` | Explicit author consent and persistent quote withdrawal |
-| `humor.py`, `humor_common.py` | `HumorFeature` | Private excuses/wishlist commentary, deterministic horoscope and bilingual catalogs |
+| `help_feature.py` | `HelpFeature` | `/help` |
+| `humor.py`, `humor_common.py` | `HumorFeature` | Private `/worth-it` wishlist commentary and bilingual catalogs |

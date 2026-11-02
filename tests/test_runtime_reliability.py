@@ -105,3 +105,20 @@ def test_ready_sync_and_feature_failures_do_not_block_other_startup():
     catalog.assert_awaited_once()
     first.start_tasks.assert_awaited_once()
     second.start_tasks.assert_awaited_once()
+
+
+def test_bot_wiring_after_feature_removals():
+    module=ast.parse((Path(__file__).resolve().parents[1]/'bot.py').read_text())
+    assignments={node.targets[0].id:node.value for node in module.body if isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name)}
+    assert [node.id for node in assignments['BACKGROUND_FEATURES'].elts]==['sponsors','inactivity','reminders','notifications','jokes','birthdays','wishlist','flights','llm_mention']
+    handlers=assignments['MESSAGE_HANDLERS']
+    assert [node.id for node in handlers.body.elts]==['inactivity','user_memory','llm_mention','keywords','context_reactions','teases']
+    assert [node.id for node in handlers.orelse.elts]==['inactivity','llm_mention','keywords','context_reactions','teases']
+    removed={'SocialGamesFeature','QuoteMuseumFeature','BingoFeature','NaturalCommandsFeature','AssistantProfilesFeature'}
+    assert not any(isinstance(node,ast.Name) and node.id in removed for node in ast.walk(module))
+    humor_calls=[node for node in ast.walk(module) if isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id=='HumorFeature']
+    assert len(humor_calls)==1
+    assert [argument.id for argument in humor_calls[0].args]==['client','tree'] and not humor_calls[0].keywords
+    reaction=next(node for node in module.body if isinstance(node,ast.AsyncFunctionDef) and node.name=='on_raw_reaction_add')
+    assert len(reaction.body)==1
+    assert ast.unparse(reaction.body[0])=='await llm_feedback.handle_raw_reaction_add(payload)'

@@ -858,3 +858,30 @@ def test_deleting_a_joke_cascades_into_sent_history(tmp_db):
         c.execute("SELECT joke_id FROM guild_joke_sent WHERE guild_id = ?", (111,))
         remaining = [row[0] for row in c.fetchall()]
     assert remaining == [2]
+
+
+def test_init_db_drops_legacy_community_tables(tmp_db):
+    tables = ("community_sessions", "community_votes", "community_titles", "bingo_habits", "bingo_boards", "bingo_marks", "museum_quotes")
+    with closing(sqlite3.connect(tmp_db)) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("CREATE TABLE community_sessions (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE community_votes (session_id INTEGER NOT NULL REFERENCES community_sessions(id) ON DELETE CASCADE)")
+        conn.execute("CREATE TABLE community_titles (session_id INTEGER REFERENCES community_sessions(id) ON DELETE SET NULL)")
+        conn.execute("CREATE TABLE bingo_habits (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE bingo_boards (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE bingo_marks (board_id INTEGER NOT NULL REFERENCES bingo_boards(id) ON DELETE CASCADE)")
+        conn.execute("CREATE TABLE museum_quotes (id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO community_sessions (id) VALUES (1)")
+        conn.execute("INSERT INTO community_votes (session_id) VALUES (1)")
+        conn.execute("INSERT INTO community_titles (session_id) VALUES (1)")
+        conn.execute("INSERT INTO bingo_habits (id) VALUES (1)")
+        conn.execute("INSERT INTO bingo_boards (id) VALUES (1)")
+        conn.execute("INSERT INTO bingo_marks (board_id) VALUES (1)")
+        conn.execute("INSERT INTO museum_quotes (id) VALUES (1)")
+        conn.commit()
+    db.init_db()
+    db.init_db()
+    with closing(sqlite3.connect(tmp_db)) as conn:
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not names & set(tables)
+    assert "scraped_items" in names

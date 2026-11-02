@@ -16,15 +16,11 @@ logger = setup_logger("discord_bot", "bot.log")
 import db
 from analytics import AnalyticsCommandTree, record_message_mention, refresh_command_catalog
 from features.azi_se_spala import AziSeSpalaFeature
-from features.assistant_profiles import AssistantProfilesFeature
 from features.birthdays import BirthdaysFeature
-from features.bingo import BingoFeature
 from features.humor import HumorFeature
 from features.llm_mention import ContextReactionFeature, LLMMentionFeature
-from features.natural_commands import NaturalCommandsFeature
 from features.help_feature import HelpFeature
 from features.onboarding import OnboardingFeature
-from features.quote_museum import QuoteMuseumFeature
 from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
@@ -36,7 +32,6 @@ from features.response_gate import ResponseGate
 from features.wishlist import WishlistFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
-from features.social_games import SocialGamesFeature
 from features.teases import TeasesFeature
 from features.user_memory import (
     UserMemoryFeature,
@@ -93,13 +88,9 @@ jokes = JokesFeature(client, tree)
 birthdays = BirthdaysFeature(client, tree)
 wishlist = WishlistFeature(client, tree)
 flights = FlightTrackerFeature(client, tree)
-assistant_profiles = AssistantProfilesFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
 llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
-social_games = SocialGamesFeature(client, tree)
-quote_museum = QuoteMuseumFeature(client, tree, social_games)
-bingo = BingoFeature(client, tree)
 humor = HumorFeature(client, tree)
 MEMORY_DISABLED = is_memory_disabled()
 AUTOMATIC_MEMORY_ENABLED = not MEMORY_DISABLED and is_automatic_memory_enabled()
@@ -115,14 +106,6 @@ llm_mention = LLMMentionFeature(
     feedback=llm_feedback,
     memory=user_memory,
 )
-natural_commands = NaturalCommandsFeature(
-    client,
-    bot_id=BOT_ID,
-    wishlist=wishlist,
-    flights=flights,
-    reminders=reminders,
-)
-llm_mention.natural_commands = natural_commands
 context_reactions = ContextReactionFeature(llm_mention)
 help_feature = HelpFeature(
     client,
@@ -137,9 +120,9 @@ logger.info(
 )
 
 MESSAGE_HANDLERS = (
-    (inactivity, user_memory, natural_commands, llm_mention, keywords, context_reactions, teases)
+    (inactivity, user_memory, llm_mention, keywords, context_reactions, teases)
     if AUTOMATIC_MEMORY_ENABLED
-    else (inactivity, natural_commands, llm_mention, keywords, context_reactions, teases)
+    else (inactivity, llm_mention, keywords, context_reactions, teases)
 )
 
 BACKGROUND_FEATURES = (
@@ -147,14 +130,11 @@ BACKGROUND_FEATURES = (
     inactivity,
     reminders,
     notifications,
-    natural_commands,
     jokes,
     birthdays,
     wishlist,
     flights,
     llm_mention,
-    social_games,
-    quote_museum,
 )
 
 

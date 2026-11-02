@@ -1,20 +1,14 @@
 import asyncio
-import hashlib
 import math
 import sqlite3
 import time
 from datetime import datetime
-from typing import Optional
 
 import discord
 from discord import app_commands
 
 import db
-from features.humor_common import (
-    EXCUSE_FALLBACKS, EXCUSE_STYLES, HOROSCOPE_FORECASTS,
-    HOROSCOPE_SIGNS, HOROSCOPE_THEMES, interaction_language, local_day,
-    purchase_voices, safe_text, text,
-)
+from features.humor_common import interaction_language, purchase_voices, safe_text, text
 from llm.humor import generate_humor
 from wishlist.alerts import ALERT_LOW_REALERT_DROP_PCT, ALERT_MIN_DATA_POINTS
 
@@ -91,15 +85,6 @@ def purchase_fallback(language, facts=None):
     return purchase_voices(language, facts or {})
 
 
-def horoscope(guild_id, user_id, day, theme, language):
-    theme = theme if theme in HOROSCOPE_THEMES else "general"
-    digest = hashlib.sha256(f"{guild_id}:{user_id}:{day.isoformat()}:{theme}".encode()).digest()
-    sign = HOROSCOPE_SIGNS[int.from_bytes(digest[:8], "big") % len(HOROSCOPE_SIGNS)]
-    forecasts = HOROSCOPE_FORECASTS[theme]
-    forecast = forecasts[int.from_bytes(digest[8:16], "big") % len(forecasts)]
-    return text("horoscope", language, day=day.isoformat(), theme=HOROSCOPE_THEMES[theme][language == "ro"], sign=sign[language == "ro"], forecast=forecast[language == "ro"])
-
-
 async def _private_reply(interaction, content, mention_requester=False):
     prefix = f"<@{interaction.user.id}>\n" if mention_requester else ""
     mentions = discord.AllowedMentions(everyone=False, roles=False, users=[discord.Object(id=interaction.user.id)], replied_user=False) if mention_requester else discord.AllowedMentions.none()
@@ -111,17 +96,6 @@ class HumorFeature:
         self.client = client
         self.tree = tree
         self._register_commands()
-
-    async def excuse(self, interaction, reason, style):
-        await interaction.response.defer(ephemeral=True)
-        language = await interaction_language(interaction)
-        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 500 or style not in EXCUSE_STYLES:
-            await interaction.followup.send(text("excuse_invalid", language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
-            return
-        fallback = EXCUSE_FALLBACKS[style][language == "ro"].format(reason=safe_text(reason.strip(), 1000))
-        result = await generate_humor("excuse", language, {"reason": reason.strip(), "style": style}, fallback)
-        request = text("excuse_request", language, reason=safe_text(reason.strip(), 1500), style=EXCUSE_STYLES[style][language == "ro"])
-        await _private_reply(interaction, request + "\n\n" + text("excuse_result", language) + "\n" + result, mention_requester=True)
 
     async def purchase(self, interaction, url):
         await interaction.response.defer(ephemeral=True)
@@ -145,29 +119,9 @@ class HumorFeature:
             result = fallback
         await _private_reply(interaction, summary + "\n\n" + result, mention_requester=True)
 
-    async def forecast(self, interaction, theme=None):
-        await interaction.response.defer(ephemeral=interaction.guild_id is None)
-        language = await interaction_language(interaction)
-        if interaction.guild_id is None:
-            await interaction.followup.send(text("guild_only", language), ephemeral=True, allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
-            return
-        await interaction.followup.send(horoscope(interaction.guild_id, interaction.user.id, local_day(), theme or "general", language), allowed_mentions=discord.AllowedMentions.none(), suppress_embeds=True)
-
     def _register_commands(self):
-        @self.tree.command(name="excuse", description="Generate a humorous excuse visible only to you")
-        @app_commands.describe(reason="Reason, maximum 500 characters", style="Excuse style")
-        @app_commands.choices(style=[app_commands.Choice(name=en, value=key) for key, (en, ro) in EXCUSE_STYLES.items()])
-        async def excuse(interaction: discord.Interaction, reason: str, style: app_commands.Choice[str]):
-            await self.excuse(interaction, reason, style.value)
-
         @self.tree.command(name="worth-it", description="Privately compare saved prices and get a buy-or-wait verdict")
         @app_commands.describe(url="URL in your saved wishlist")
         async def worth_it(interaction: discord.Interaction, url: str):
             await self.purchase(interaction, url)
 
-        @self.tree.command(name="horoscope", description="Show your daily humorous server horoscope")
-        @app_commands.guild_only()
-        @app_commands.describe(theme="Horoscope theme")
-        @app_commands.choices(theme=[app_commands.Choice(name=en, value=key) for key, (en, ro) in HOROSCOPE_THEMES.items()])
-        async def horoscope(interaction: discord.Interaction, theme: Optional[app_commands.Choice[str]] = None):
-            await self.forecast(interaction, theme.value if theme else None)

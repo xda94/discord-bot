@@ -1,7 +1,5 @@
 import asyncio
-import hashlib
 import sqlite3
-from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
@@ -30,12 +28,7 @@ def feature():
     return humor.HumorFeature(client, tree)
 
 
-def test_catalogs_and_calendar_helpers():
-    assert common.week_key(date(2021, 1, 1)) == "2020-W53"
-    assert common.local_day() == date.today()
-    assert len(common.QUESTS) >= 3
-    for quest in common.QUESTS:
-        assert quest["text_en"] and quest["text_ro"] and quest["title_en"] and quest["title_ro"]
+def test_catalog_and_safe_text():
     for key, values in common.CATALOG.items():
         assert len(values) == 2 and all(values)
     assert len(common.safe_text("x" * 3000, 500)) == 500
@@ -63,87 +56,21 @@ def test_profile_failure_uses_locale_without_exposing_error(monkeypatch, caplog)
 
 
 @pytest.mark.parametrize("language", ["en", "ro"])
-@pytest.mark.parametrize("style", list(common.EXCUSE_STYLES))
-@pytest.mark.parametrize("guild_id", [12, None])
-def test_excuses_bilingual_styles_and_private_delivery(tmp_db, monkeypatch, language, style, guild_id):
-    value = interaction(guild_id=guild_id, locale=language)
-    generate = AsyncMock(side_effect=lambda kind, language, facts, fallback: fallback)
-    monkeypatch.setattr(humor, "generate_humor", generate)
-    asyncio.run(feature().excuse(value, "private reason", style))
-    value.response.defer.assert_awaited_once_with(ephemeral=True)
-    value.user.send.assert_not_called()
-    value.followup.send.assert_awaited_once()
-    sent = value.followup.send.call_args.args[0]
-    request = common.text("excuse_request", language, reason="private reason", style=common.EXCUSE_STYLES[style][language == "ro"])
-    result = common.EXCUSE_FALLBACKS[style][language == "ro"].format(reason="private reason")
-    assert sent == f"<@{value.user.id}>\n{request}\n\n" + common.text("excuse_result", language) + "\n" + result
-    assert len(sent) <= 2000
-    assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
-    mentions = value.followup.send.call_args.kwargs["allowed_mentions"]
-    assert [user.id for user in mentions.users] == [value.user.id]
-    assert mentions.roles is False and mentions.replied_user is False
-    assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
-    assert value.followup.send.call_args.kwargs["ephemeral"] is True
-    generate.assert_awaited_once()
-
-
-def test_excuse_styles_are_distinct():
-    for language in ("en", "ro"):
-        assert len({values[language == "ro"] for values in common.EXCUSE_FALLBACKS.values()}) == 4
-
-
-@pytest.mark.parametrize("language", ["en", "ro"])
-def test_excuse_preserves_input_independently_of_generated_text(tmp_db, monkeypatch, language):
-    value = interaction(locale=language)
-    reason = "@everyone <@123456789012345678> **missed the meeting**\n" + "*" * 430
-    monkeypatch.setattr(humor, "generate_humor", AsyncMock(return_value="Generated excuse"))
-    asyncio.run(feature().excuse(value, reason, "corporate"))
-    sent = value.followup.send.call_args.args[0]
-    assert sent.startswith(f"<@{value.user.id}>\n")
-    assert common.safe_text(reason, 1500) in sent
-    assert "Generated excuse" in sent
-    assert "@everyone" not in sent and "<@123456789012345678>" not in sent
-    assert len(sent) <= 2000
-    mentions = value.followup.send.call_args.kwargs["allowed_mentions"]
-    assert [user.id for user in mentions.users] == [value.user.id]
-    assert mentions.everyone is False and mentions.roles is False
-    assert value.followup.send.call_args.kwargs["ephemeral"] is True
-    value.user.send.assert_not_called()
-
-
-@pytest.mark.parametrize("reason", ["", "  ", "x" * 501])
-def test_excuse_reason_bound(tmp_db, monkeypatch, reason):
-    generate = AsyncMock()
-    monkeypatch.setattr(humor, "generate_humor", generate)
-    value = interaction()
-    asyncio.run(feature().excuse(value, reason, "corporate"))
-    generate.assert_not_called()
-    value.user.send.assert_not_called()
-    assert value.followup.send.call_args.kwargs["ephemeral"] is True
-
-
-@pytest.mark.parametrize("language", ["en", "ro"])
-@pytest.mark.parametrize("command", ["excuse", "worth-it"])
+@pytest.mark.parametrize("command", ["worth-it"])
 def test_blocked_dm_does_not_prevent_ephemeral_result(tmp_db, monkeypatch, language, command):
     value = interaction(locale=language)
     response = MagicMock(status=403, reason="Forbidden")
     value.user.send.side_effect = discord.Forbidden(response, "blocked")
     monkeypatch.setattr(humor, "generate_humor", AsyncMock(return_value="secret generated result"))
     worker = feature()
-    if command == "excuse":
-        asyncio.run(worker.excuse(value, "private reason", "corporate"))
-    else:
-        db.add_scraped_item(value.user.id, "https://private.example", title="secret title", price=100, currency="RON")
-        asyncio.run(worker.purchase(value, "https://private.example"))
+    db.add_scraped_item(value.user.id, "https://private.example", title="secret title", price=100, currency="RON")
+    asyncio.run(worker.purchase(value, "https://private.example"))
     value.user.send.assert_not_called()
     value.response.defer.assert_awaited_once_with(ephemeral=True)
     value.followup.send.assert_awaited_once()
     private = value.followup.send.call_args.args[0]
     assert "secret generated result" in private
-    if command == "worth-it":
-        assert "secret title" in private
-    else:
-        assert "private reason" in private
+    assert "secret title" in private
     assert value.followup.send.call_args.kwargs["ephemeral"] is True
     assert value.followup.send.call_args.kwargs["allowed_mentions"].everyone is False
     assert value.followup.send.call_args.kwargs["suppress_embeds"] is True
@@ -231,47 +158,6 @@ def test_extreme_finite_prices_do_not_overflow_reply():
     assert facts["recorded_median"] == 1e308
 
 
-def test_horoscope_sha256_language_only_changes_rendering():
-    day = date(2026, 10, 12)
-    for theme in common.HOROSCOPE_THEMES:
-        digest = hashlib.sha256(f"12:42:{day.isoformat()}:{theme}".encode()).digest()
-        sign = common.HOROSCOPE_SIGNS[int.from_bytes(digest[:8], "big") % len(common.HOROSCOPE_SIGNS)]
-        forecasts = common.HOROSCOPE_FORECASTS[theme]
-        forecast = forecasts[int.from_bytes(digest[8:16], "big") % len(forecasts)]
-        for language in ("en", "ro"):
-            result = humor.horoscope(12, 42, day, theme, language)
-            assert sign[language == "ro"] in result and forecast[language == "ro"] in result
-            assert result == humor.horoscope(12, 42, day, theme, language)
-
-
-def test_horoscope_repeated_and_new_instances_no_llm_or_writes(tmp_db, monkeypatch):
-    monkeypatch.setattr(humor, "local_day", lambda: date(2026, 10, 12))
-    generate = AsyncMock()
-    monkeypatch.setattr(humor, "generate_humor", generate)
-    before = tmp_db.read_bytes()
-    value = interaction()
-    worker = feature()
-    asyncio.run(worker.forecast(value, "gaming"))
-    initial = value.followup.send.call_args.args[0]
-    asyncio.run(worker.forecast(value, "gaming"))
-    assert value.followup.send.call_args.args[0] == initial
-    asyncio.run(feature().forecast(value, "gaming"))
-    assert value.followup.send.call_args.args[0] == initial
-    generate.assert_not_called()
-    assert before == tmp_db.read_bytes()
-
-
-def test_horoscope_rejects_dm(tmp_db, monkeypatch):
-    generate = AsyncMock()
-    monkeypatch.setattr(humor, "generate_humor", generate)
-    value = interaction(guild_id=None, locale="ro")
-    asyncio.run(feature().forecast(value))
-    assert value.followup.send.call_args.args[0] == common.text("guild_only", "ro")
-    assert value.followup.send.call_args.kwargs["ephemeral"] is True
-    value.user.send.assert_not_called()
-    generate.assert_not_called()
-
-
 @pytest.mark.parametrize("language", ["en", "ro"])
 def test_worth_it_user_example_recommends_waiting(language):
     item = (1, 42, "url", 360.46, 1, "Moet & Chandon Nectar Demi-Sec 0.75L", "RON", None, None, None, None, 0, 0, 200000, None)
@@ -312,21 +198,13 @@ def test_worth_it_price_stock_and_freshness_decisions(price, stock, checked, his
     assert len(summary + "\n\n" + humor.purchase_fallback("en", facts)) <= 2000
 
 
-def test_commands_and_optional_annotation():
+def test_only_worth_it_is_registered():
     worker = feature()
-    assert {cmd.name for cmd in worker.tree.get_commands()} == {"excuse", "worth-it", "horoscope"}
-    command = worker.tree.get_command("horoscope")
-    assert command.parameters[0].required is False
-    assert "Optional" in str(command.callback.__annotations__["theme"])
-    assert len(worker.tree.get_command("excuse").parameters[1].choices) == 4
+    assert {cmd.name for cmd in worker.tree.get_commands()} == {"worth-it"}
 
 
 def test_command_registration_scopes_match_dm_behavior():
     worker = feature()
-    horoscope_command = worker.tree.get_command("horoscope")
-    assert horoscope_command.guild_only is True
-    assert horoscope_command.to_dict(worker.tree)["dm_permission"] is False
-    for name in ("excuse", "worth-it"):
-        command = worker.tree.get_command(name)
-        assert command.guild_only is False
-        assert command.to_dict(worker.tree)["dm_permission"] is True
+    command = worker.tree.get_command("worth-it")
+    assert command.guild_only is False
+    assert command.to_dict(worker.tree)["dm_permission"] is True

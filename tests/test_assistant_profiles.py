@@ -30,13 +30,6 @@ def test_partial_profile_updates_preserve_existing_fields(tmp_db):
     }
 
 
-def test_profile_reset_restores_effective_defaults(tmp_db):
-    db.set_assistant_profile(123, currency="RON", llm_behavior="detailed")
-    assert db.reset_assistant_profile(123) is True
-    assert db.get_assistant_profile(123) is None
-    assert effective_profile(None) == DEFAULT_PROFILE
-
-
 def test_profile_validation_rejects_bad_timezone_and_currency():
     with pytest.raises(ValueError, match="IANA"):
         validate_profile_updates(timezone="Mars/Olympus")

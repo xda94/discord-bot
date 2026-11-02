@@ -19,8 +19,6 @@ The major capabilities are:
 - Requester-only 👍/👎 feedback on LLM mention replies
 - One-off and recurring reminders with lifecycle records, retry/reconciliation,
   snooze, and private management controls
-- Mention-only bounded English/Romanian commands with deterministic parsing,
-  time and money validation, private selections, and ten-minute clarifications
 - Global per-user assistant profiles for language, tone, currency, explicit
   timezone confirmation, notification style, quiet hours, and digest delivery
 - Per-user recurring birthdays with LLM-generated greetings
@@ -33,11 +31,10 @@ The major capabilities are:
 - Inactivity nudges
 - Host system statistics
 - Romanian Orthodox calendar lookup through azisespala.ro
-- Bilingual tribunal, meeting, quest, weekly bingo, consent-based Quote Museum,
-  author quiz, private excuses/wishlist commentary and deterministic horoscope
+- Private `/worth-it` buy-or-wait commentary for tracked wishlist items
 - Deployer-only daily usage analytics for commands, mentions, controls,
   automatic behavior, scheduled deliveries, background processing, feedback,
-  natural-command outcomes, and delivery backlog state
+  per-user wishlist/flight usage, and delivery backlog state
 
 ## Runtime architecture
 
@@ -63,8 +60,7 @@ When Discord signals `on_ready`, command sync, catalog refresh, and each backgro
 ### `api.py`
 
 `api.py` is the executable wrapper for a separate threaded Flask process.
-`web/app.py` creates the application with domain blueprints, including community
-administration. The process:
+`web/app.py` creates the application with domain blueprints. The process:
 
 - Requires `HOST` and a numeric `PORT` at import/startup time.
 - Requires `API_TOKEN` bearer authentication for all protected data/configuration routes.
@@ -111,7 +107,6 @@ Every non-bot message passes through the handlers in this order:
 ```text
 InactivityFeature
     -> UserMemoryFeature (automatic mode only)
-    -> NaturalCommandsFeature
     -> LLMMentionFeature
     -> KeywordsFeature
     -> ContextReactionFeature
@@ -124,26 +119,18 @@ The semantics are:
 - In automatic mode, `UserMemoryFeature` captures eligible text into bounded
   process-local buffers and always allows dispatch to continue. Manual mode does
   not place it in the ordinary-message dispatch chain.
-- `NaturalCommandsFeature` first requires a real bot mention, resumes a pending
-  clarification when applicable, then attempts deterministic English/Romanian
-  parsing. Known actions execute immediately and stop dispatch before the general
-  LLM. Supported near misses produce a localized canonical command with
-  requester-only Yes/No confirmation and stop dispatch regardless of
-  `NATURAL_LLM_ENABLED`; other mentioned conversation falls through to the
-  single-slot mention worker.
 - `LLMMentionFeature` returns `True` for a bot mention, including cooldown replies, so keyword and tease handling stop.
 - `KeywordsFeature` returns `True` after sending a keyword response, so teasing stops for that message.
 - `ContextReactionFeature` occasionally queues a contextual emoji for ordinary
   messages while the model worker is idle; a selected message skips teasing.
 - `TeasesFeature` is last and always returns `False` after its optional response.
 
-Direct messages are eligible for LLM mention handling and random teases, but
-every natural text command and clarification still requires a bot mention.
+Direct messages are eligible for LLM mention handling and random teases.
 Buttons and modals identify their action without a mention. Keyword matching
 requires a guild.
 
 Public slash-command names use hyphens: `/keyword-add`, `/top-keywords`,
-`/joke-*`, `/sponsor-*`, `/llm-*`, `/assistant-profile-*`, and `/flight-tracker-*`. Flight options are
+`/joke-*`, `/sponsor-*`, `/llm-*`, and `/flight-tracker-*`. Flight options are
 `start-date`, `end-date`, and `tracker-id` via Discord option renaming; internal
 Python names and API JSON fields retain underscores. Startup `tree.sync()`
 publishes the renamed commands. `tests/test_command_naming.py` guards the naming
@@ -151,11 +138,11 @@ convention.
 
 ## Feature modules
 
-### `features/assistant_profiles.py` and `assistant_profiles.py`
+### `assistant_profiles.py` and `db/assistant_profiles.py`
 
-Provides private `/assistant-profile`, `/assistant-profile-set`, and
-`/assistant-profile-reset` commands. One global row per Discord user is kept
-separate from memory. Defaults are `auto` language, `default` tone, no currency
+Store one global preference row per Discord user, separate from memory. `/start`
+writes language and timezone; no command or dashboard control changes the other
+stored values, which are still honored. Defaults are `auto` language, `default` tone, no currency
 override, `UTC`, immediate delivery, no quiet hours, `standard` notifications,
 and `balanced` LLM behavior. Partial updates preserve omitted fields, reads do
 not create rows, currency is limited to the existing five supported currencies,
@@ -168,49 +155,6 @@ uses the saved language or the language captured at creation. Saved currency is
 used only where wishlist and flight currency options are omitted. Calendar
 times, recurrence, quiet hours, and daily digests require an explicitly
 configured timezone; relative one-off reminders do not.
-
-### `natural_commands.py` and `features/natural_commands.py`
-
-The parser is split into normalization, intent matching, and field validation.
-It normalizes case, whitespace, Unicode, Romanian diacritics, legacy `ş`/`ţ`,
-and hyphen variants while preserving reminder text and URLs. It recognizes
-English and Romanian tracking, wishlist, target/restock, refresh, graph, flight,
-reminder, and reminder-management requests. Romanian aliases include `lista de
-dorințe`, `adu-mi aminte`, `pune-mi un reminder`, and price-target phrasing.
-
-Durations accept written values, fractions, weeks, and compounds such as `o oră
-și 30 de minute`; calendar input supports dates, weekdays, today/tomorrow, and
-exact local clock times. Money parsing recognizes `lei`, `leu`, `RON`, `euro`,
-and locale-specific decimal/grouping formats. Vague, ambiguous, incomplete,
-past, or daylight-saving-invalid calendar times ask for one missing detail at a
-time. Product references are resolved by owned URL, numeric ID, exact title, an
-explicit reply, or an unambiguous recent bot result. Multiple owned matches use
-private selection controls.
-
-Recognized actions execute immediately. Durable mutations acknowledge success
-with ✅ only; failed writes never receive that reaction. Lists, product choices,
-and graphs are private. Blocked DMs name the precise ephemeral slash-command
-alternative and never expose private results publicly. One pending action is
-kept in memory per user/channel for ten minutes and is discarded on restart.
-All mutations are deduplicated by Discord event or interaction ID.
-
-Supported near misses use bounded deterministic matching to suggest a complete,
-localized canonical command without model inference or arbitrary typo matching.
-Only the requester can confirm with Yes or cancel with No within ten minutes;
-the view timeout and monotonic deadline prevent expired or repeated clicks from
-executing. Yes uses the existing executor with the original message/requester
-and a fresh profile, and may open the existing clarification flow. No performs
-no action and adds no ✅. Valid pending clarifications retain priority; creating
-or rejecting a suggestion does not clear them. Suggestion controls are held in
-memory and do not survive restart.
-
-`NATURAL_LLM_ENABLED` controls the optional model action route and defaults to
-off. When enabled, the existing single-slot mention inference returns one
-validated proposal or a conversational answer. Only allowlisted action fields
-are accepted; application code resolves identities, dates, ownership, products,
-and prices. Generated text cannot claim completion and no generated code is
-executed. See `scripts/evaluate_natural_commands.py` for the read-only,
-100-case minimum rollout gate.
 
 ### `features/keywords.py`
 
@@ -259,8 +203,7 @@ Provides:
 All bot and API inference shares one active action and at most two interactive
 waiters, served in FIFO order through POSIX file locks. The bot reserves globally
 before adding a mention to its persistent worker queue; a fourth action receives
-a retry-later response. Reservations span retries and nested natural-command
-inference. Cancelled callers retain execution capacity until any running HTTP
+a retry-later response. Reservations span retries. Cancelled callers retain execution capacity until any running HTTP
 worker thread finishes. Per-user pending protection and cooldowns still apply.
 Background memory and ordinary-message reactions start only when shared
 capacity is idle and occupy no interactive waiting positions. The memory
@@ -505,8 +448,7 @@ Every guild message writes an activity UPSERT through `asyncio.to_thread`, keepi
 ### `features/reminders.py`
 
 Provides `/remind <when> <who> <what> [recurrence]`, `/reminder-list`,
-`/reminder-edit`, `/reminder-cancel`, and `/reminder-snooze`. Natural-language
-reminder intents use the same service layer. Recurrence supports daily,
+`/reminder-edit`, `/reminder-cancel`, and `/reminder-snooze`. Recurrence supports daily,
 weekdays, and weekly local wall-clock schedules.
 
 Reminders persist creator, recipient, timezone, captured language, recurrence,
@@ -609,13 +551,15 @@ This module owns Discord commands, scheduled checks, cooldowns, and notification
 The `wishlist` package contains the shared scraper, refresh persistence, currency,
 alert classification, and chart rendering used by the bot and API.
 
-Natural references are requester-scoped and can use stable item IDs, exact or
-unique titles, URLs, or an explicit bot result. Private lists include IDs and
+Private lists include IDs and
 owner-checked edit/cancel/restock controls. Target alerts fire at or below the
 configured price and re-arm only after the price rises above it. Tracking
 notifications are queued in a durable outbox, can be coalesced by item/event,
 and preserve target/restock events while respecting the profile's immediate or
-daily delivery mode and quiet hours.
+daily delivery mode and quiet hours. Every notification with a known current
+price shows it once; buy alerts add the previous low and wait alerts the usual
+median, in standard and compact styles. Wishlist and flight notifications end
+with `Observed at DD.MM.YYYY HH:MM TZ` in the profile timezone (UTC default).
 
 Wishlist fetches accept only public HTTP(S) destinations: URL credentials, local/internal hostnames, non-public DNS addresses, and redirects to them are rejected. Connections pin validated DNS addresses and bypass environment proxies. Product bodies are limited to 5 MiB and redirects to six checked requests. Successful refresh snapshots, freshness/status, and history commit together; save failures produce `database-error` rather than success. Target/restock preference updates validate before one atomic write.
 
@@ -767,43 +711,15 @@ Provides host and process statistics through `/stats`, using `psutil`. It gather
 
 Provides a Romanian calendar lookup backed by annual JSON files from azisespala.ro. Calendar data is cached in memory by year, fetched in a worker thread, and attributed in replies as required by the source.
 
-### Community features and persistence
+### `features/humor.py` and `/worth-it`
 
-`bot.py` constructs `SocialGamesFeature` before `QuoteMuseumFeature` and passes
-the games instance to the museum for quiz creation. `BingoFeature` and
-`HumorFeature` register commands without background tasks. Only social games
-and museum join the existing `BACKGROUND_FEATURES`; message dispatch, reaction
-listeners and natural-language parsing remain unchanged. Community slash and
-context-menu demand uses `AnalyticsCommandTree`; successful button mutations
-use `control`, result delivery uses `scheduled`, and safe operational errors
-use `failure` without retaining sensitive inputs.
-
-Commands and examples:
-
-| Invocation | Flow |
-|---|---|
-| `/tribunal accused:@member accusation:Who stole the biscuits?` | Immediate 600-second Guilty/Innocent vote for all human server members, including the accused. |
-| `/meeting subject:Lunch options:Pizza\|Soup` | 2–5 distinct options, ten-minute vote; maximum 200-character subject and 80-character options. |
-| `/quest [user:@member] [text:Organize a game night]` | Custom text of 1–300 characters is required for assignments to another member. Messages mention the recipient and assigner. Without arguments, keep the private catalog offer. Acceptance starts seven days; completion opens ten-minute verification. |
-| `/quest-show-active [user:@member]` | Private list of all active guild quests, optionally filtered by recipient, with links to the original Completed/Abandon controls. |
-| `/bingo` | Retrieve the guild's local ISO-week 3×3 board, mark manually, have another human confirm. |
-| `/bingo-habit text-ro:Salută un coleg text-en:Greet a teammate [id:12]` | Manage Server adds/edits 1–200-character bilingual habits; edits affect future board snapshots. |
-| `/bingo-habit-delete id:12` | Manage Server removes a habit, preserving 9–50 active habits. |
-| `/quote-add quote:Coffee is a food group user:@member` | Submit quote text, maximum 1,200 characters, and select its human server-member author for consent by DM. |
-| `/quote` / `/who-said` / `/quote-delete id:12` | Approved guild quote; ten-minute author quiz with 2–4 distinct choices; author/Manage Messages removal. |
-| `/excuse reason:I missed the meeting style:corporate` | Private corporate/grandmother/gamer/public-servant excuse, reason at most 500 characters. |
-| `/worth-it url:https://shop.example/item` | Private current/minimum/maximum/median prices, calculated verdict and actionable advocate/accountant advice. |
-| `/horoscope theme:work` | Stable local daily general/work/gaming/household forecast. |
-
-Shared games, museum, bingo and horoscope are guild-only. Excuses and wishlist
-humor also work in DMs. For guild invocations, both defer ephemerally and deliver
-the full result as an ephemeral followup in the command channel, visible only
-to the requester with Discord's Dismiss message control. Neither sends a DM;
-blocked DMs do not affect these commands. Both completed results
-prefix the requester's mention and allow mentions only for that user.
-`/excuse` renders the original reason and localized selected style outside model
-prose, escaping input mentions and Markdown. Private reasons/responses are not
-persisted. `/worth-it` only reads
+`HumorFeature` registers only `/worth-it url:https://shop.example/item`, without
+background tasks. It works in guilds and DMs. Guild invocations defer
+ephemerally and deliver the full result as an ephemeral followup in the command
+channel, visible only to the requester with Discord's Dismiss message control.
+It never sends a DM; blocked DMs do not affect it. The completed result
+prefixes the requester's mention and allows mentions only for that user.
+`/worth-it` only reads
 requester-owned `get_scraped_item` and `get_price_history`; no scrape, refresh,
 purchase or history mutation. Current/minimum/maximum/median prices and signed
 differences from median/minimum render outside model prose. At least seven valid
@@ -817,133 +733,23 @@ table. Both voices' action text is deterministic for the verdict. The LLM must
 echo its decision and may add only bounded numeric-free, advice-free humor;
 contradictory/invalid output falls back to the deterministic voices.
 
-All command names, public options and descriptions are English except
-`/azi-se-spala`; bilingual reply content remains profile-controlled. Museum
-submissions use `/quote-add` with `quote` and `user`. The stored session kind `sedinta` is retained
-for compatibility while its public command is `/meeting`.
+`features/humor_common.py` owns bilingual text and safe catalogs. `llm/humor.py`
+uses existing shared llama.cpp capacity through `asyncio.to_thread`, one call
+with thinking disabled, at most 220 tokens and a 30-second timeout. Empty,
+malformed, oversized, busy or timed-out output falls back locally with no
+repair/retry call.
 
-Community Discord messages show member mentions and server/channel names rather
-than raw Discord IDs. Quiz candidate names use `member_name` to remove legacy
-ID suffixes and replace missing/numeric ID labels with a localized unknown-member
-label. Quiz text includes each candidate's mention; buttons use numbered names
-to distinguish duplicates without exposing IDs. Restored views and final results
-use the same formatting without mutating saved payloads or voting keys.
-`/quote` includes the author's readable name and mention. Pending quest links
-are labeled Open quest. Quote and bingo-habit record IDs remain management
-references; Discord IDs remain internal in storage, control IDs and link targets.
-
-`features/humor_common.py` owns bilingual text, safe catalogs, local calendar
-date and ISO week. Saved profile then Discord locale selects private language;
-session creators' language is persisted, click acknowledgments use the member's
-language. Horoscope selections use SHA-256 of guild/member/local-date/theme and
-survive restart; language affects rendering only. Bingo, quest selection,
-quiz and horoscope never invoke a model. `llm/humor.py` uses existing shared
-llama.cpp capacity through `asyncio.to_thread`, one call with thinking disabled,
-at most 220 tokens and a 30-second timeout. Private calls use interactive
-capacity; automatic verdict/minutes use background capacity. Empty, malformed,
-oversized, busy or timed-out output falls back locally with no repair/retry call.
-
-`db/community_schema.py` is an idempotent schema migration invoked by
-`init_db`. `db/community.py` returns dictionaries from guild-scoped helpers
-using the existing connection layer. Tables store sessions, one changeable
-vote per member/session, symbolic titles, bilingual habits/board snapshots,
-marks and author-consented quotes. Async community handlers call synchronous
-helpers through `asyncio.to_thread`. Conditional transactions enforce deadlines,
-consent, close claims, independent confirmation and idempotent title awards.
-
-Votes last exactly 600 seconds from opening, even after restart. Tribunal and
-meeting ties/no votes are neutral; quest owners cannot self-verify, and only a
-strict positive majority awards a symbolic title. Titles never create Discord
-roles and remain until administrator removal. One active quest per guild/member
-prevents competing assignments, including self-service and assignments from
-other members. For assigned quests, `creator_id` remains the assigning member
-and `subject_id` stores the recipient. Legacy/self-service quests use
-`creator_id` as the owner when `subject_id` is null. Ownership, duplicate checks,
-self-verification protection and title awards all use the recipient. Startup
-replaces the legacy unique index with one keyed by the recipient, preserving
-existing quests without new columns. Invitations to other members are posted in the command
-channel with only the recipient mention enabled and persistent Accept/Decline
-controls. Acceptance edits that same message; invitations expire after 24 hours.
-`text` supplies a custom challenge, limited to 1–300 trimmed characters and
-required for assignments to another member. It populates both `challenge_en`
-and `challenge_ro` unchanged; no translation or model call is needed. Custom
-quests use title key `custom-quest` and the localized Quest Champion title.
-Rendering includes recipient and assigner mentions in every quest phase,
-including after acceptance and closure; custom text escapes mentions and Markdown.
-Only the recipient is notified on initial publication; subsequent edits disable
-mention notifications. Without arguments, `/quest` keeps its private catalog
-offer and title-list behavior; `text` can also customize a self-service quest.
-When new text differs, `create_session(replace_quest=True)` atomically cancels
-the old pending/active quest and creates a new invitation. Only its assigner
-or recipient can replace it; verification/closing phases reject replacement.
-The old message is disabled and the new text requires fresh acceptance.
-Identical custom text reuses the current quest. Blocked replacements report
-an explicit conflict instead of rendering the old challenge as the new result.
-
-`/quest-show-active` defers and replies ephemerally in the command channel.
-Without `user`, it lists all accepted, unexpired active quests in the current
-guild; an optional member filters by `COALESCE(subject_id,creator_id)`, the
-recipient. `list_active_quests` reads bound active quest sessions in ID order,
-with cursor pagination; replies split into Discord-safe chunks. Each entry
-shows recipient and assigner mentions without pings, localized challenge text,
-completion deadline and a direct link to the original channel message. The
-existing recipient-only Completed/Abandon controls handle actions there.
-Pending invitations, verification and closed/expired/unbound sessions are
-excluded. Listing creates no session and makes no model call.
-
-No bingo chat surveillance, automatic quote
-gathering, message-history scraping or memory-derived habits are introduced.
-Bingo uses the bot's local ISO week beginning Monday; confirmed and old-week
-cells cannot be mutated, and edits do not change existing snapshots.
-
-`SessionView` and `QuoteConsentView` use stable IDs and persistent controls.
-Guarded 15-second tasks restore views once, close overdue work, erase expired
-consent requests and reconcile cancellations. Public sessions are votable only
-after message binding. Closing freezes voting and saves a deterministic fallback
-before any model attempt; restart after interrupted generation uses that fallback
-without another call. Final results edit the original public message. Transient
-edits retry the same message; deleted/inaccessible messages store safe delivery
-errors for administration. Individual database/model failures do not stop later
-ticks. All content disables mentions and link previews where supported.
-
-Museum consent DMs use one embed card with a labeled blockquote of the full
-submitted text and separate server, channel-name and submitting-member fields.
-The submitter's display name and mention identify who proposed the attribution;
-mentions are disabled. Accept/Decline controls are bound to that same message.
-Quote text and source names escape Markdown and mentions without truncating
-valid quotes. Control updates clear the consent embed when showing status.
-The approval explanation uses separate paragraphs and warns that
-approval confirms the attribution and shares it guild-wide, including with
-members lacking submission-channel access. The author must still be a member
-to accept within 24 hours. Bots, system authors, nonmembers and empty or oversized
-quotes are rejected. The existing `source_message_id` column stores the command
-interaction ID for new submissions; `source_channel_id` stores the invocation
-channel. Existing quotes and consent controls remain valid without a migration.
-Refusal, expiry or blocked-DM nomination removes pending text.
-Approved quotes alone can be selected, and quizzes require two distinct approved
-authors. Authors have a persistent removal button in the consent DM after
-approval, including after leaving the guild. Author/moderator/operator deletion
-clears stored content and related quiz snapshots/results and cancels open
-quizzes, which recheck approval on render/close. Deletion cannot recall
-screenshots or previously sent ordinary Discord messages.
-
-Completed sessions are retained 30 days after closure; bingo history is retained
-30 days after the local ISO week ends. Active work survives cleanup. Pending
-unapproved quotes last only to the 24-hour consent deadline; approved quotes
-remain until deletion, titles until explicit administration removal.
+`db/community_schema.py` drops the legacy community tables with
+`DROP TABLE IF EXISTS` on every `init_db`.
 
 ### `features/help_feature.py`
 
-Provides `/help`. The help text includes assistant-profile and bounded natural
-command behavior and is split into chunks below Discord's 2,000-character limit.
-The English static reference includes all community commands in every memory
-mode. `HelpView` also provides the full bilingual community guide with bounded
-chunks and respects Discord's five buttons per row/five rows, including the
-onboarding return control on row 4. Complete reference renders slash-command
-descriptions and parameters, including `/quote-add <quote> <user>`.
-Existing categories, settings and the
-natural-language guide remain available; community features have no mention
-parser support.
+Provides `/help`. The help text is split into chunks below Discord's
+2,000-character limit and lists `/worth-it` in every memory mode. `HelpView`
+offers Reminders, Wishlist (including `/worth-it`), Flights and Memory
+categories plus a complete reference, and respects Discord's five buttons per
+row/five rows, including the onboarding return control on row 4. Complete
+reference renders slash-command descriptions and parameters.
 
 ### `mention_utils.py` and the `llm` package
 
@@ -973,8 +779,6 @@ parser support.
 | Flight tracker | 5 hours | Check at most one tracker per user |
 | Wishlist scraper | 12 hours | Refresh price/stock and issue alerts |
 | Exchange rates | 24 hours | Refresh EUR-relative conversion rates |
-| Community sessions | 15 seconds | Restore views, close votes, reconcile cancellation/results and clean completed history |
-| Museum consent | 15 seconds | Restore pending consent/approved removal controls and erase expired pending text |
 
 Discord task loops run once shortly after being started. Features contain guards where an immediate post-restart run could waste quota or duplicate work.
 
@@ -1041,6 +845,7 @@ Main tables:
 | `analytics_daily` | Compact UTC daily activity totals by category and scope |
 | `analytics_commands` | Active and historical Discord command catalog |
 | `analytics_metadata` | Analytics tracking start metadata |
+| `feature_interactions` | Per user/feature/scope/guild counts of wishlist, `/worth-it` and flight slash commands, first/last use, last command and display names |
 
 Foreign-key cascades remove wishlist and flight histories when their owning item/tracker is deleted. Joke sent-history rows are also deleted when a joke is deleted.
 
@@ -1152,9 +957,6 @@ In Postman, configure the collection Bearer Token from `API_TOKEN`, use
 
 ### Profiles and notifications
 
-- `GET /assistant-profiles/<user_id>`
-- `PATCH /assistant-profiles/<user_id>` (language, timezone, currency, quiet
-  hours, immediate/daily delivery, and digest time)
 - `GET /notifications?user_id=...`
 - `POST /notifications/<id>/retry`
 
@@ -1165,49 +967,19 @@ API field names.
 ### Analytics
 
 - `GET /analytics/summary?period=7d|30d|90d|all&guild_id=...` (`guild_id` optional)
-- `GET /analytics/natural?period=30d&guild_id=...`
+- `GET /analytics/delivery`
+- `GET /interactions?scope=guild|dm` (`scope` optional)
 
 Analytics, like other protected data routes, is disabled with HTTP 503 when
 `API_TOKEN` is unset. With a configured token it always requires the matching
 Bearer credential, making the report deployer-only. The response includes UTC
 date bounds, category and scope totals, active/unused/inactive command rankings,
 other feature totals, latest-use timestamps, and a zero-filled daily series.
-Natural-command analytics separately reports intent, language, parser/model route,
-executed/clarification/invalid/unsupported/unavailable/failed outcomes, timeout
-and abandoned-clarification counts, and global reminder/notification delivery
-health.
-
-### Community administration
-
-`web/routes/community.py` registers an authenticated domain blueprint. Every
-request requires a positive `guild_id`, in the query for GET and JSON for
-mutations, with bounded list limits (1–100, and at most 50 habits). Wrong-guild
-objects return 404, malformed payloads 400, prohibited transitions 409, and DB
-unavailability a sanitized 503. Snowflakes use the dashboard's precise string-ID
-response mode. Pending quote content and voter identities are excluded.
-
-| Method | Route | Body / result |
-|---|---|---|
-| `GET` | `/community/sessions?guild_id=<id>` | Phases, deadlines, aggregate tallies, results and delivery state. |
-| `POST` | `/community/sessions/<id>/cancel` | `{guild_id}`; bot reconciles disabled controls on next tick. |
-| `GET` | `/community/bingo?guild_id=<id>` | Current board, marks, active habits. |
-| `POST` | `/community/bingo/habits` | `{guild_id,text_en,text_ro}`. |
-| `PUT` | `/community/bingo/habits/<id>` | Same bilingual fields; future snapshots only. |
-| `DELETE` | `/community/bingo/habits/<id>` | `{guild_id}`; enforce nine-habit minimum. |
-| `GET` | `/community/quotes?guild_id=<id>` | Approved quotes plus pending count. |
-| `DELETE` | `/community/quotes/<id>` | `{guild_id}`; revoke related quizzes too. |
-| `GET` | `/community/titles?guild_id=<id>` | Symbolic awards. |
-| `DELETE` | `/community/titles/<user_id>/<title_key>` | `{guild_id}`; explicitly remove award. |
-
-There are no admin vote, quote consent or private humor generation routes.
-Tribunal voting starts immediately without an accused-consent step.
-The dashboard preserves its operator trust model and uses
-existing bearer/session storage. **Community games / Jocuri de comunitate**
-shows these four panels, delivery errors and a compact bilingual command guide;
-operators can cancel sessions, manage habits and remove quotes/titles after
-concrete confirmation for destructive actions. Request-version and guild
-snapshots suppress stale results/errors after a new load or guild switch, and
-all user content is escaped.
+`/analytics/delivery` reports global reminder and notification counts by
+delivery state. `/interactions` lists wishlist, `/worth-it` and flight slash
+command usage per user and server or DM, ordered by last use; DM rows return
+`guild_id` as null and an invalid scope returns 400. Autocomplete is not
+counted and recording failures never block a command.
 
 ### Dashboard and host stats
 
@@ -1225,8 +997,11 @@ analytics. Overview shows live CPU, temperature, memory, disk, and host uptime;
 it polls these host stats every 15 seconds only while Overview is visible.
 Analytics offers 7/30/90-day and all-time periods, optional server scope,
 command rankings, unused and inactive commands, feature totals, failure counts
-by operation, natural-command outcomes, delivery backlog/failures, and a daily
-chart. Its English/Romanian selector is stored in browser storage and is
+by operation, delivery health, and a daily
+chart. Users lists wishlist and flight usage per user and server or direct
+message, filterable by scope, and opens the selected user's wishlist or flights.
+Notifications shows the selected user's pending and failed tracking
+notifications. Its English/Romanian selector is stored in browser storage and is
 independent of the selected Discord user's profile. It is intended for a LAN deployment with
 `HOST=0.0.0.0` and a
 configured `API_TOKEN`. The login screen validates the token against
@@ -1442,12 +1217,8 @@ The test suite mirrors the primary service boundaries and contains coverage for:
 - Keyword response selection
 - Mention parsing, single-slot admission, message splitting, image selection, and
   deferred attachment downloads
-- Assistant-profile defaults, validation, partial updates, reset behavior, and
-  LLM preference precedence
-- Natural-command parser boundaries, replied-message URL resolution,
-  immediate requester-scoped wishlist/flight actions and reminders, private DM
-  delivery and blocked-DM handling, refresh cooldown sharing, graph controls,
-  and wishlist database-failure distinction
+- Assistant-profile defaults, validation, partial updates, and LLM preference
+  precedence
 - llama.cpp client configuration, request options, vision capability checks,
   and base64 multimodal payloads
 - Tease/mention prompt behavior, including image-only descriptions and
@@ -1480,9 +1251,7 @@ correctly under Python 3.9.
 Reliability checks use the repository `.venv` (Python 3.9.6) and cover shared
 capacity across processes, cancellation, contention skips, scraper evidence,
 SQLite initialization retry/rollback, and truthful write failures. The existing
-urllib3/LibreSSL compatibility warning remains. The reviewed bilingual parser
-corpus passed 148/148 cases (100%) with zero
-unauthorized actions. Tests use isolated databases; no live Discord messages
+urllib3/LibreSSL compatibility warning remains. Tests use isolated databases; no live Discord messages
 or production services were used.
 
 Verification on 2026-10-09: the integrated targeted run passed 601 tests; the full suite ran once after implementation and passed all 1,323 tests in 24.80 seconds. `git diff --check` and syntax parsing of all 36 changed Python files passed. The existing urllib3/LibreSSL warning is unchanged. Docker build/Compose validation was unavailable because the local environment has no Docker CLI. No dependencies were changed, and no live Discord or provider requests were made. New tests cover SSRF/DNS/redirect/download limits, transactional wishlist writes, credential redaction, fail-closed auth, public health, recurring recovery/cleanup, flight enqueue rollback, tracker quota selection, notification loop recovery, and isolated startup.

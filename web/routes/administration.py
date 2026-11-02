@@ -21,6 +21,7 @@ from db import (
     reset_all_guild_joke_sent, set_guild_inactivity_enabled,
     save_sponsor_tier, set_birthday, set_guild_joke_config, set_setting, update_joke,
 )
+from db.analytics import get_feature_interactions
 from system_metrics import get_temperature_celsius
 from sponsor_tiers import (
     DuplicateTierNameError,
@@ -699,30 +700,6 @@ def api_retry_reminder(reminder_id):
     return jsonify(store.get(reminder_id))
 
 
-@blueprint.route('/assistant-profiles/<user_id>',methods=['GET','PATCH'])
-@require_token
-def api_assistant_profile(user_id):
-    import db
-    from assistant_profiles import effective_profile,validate_profile_updates
-    try:
-        user_id=_discord_id(user_id,'user_id')
-    except ValueError as exc:
-        return jsonify({'error':str(exc)}),400
-    if request.method=='PATCH':
-        data=request.get_json(silent=True)
-        if not isinstance(data,dict):
-            return jsonify({'error':'JSON object required'}),400
-        try:
-            updates=validate_profile_updates(**data)
-        except (ValueError,TypeError,KeyError) as exc:
-            return jsonify({'error':str(exc)}),400
-        if 'timezone_configured' in updates and 'timezone' not in updates:
-            return jsonify({'error':'Provide a timezone to configure it'}),400
-        if db.set_assistant_profile(user_id,**updates) is None:
-            return jsonify({'error':'Invalid profile; quiet hours need both bounds and an explicit timezone'}),400
-    return jsonify(effective_profile(db.get_assistant_profile(user_id)).as_dict())
-
-
 @blueprint.route('/notifications',methods=['GET'])
 @require_token
 def api_notifications():
@@ -749,24 +726,21 @@ def api_retry_notification(notification_id):
     return jsonify({'status':'pending'})
 
 
-@blueprint.route('/analytics/natural',methods=['GET'])
+@blueprint.route('/analytics/delivery',methods=['GET'])
 @require_analytics_token
-def api_natural_analytics():
+def api_delivery_analytics():
     from db.connection import _connect
-    period = request.args.get('period', '30d')
-    try:
-        guild = request.args.get('guild_id')
-        guild_id = _discord_id(guild, 'guild_id') if guild else None
-        bounds = get_analytics_summary(period, guild_id)['period']
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
-    query = "SELECT activity,SUM(count) FROM analytics_daily WHERE activity LIKE 'natural/%' AND day>=? AND day<=?"
-    args = [bounds['start'], bounds['end']]
-    if guild_id is not None:
-        query += ' AND guild_id=?'
-        args.append(guild_id)
     with _connect() as c:
-        rows = c.execute(query + ' GROUP BY activity', args).fetchall()
         reminder_states = dict(c.execute('SELECT state,COUNT(*) FROM reminders GROUP BY state').fetchall())
         notification_states = dict(c.execute('SELECT state,COUNT(*) FROM notification_outbox GROUP BY state').fetchall())
-    return jsonify({'delivery':{'reminders':reminder_states,'notifications':notification_states},'outcomes':[{'intent':a.split('/')[1],'language':a.split('/')[2],'route':a.split('/')[3],'outcome':a.split('/')[4],'count':n} for a,n in rows]})
+    return jsonify({'reminders':reminder_states,'notifications':notification_states})
+
+
+@blueprint.route('/interactions',methods=['GET'])
+@require_token
+def api_interactions():
+    scope = request.args.get('scope') or None
+    try:
+        return jsonify({'interactions': get_feature_interactions(scope)})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400

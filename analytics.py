@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 import db
+from db.analytics import record_feature_interaction
 from mention_utils import is_bot_mentioned
 
 logger = logging.getLogger("discord_bot")
@@ -53,6 +54,38 @@ async def record_for(category: str, activity: str, value) -> None:
     )
 
 
+def interaction_feature(name: str) -> str | None:
+    if name.startswith("wishlist-") or name == "worth-it":
+        return "wishlist"
+    if name.startswith("flight-tracker-"):
+        return "flights"
+    return None
+
+
+async def record_interaction(interaction, feature: str, action: str) -> None:
+    user = getattr(interaction, "user", None)
+    if not isinstance(getattr(user, "id", None), int):
+        return
+    guild_id = guild_id_from(interaction)
+    guild = getattr(interaction, "guild", None)
+    try:
+        await asyncio.to_thread(
+            record_feature_interaction,
+            user.id,
+            feature,
+            action,
+            guild_id=guild_id,
+            user_name=str(getattr(user, "name", "") or ""),
+            guild_name=str(getattr(guild, "name", "") or ""),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not record feature interaction feature=%s error=%s",
+            feature,
+            type(exc).__name__,
+        )
+
+
 async def refresh_command_catalog(tree: app_commands.CommandTree) -> None:
     names = [command.qualified_name for command in tree.walk_commands()]
     try:
@@ -85,6 +118,9 @@ class AnalyticsCommandTree(app_commands.CommandTree):
             name = data.get("name")
             if isinstance(name, str) and name:
                 await record_for("command", name, interaction)
+                feature = interaction_feature(name)
+                if feature:
+                    await record_interaction(interaction, feature, name)
         return True
 
     async def on_error(self, interaction: discord.Interaction, error, /) -> None:

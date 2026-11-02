@@ -214,42 +214,6 @@ def test_expired_worker_reservation_cleans_pending_and_reports_retry():
     asyncio.run(scenario())
 
 
-def test_mention_retries_and_natural_action_share_job_reservation(monkeypatch):
-    async def scenario():
-        feature = _feature()
-        job = _job(1)
-        job.question = "show wishlist"
-        job.reply_to = SimpleNamespace(reply=AsyncMock())
-        seen = []
-        outputs = iter([
-            "invalid JSON",
-            '{"text":"","reaction":null,"action":{"intent":"wishlist","slots":{}}}',
-        ])
-
-        def query(*args, **kwargs):
-            with action_context() as reservation:
-                seen.append(reservation)
-            return next(outputs)
-
-        async def execute(message, proposal):
-            with action_context() as reservation:
-                seen.append(reservation)
-
-        feature.natural_commands = SimpleNamespace(execute_proposal=AsyncMock(side_effect=execute))
-        monkeypatch.setattr("llm.client.query_llm", query)
-        monkeypatch.setenv("NATURAL_LLM_ENABLED", "1")
-        assert await feature._enqueue_job(job)
-        try:
-            await asyncio.wait_for(feature._queue.join(), 1)
-            assert seen == [job.reservation] * 3
-            feature.natural_commands.execute_proposal.assert_awaited_once()
-            assert not busy()
-        finally:
-            await _stop(feature._worker)
-
-    asyncio.run(scenario())
-
-
 def test_stale_cancelled_worker_callback_does_not_drain_replacement():
     async def scenario():
         worker = SingleSlotWorker(AsyncMock(), MagicMock())

@@ -153,6 +153,90 @@ def test_command_tree_counts_invocations_but_not_autocomplete(monkeypatch):
     ]
 
 
+def test_feature_interactions_aggregate_by_user_scope_and_guild(tmp_db):
+    from db.analytics import get_feature_interactions, record_feature_interaction
+
+    record_feature_interaction(1, "wishlist", "wishlist-add", guild_id=10, user_name="ana", guild_name="Home", occurred_at=100)
+    record_feature_interaction(1, "wishlist", "wishlist-show", guild_id=10, user_name="Ana B", occurred_at=150)
+    record_feature_interaction(1, "wishlist", "worth-it", guild_id=10, occurred_at=120)
+    record_feature_interaction(2, "flights", "flight-tracker-add", user_name="Bo", occurred_at=300)
+
+    rows = get_feature_interactions()
+    guild_row = rows[1]
+    dm_rows = get_feature_interactions("dm")
+
+    assert [row["user_id"] for row in rows] == [2, 1]
+    assert guild_row["count"] == 3
+    assert guild_row["user_name"] == "Ana B"
+    assert guild_row["guild_name"] == "Home"
+    assert guild_row["guild_id"] == 10
+    assert guild_row["first_at"] == 100
+    assert guild_row["last_at"] == 150
+    assert guild_row["last_action"] == "worth-it"
+    assert [row["user_id"] for row in dm_rows] == [2]
+    assert dm_rows[0]["scope_type"] == "dm"
+    assert dm_rows[0]["guild_id"] is None
+    assert [row["user_id"] for row in get_feature_interactions("guild")] == [1]
+    with pytest.raises(ValueError):
+        record_feature_interaction(1, "jokes", "joke")
+    with pytest.raises(ValueError):
+        record_feature_interaction(1, "wishlist", "")
+    with pytest.raises(ValueError):
+        get_feature_interactions("global")
+
+
+def test_command_tree_records_wishlist_worth_it_and_flight_users(tmp_db, monkeypatch):
+    from db.analytics import get_feature_interactions
+
+    def command(name, user_id, guild=None):
+        return SimpleNamespace(
+            type=discord.InteractionType.application_command,
+            data={"name": name},
+            user=SimpleNamespace(id=user_id, name=f"user{user_id}"),
+            guild=guild,
+            guild_id=getattr(guild, "id", None),
+        )
+
+    guild = SimpleNamespace(id=77, name="Friends")
+    for interaction in (
+        command("wishlist-show", 1, guild),
+        command("flight-tracker-add", 2),
+        command("worth-it", 3, guild),
+        command("help", 4, guild),
+    ):
+        assert asyncio.run(analytics.AnalyticsCommandTree.interaction_check(None, interaction))
+
+    rows = {row["user_id"]: row for row in get_feature_interactions()}
+
+    assert set(rows) == {1, 2, 3}
+    assert (rows[1]["feature"], rows[1]["scope_type"], rows[1]["guild_id"], rows[1]["guild_name"]) == ("wishlist", "guild", 77, "Friends")
+    assert (rows[2]["feature"], rows[2]["scope_type"], rows[2]["guild_id"]) == ("flights", "dm", None)
+    assert (rows[3]["feature"], rows[3]["last_action"], rows[3]["user_name"]) == ("wishlist", "worth-it", "user3")
+
+
+def test_feature_interaction_failure_does_not_block_command(monkeypatch, caplog):
+    async def fake_record_for(category, activity, interaction):
+        return None
+
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(analytics, "record_for", fake_record_for)
+    monkeypatch.setattr(analytics, "record_feature_interaction", fail)
+    interaction = SimpleNamespace(
+        type=discord.InteractionType.application_command,
+        data={"name": "wishlist-add"},
+        user=SimpleNamespace(id=5, name="ana"),
+        guild=None,
+        guild_id=None,
+    )
+
+    with caplog.at_level("WARNING", logger="discord_bot"):
+        assert asyncio.run(analytics.AnalyticsCommandTree.interaction_check(None, interaction))
+
+    assert "Could not record feature interaction feature=wishlist error=OperationalError" in caplog.text
+
+
 def test_mentions_count_once_and_analytics_failures_do_not_break_messages(
     monkeypatch, caplog
 ):

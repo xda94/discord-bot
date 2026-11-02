@@ -11,33 +11,9 @@ from assistant_profiles import validate_timezone
 
 CATEGORIES = {
  'reminders':('Reminders','Remindere','/remind · /reminder-list · /reminder-edit · /reminder-cancel · /reminder-snooze'),
- 'wishlist':('Wishlist','Lista de dorințe','/wishlist-item · /wishlist-show · /wishlist-target-price · /wishlist-restock-only · /wishlist-refresh · /wishlist-graph'),
+ 'wishlist':('Wishlist','Lista de dorințe','/wishlist-item · /wishlist-show · /wishlist-target-price · /wishlist-restock-only · /wishlist-refresh · /wishlist-graph · /worth-it'),
  'flights':('Flights','Zboruri','/flight-tracker-add · /flight-tracker-login · /flight-tracker-show · /flight-tracker-budget'),
- 'memory':('Memory','Memorie','/memory-show · /assistant-profile · /assistant-profile-set'),
- 'community':('Community games','Jocuri de comunitate','/tribunal · /meeting · /quest · /quest-show-active · /bingo · /bingo-habit · /bingo-habit-delete · /quote-add · /quote · /who-said · /quote-delete · /excuse · /worth-it · /horoscope'),
-}
-
-COMMUNITY_GUIDE = {
- 'en': (
-    '**Community games** · Server commands unless stated otherwise. Use slash commands or the Messages menu; these features have no natural-language mention commands. Private language uses your saved profile, then Discord locale; shared sessions keep their creator’s language. Discord replies identify members with mentions and use server/channel names. Quiz buttons use numbered names; quote and habit numbers remain management references.\n\n'
-    '**/tribunal accused:<member> accusation:<text>** — An accusation (max 500 characters). Voting opens immediately for all human server members, including the accused. **/meeting subject:<text> options:A|B** — Choose 2–5 distinct options. Votes last exactly 600 seconds (10 minutes), survive restart, and each human can change their single vote. Ties/no votes are neutral. Results edit the original message.\n\n'
-    '**/quest [user:<member>] [text:<challenge>]** — Write your own quest of 1–300 characters with text; this is required when assigning to another member. Messages mention the recipient and assigner throughout the quest, and keep your text as written. Without arguments, take a catalog challenge privately. An offer to another member tags them in the channel; only the recipient can accept or decline within 24 hours. After acceptance, only they can submit completion within seven days or abandon it; verification lasts ten minutes. One open quest per recipient, including assigned quests. The recipient cannot verify themselves. Only a strict positive majority awards the recipient a symbolic title; ties/no votes award none. Titles are not Discord roles and remain until an administrator removes them.\n\n'
-    '**/quest-show-active [user:<member>]** — Privately list all accepted, unexpired active quests in this server. Select user to filter by recipient. Each entry shows the challenge, recipient, assigner and completion deadline, with a link to the original message. Only the recipient can complete or abandon it there. Pending invitations and quests under verification are excluded.\n\n'
-    '**/bingo** — A shared 3×3 board for the bot’s local ISO week, starting Monday. Mark manually; another human must confirm before it counts. No chat monitoring. **/bingo-habit text-ro:<Romanian> text-en:<English> [id]** adds/edits habits; **/bingo-habit-delete id:<id>** removes one. Manage Server is required; keep 9–50 active habits. Edits affect future boards.\n\n'
-    '**/quote-add quote:<text> user:<member>** — Enter a quote (max 1,200 characters) and the server member who said it. The author gets one DM card with the framed full quote, server and channel names, and submitter, plus 24-hour Accept/Decline controls. Acceptance shares it guild-wide, including with members unable to see the submission channel. Refusal erases unapproved text; blocked DMs cancel nomination. **/quote** shows approved quotes and IDs; **/who-said** starts a ten-minute author quiz, requiring at least two distinct approved authors. **/quote-delete id:<id>** lets the author or Manage Messages moderator withdraw. The persistent consent-DM removal control works even after leaving. Removal revokes quizzes and stored text; it cannot recall screenshots or previous ordinary messages.\n\n'
-    '**/excuse reason:<reason> style:<choice>** — A private excuse in corporate, grandmother, gamer, or public-servant style. **/worth-it url:<saved-url>** — Current, minimum, maximum and median recorded prices, a calculated buy-or-wait verdict, then concrete advice from both voices. Requires at least seven recorded prices and fresh stock data for a favorable verdict. No refresh or purchase. On a server, both show results in the command channel, visible only to you with Dismiss message. No result is sent by DM; blocked DMs do not affect delivery. Both also work in DMs. Reasons and private generated responses are not saved.\n\n'
-    '**/horoscope [theme]** — A deterministic server forecast for general, work, gaming, or household, using the bot’s local date; same member/server/date/theme gives the same result across restart, without an LLM. Bingo, quest selection and quizzes also need no model. Humor uses one bounded model call with a local fallback, including after interrupted result generation. Completed sessions last 30 days after closure; bingo history lasts 30 days after the local ISO week ends; unapproved quote text expires at its consent deadline, approved quotes remain until deletion.'
- ),
- 'ro': (
-    '**Jocuri de comunitate** · Comenzi pe server, cu excepțiile de mai jos. Folosește comenzile slash sau meniul Mesaje; aceste funcții nu au comenzi în limbaj natural prin mențiuni. Limba privată vine din profil, apoi din Discord; sesiunile comune păstrează limba creatorului. Mesajele Discord identifică membrii prin mențiuni și folosesc numele serverelor/canalelor. Butoanele quizului au nume numerotate; numerele citatelor și obiceiurilor rămân referințe pentru administrare.\n\n'
-    '**/tribunal accused:<membru> accusation:<text>** — Acuzație (maximum 500 de caractere). Votul începe imediat pentru toți membrii umani ai serverului, inclusiv acuzatul. **/meeting subject:<text> options:A|B** — Alege 2–5 opțiuni distincte. Votul durează exact 600 de secunde (10 minute), supraviețuiește repornirii și fiecare om își poate schimba votul unic. Egalitatea/lipsa voturilor dă rezultat neutru. Rezultatul editează mesajul inițial.\n\n'
-    '**/quest [user:<membru>] [text:<provocare>]** — Scrii propriul quest, de 1–300 de caractere, în text; câmpul este obligatoriu când îl atribui altui membru. Mesajele îi menționează pe destinatar și pe cel care l-a atribuit pe toată durata questului, păstrând textul introdus. Fără argumente, primești privat o provocare din catalog. Propunerea pentru alt membru îi dă tag în canal; doar destinatarul poate accepta sau refuza în 24 de ore. După acceptare, doar el poate declara finalizarea în șapte zile sau abandona; verificarea durează zece minute. Un singur quest deschis per destinatar, inclusiv cele atribuite. Destinatarul nu se poate verifica singur. Doar majoritatea strict pozitivă îi acordă un titlu simbolic; egalitatea/lipsa voturilor nu acordă nimic. Titlurile nu sunt roluri Discord și rămân până la ștergerea administrativă.\n\n'
-    '**/quest-show-active [user:<membru>]** — Afișează privat toate questurile acceptate, active și neexpirate din server. Alege user pentru a filtra după destinatar. Fiecare intrare arată provocarea, destinatarul, cine a atribuit-o și termenul, cu link către mesajul original. Doar destinatarul poate finaliza sau abandona questul acolo. Invitațiile în așteptare și questurile în verificare sunt excluse.\n\n'
-    '**/bingo** — Tablă comună 3×3 pentru săptămâna ISO locală a botului, de luni. Marchezi manual; un alt om confirmă înainte să conteze. Fără monitorizarea conversațiilor. **/bingo-habit text-ro:<română> text-en:<engleză> [id]** adaugă/editează; **/bingo-habit-delete id:<id>** șterge. Necesită Gestionare server; păstrează 9–50 de obiceiuri active. Editările afectează tablele viitoare.\n\n'
-    '**/quote-add quote:<text> user:<membru>** — Scrii un citat (maximum 1.200 de caractere) și alegi membrul serverului care l-a spus. Autorul primește un singur card în DM, cu citatul complet încadrat, numele serverului și canalului, cine l-a propus și butoane Acceptă/Refuză valabile 24 de ore. Acceptarea îl face disponibil întregului server, inclusiv membrilor fără acces la canalul propunerii. Refuzul șterge textul neaprobat; DM-urile blocate anulează propunerea. **/quote** arată citate aprobate și ID-uri; **/who-said** pornește un quiz de zece minute, cu minimum doi autori aprobați distincți. **/quote-delete id:<id>** permite retragerea de către autor sau moderator cu Gestionare mesaje. Butonul persistent din DM funcționează și după părăsirea serverului. Ștergerea revocă quizurile și textul stocat; nu poate retrage capturi de ecran sau mesaje obișnuite trimise anterior.\n\n'
-    '**/excuse reason:<motiv> style:<opțiune>** — Scuză privată în stil corporatist, bunică, gamer sau funcționar public. **/worth-it url:<link-salvat>** — Prețul actual, minimul, maximul și mediana înregistrate, verdict calculat de cumpărare sau așteptare, apoi sfaturi concrete de la ambele voci. Pentru verdict favorabil sunt necesare minimum șapte prețuri și date recente de stoc. Fără actualizare sau cumpărare. Pe server, ambele afișează rezultatul în canalul comenzii, vizibil doar pentru tine, cu Dismiss message. Rezultatul nu se trimite prin DM; DM-urile blocate nu afectează trimiterea. Comenzile pot fi folosite și în DM. Motivele și răspunsurile private generate nu se salvează.\n\n'
-    '**/horoscope [theme]** — Prognoză deterministă pe server pentru general, muncă, gaming sau casă, după data locală a botului; același membru/server/dată/temă dă același rezultat după repornire, fără LLM. Bingo, alegerea questului și quizurile nu folosesc modele. Umorul folosește un singur apel limitat, cu variantă locală de rezervă, inclusiv după întreruperea generării rezultatului. Sesiunile încheiate rămân 30 de zile de la închidere; istoricul bingo rămâne 30 de zile după sfârșitul săptămânii ISO locale; textul citatelor neaprobate expiră la termenul acordului, cele aprobate rămân până la ștergere.'
- ),
+ 'memory':('Memory','Memorie','/memory-show'),
 }
 
 
@@ -56,7 +32,7 @@ def display_language(interaction, profile=None):
 
 
 class HelpView(discord.ui.View):
-    def __init__(self,user_id,language,tree,*,memory_disabled=False,bot_mention=None,edit_message=False):
+    def __init__(self,user_id,language,tree,*,memory_disabled=False,edit_message=False):
         super().__init__(timeout=600)
         self.user_id=user_id
         self.language=language
@@ -66,15 +42,6 @@ class HelpView(discord.ui.View):
             button=discord.ui.Button(label=ro if language=='ro' else en,row=0)
             async def callback(interaction,category=name,content=commands):
                 if not await self.interaction_check(interaction):
-                    return
-                if category=='community':
-                    from features.help_feature import _chunk_text
-                    for i,chunk in enumerate(_chunk_text(COMMUNITY_GUIDE[self.language])):
-                        if i==0 and edit_message:
-                            await interaction.response.edit_message(content=chunk,view=self,allowed_mentions=discord.AllowedMentions.none(),suppress_embeds=True)
-                        else:
-                            send=interaction.response.send_message if i==0 else interaction.followup.send
-                            await send(chunk,ephemeral=True,allowed_mentions=discord.AllowedMentions.none(),suppress_embeds=True)
                     return
                 registered={c.name for c in tree.get_commands()}
                 content=' · '.join(command for command in content.split(' · ') if command[1:] in registered)
@@ -103,22 +70,6 @@ class HelpView(discord.ui.View):
                 await send(chunk,ephemeral=True)
         full.callback=full_callback
         self.add_item(full)
-        natural=discord.ui.Button(label=t('natural_examples', language),row=2)
-        async def natural_callback(interaction):
-            if not await self.interaction_check(interaction):
-                return
-            from features.natural_language_help import NaturalLanguageHelpView, guide_content
-            view=NaturalLanguageHelpView(self.user_id,self.language,bot_mention=bot_mention)
-            if edit_message:
-                for child in list(self.children):
-                    if child.row==4:
-                        self.remove_item(child)
-                        view.add_item(child)
-                await interaction.response.edit_message(content=guide_content(self.language,bot_mention=bot_mention),view=view)
-            else:
-                await interaction.response.send_message(guide_content(self.language,bot_mention=bot_mention),view=view,ephemeral=True)
-        natural.callback=natural_callback
-        self.add_item(natural)
     async def interaction_check(self,interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(t('not_owner',self.language),ephemeral=True)
@@ -131,14 +82,13 @@ class HelpView(discord.ui.View):
 
 class OnboardingView(discord.ui.View):
     """One message, partial writes, and bounded IANA timezone selectors."""
-    def __init__(self,user_id,language,tree,*,profile=None,memory_disabled=False,bot_mention=None):
+    def __init__(self,user_id,language,tree,*,profile=None,memory_disabled=False):
         super().__init__(timeout=600)
         self.user_id=user_id
         self.language=language
         self.tree=tree
         self.profile=profile or {}
         self.memory_disabled=memory_disabled
-        self.bot_mention=bot_mention
         self.screen='language'
         self.group=None
         self.page=0
@@ -266,7 +216,6 @@ class OnboardingView(discord.ui.View):
             self._button('change_language',self._language,row=0)
             self._button('change_timezone',self._timezone,row=0)
             self._button('explore_features',self._help,row=1)
-            self._button('natural_examples',self._guide,row=1)
         if self.error and self._pending_update:
             async def retry(interaction):
                 await self._save(interaction,**self._pending_update)
@@ -381,13 +330,8 @@ class OnboardingView(discord.ui.View):
         return view
 
     async def _help(self,interaction):
-        view=HelpView(self.user_id,self.language,self.tree,memory_disabled=self.memory_disabled,bot_mention=self.bot_mention,edit_message=True)
+        view=HelpView(self.user_id,self.language,self.tree,memory_disabled=self.memory_disabled,edit_message=True)
         await interaction.response.edit_message(content=t('help',self.language),view=self._return_button(view))
-
-    async def _guide(self,interaction):
-        from features.natural_language_help import NaturalLanguageHelpView,guide_content
-        view=NaturalLanguageHelpView(self.user_id,self.language,bot_mention=self.bot_mention)
-        await interaction.response.edit_message(content=guide_content(self.language,bot_mention=self.bot_mention),view=self._return_button(view))
 
 
 class OnboardingFeature:
@@ -398,6 +342,5 @@ class OnboardingFeature:
         async def start(interaction:discord.Interaction):
             profile=db.get_assistant_profile(interaction.user.id)
             lang=display_language(interaction,profile)
-            mention=getattr(getattr(client,'user',None),'mention',None)
-            view=OnboardingView(interaction.user.id,lang,tree,profile=profile,memory_disabled=memory_disabled,bot_mention=mention)
+            view=OnboardingView(interaction.user.id,lang,tree,profile=profile,memory_disabled=memory_disabled)
             await interaction.response.send_message(view.content(),view=view,ephemeral=True)

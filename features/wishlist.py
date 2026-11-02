@@ -17,7 +17,7 @@ from i18n import localized_interaction, language_for, localize
 from notifications import deliver_tracking, tracking_language
 import db
 from analytics import record
-from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph, send_graph_to_user
+from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph
 from wishlist.charts import render_multi_price_history_png, render_price_history_png
 from llm.responses import generate_price_change_message
 
@@ -536,21 +536,7 @@ class WishlistFeature:
             for item_url, _price, _stock, _title, stored_currency in items
         )
 
-    async def send_graph_for_user(
-        self, user, *, url: str | None = None, currency: str | None = None,
-        days: int = GRAPH_MAX_DAYS, percentage: bool = False, language: str | None = None,
-    ) -> None:
-        target_currency = await asyncio.to_thread(self.graph_currency_for_user,
-            user.id, url=url, currency=currency
-        )
-        await send_graph_to_user(
-            user, url=url, currency=target_currency, days=days,
-            percentage=percentage, converter=self.converter,
-            effective_currency=_effective_currency, language=language,
-        )
-
     async def add_item_for_user(self, user_id: int, url: str, *, language: str | None = None) -> WishlistAddResult:
-        """Shared wishlist execution path for slash and natural commands."""
         if not _is_valid_http_url(url):
             return WishlistAddResult("invalid", url)
         result = await asyncio.to_thread(self.scraper.fetch, url)
@@ -809,22 +795,17 @@ class WishlistFeature:
                     and stored_profile.get("notification_style") == "compact"
                 )
                 disp_name = result.title or old_title or url
+                new_src = _effective_currency(result.currency, url)
+                price_shown = price_changed or bool(decision.alert_kind)
                 msg = f"🔔 **Update: {disp_name}**\nLink: {url}\n"
+                if result.price is not None and not price_shown:
+                    msg += f"💵 Current price: **{self._money(result.price, new_src, profile_currency)}**\n"
                 if back_in_stock:
                     msg += "✅ Item is now **BACK IN STOCK**!\n"
                 if price_changed:
                     old_src = _effective_currency(old_currency, url)
-                    new_src = _effective_currency(result.currency, url)
-                    old_str = (
-                        self.converter.format_in_currency(old_price, old_src, profile_currency)
-                        if profile_currency else
-                        self.converter.format_with_conversions(old_price, old_src)
-                    )
-                    new_str = (
-                        self.converter.format_in_currency(result.price, new_src, profile_currency)
-                        if profile_currency else
-                        self.converter.format_with_conversions(result.price, new_src)
-                    )
+                    old_str = self._money(old_price, old_src, profile_currency)
+                    new_str = self._money(result.price, new_src, profile_currency)
                     msg += f"💰 Price changed: `{old_str}` -> **{new_str}**\n"
                     try:
                         language = await asyncio.to_thread(tracking_language, user_id, "wishlist", item_id)
@@ -844,7 +825,6 @@ class WishlistFeature:
                             f"Unexpected LLM price-message failure for {url}"
                         )
                 if decision.alert_kind:
-                    new_src = _effective_currency(result.currency, url)
                     alert_text = self._format_alert_section(decision, new_src)
                     msg += alert_text
                 if target_alert and target_price is not None and target_currency:
@@ -858,12 +838,17 @@ class WishlistFeature:
                     if back_in_stock:
                         parts.append("back in stock")
                     if price_changed:
-                        parts.append(f"{old_str} → {new_str}")
-                    if decision.alert_kind:
-                        parts.append(decision.alert_kind.replace("low", "buy window").replace("high", "maybe wait"))
+                        parts.append(f"{self._money(old_price, old_src, profile_currency, True)} → {self._money(result.price, new_src, profile_currency, True)}")
+                    if decision.alert_kind == "low":
+                        parts.append(f"buy window (previous low {self._money(decision.all_time_low, new_src, profile_currency, True)})")
+                    elif decision.alert_kind == "high":
+                        parts.append(f"maybe wait (usual median {self._money(decision.median_price, new_src, profile_currency, True)})")
                     if target_alert:
-                        parts.append("target reached")
-                    msg = f"🔔 **{disp_name}**: {', '.join(parts)}. {url}"
+                        parts.append(f"target reached (target {target_price:.2f} {target_currency})")
+                    msg = f"🔔 **{disp_name}**: {', '.join(parts)}."
+                    if result.price is not None and not price_changed:
+                        msg += f" Price: **{self._money(result.price, new_src, profile_currency, True)}**."
+                    msg += f" {url}"
                 event_kind = "+".join(k for k,active in (("target",target_alert),("restock",back_in_stock),("price",price_changed),("signal",bool(decision.alert_kind))) if active)
                 await deliver_tracking(self.client,user_id,"wishlist",item_id,event_kind,msg, protected=(disp_name, url))
                 logger.info(
@@ -891,6 +876,10 @@ class WishlistFeature:
             await asyncio.to_thread(db.update_item_alert_state,
                 item_id, decision.new_state, decision.new_state_price,
             )
+    def _money(self, value, currency, profile_currency, short=False):
+        target = profile_currency or (currency if short else None)
+        return self.converter.format_in_currency(value, currency, target) if target else self.converter.format_with_conversions(value, currency)
+
     def _format_alert_section(self, decision: "AlertDecision", source_currency: str | None) -> str:
         """Render the LOW/HIGH alert block of the per-item DM.
 

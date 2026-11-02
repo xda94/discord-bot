@@ -94,7 +94,7 @@ async def drain(client, user_id=None):
                 raise RuntimeError('User unavailable')
             for event in events:
                 lang = language_for(profile=profile, fallback=event['language'])
-                observed = datetime.fromtimestamp(event['observed_at'], ZoneInfo(profile.timezone)).isoformat(timespec='minutes')
+                observed = datetime.fromtimestamp(event['observed_at'], ZoneInfo(profile.timezone)).strftime('%d.%m.%Y %H:%M %Z')
                 header = t('digest', lang) + '\n\n' if profile.delivery_mode == 'daily' else ''
                 body = header + localize(event['body'], lang, protected=json.loads(event['protected_json'])) + '\n' + t('observed', lang, time=observed)
                 body = await asyncio.to_thread(store.freeze_body,event['id'], body)

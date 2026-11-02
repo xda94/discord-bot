@@ -10,8 +10,6 @@
     wishlist: [],
     flights: [],
     sponsorTiers: [],
-    communityHabits: [],
-    communityGuild: null,
     sponsorSettingSaving: false,
     selectedWishlist: null,
     selectedFlight: null,
@@ -536,8 +534,8 @@
       $("#analytics-tracking").textContent = `Tracking since ${data.tracking_started_date} · showing ${data.period.start} to ${data.period.end} UTC`;
       $("#analytics-scope").textContent = state.guildId ? `server ${state.guildId}` : `all · server ${data.scope_totals.guild} · DM ${data.scope_totals.dm} · global ${data.scope_totals.global}`;
       renderAnalyticsCommands();
-      const outcomes = await api(`/analytics/natural?${query(params)}`);
-      if (ticket.current()) $("#natural-analytics").innerHTML = `<p data-ui-label>Global delivery health</p><p>${tr("Reminder failures")}: ${outcomes.delivery.reminders.failed || 0} · ${tr("Pending notifications")}: ${outcomes.delivery.notifications.pending || 0} · ${tr("Failed notifications")}: ${outcomes.delivery.notifications.failed || 0}</p><table class="data-table"><thead><tr><th>Intent</th><th>Language</th><th>Route</th><th>Outcome</th><th>Count</th></tr></thead><tbody>${outcomes.outcomes.map((row)=>`<tr><td>${escapeHtml(row.intent)}</td><td>${escapeHtml(row.language)}</td><td>${escapeHtml(tr(row.route))}</td><td>${escapeHtml(tr(row.outcome))}</td><td>${row.count}</td></tr>`).join("")}</tbody></table>`;
+      const delivery = await api("/analytics/delivery");
+      if (ticket.current()) $("#delivery-health").innerHTML = `<p>${tr("Reminder failures")}: ${delivery.reminders.failed || 0} · ${tr("Pending notifications")}: ${delivery.notifications.pending || 0} · ${tr("Failed notifications")}: ${delivery.notifications.failed || 0}</p>`;
       renderAnalyticsList($("#analytics-unused"), data.commands.unused, "Every active command was used in this period.");
       renderAnalyticsList($("#analytics-features"), data.features, "No non-command activity in this period.", "activity");
       renderAnalyticsList($("#analytics-failures"), data.failures, "No failures in this period.", "activity");
@@ -555,125 +553,28 @@
     }
   }
 
-  const communityLabels = {
-    tribunal: "Tribunal", sedinta: "Meeting", quest: "Quest", quiz: "Quote quiz",
-    pending: "Pending", active: "Active", verification: "Verification", closing: "Closing",
-    closed: "Closed", cancelled: "Cancelled", declined: "Declined", expired: "Expired",
-    delivered: "Delivered", retry: "Retry scheduled", error: "Delivery failed",
-    not_found: "Message no longer exists", forbidden: "Message cannot be edited",
-    http: "Discord temporarily unavailable", database: "Database temporarily unavailable",
-    quote_removed: "Quote removed", guilty: "Guilty", innocent: "Innocent", success: "Success", not_yet: "Not yet",
-  };
-  const communityLabel = (value) => tr(communityLabels[value] || "Unknown");
-  const communityButton = (action, label, item, guild, extra = "") => `<button class="button secondary" data-action="${action}" data-id="${escapeHtml(item.id)}" data-guild-id="${escapeHtml(guild)}" ${extra}>${escapeHtml(tr(label))}</button>`;
-
-  function resetCommunityHabit() {
-    const form = $("#community-habit-form");
-    form.reset();
-    form.dataset.guildId = state.communityGuild || "";
-    $("#community-habit-title").textContent = tr("Add bilingual habit");
-    $("[data-action='new-community-habit']").hidden = true;
-  }
-
-  function renderCommunity(sessions, bingo, quotes, titles, guild) {
-    const table = (headers, rows, empty) => rows.length ? `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map((label) => `<th>${escapeHtml(tr(label))}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>` : `<div class="empty">${escapeHtml(tr(empty))}</div>`;
-    $("#community-sessions").innerHTML = table(["Session", "Status", "Deadline", "Votes and result", "Delivery", "Actions"], sessions.sessions.map((item) => {
-      const options = item.kind === "sedinta" ? item.payload.options || [] : item.kind === "quiz" ? item.payload.candidates || [] : null;
-      const tally = Object.entries(item.tally || {}).map(([key, count]) => {
-        const label = item.kind === "quiz" ? options.find((candidate) => String(candidate.user_id) === key)?.name || key : options ? options[Number(key)] || key : communityLabel(key);
-        return `${escapeHtml(label)}: ${escapeHtml(count)}`;
-      }).join(" · ");
-      const subject = item.payload.subject || item.payload.accusation || item.payload[state.locale === "ro-RO" ? "challenge_ro" : "challenge_en"] || item.payload.quote_text || "";
-      return `<tr><td>${escapeHtml(communityLabel(item.kind))} #${escapeHtml(item.id)}<p>${escapeHtml(subject)}</p><small>${escapeHtml(tr("Creator"))}: ${escapeHtml(item.creator_id)}</small></td><td>${escapeHtml(communityLabel(item.phase))}</td><td>${escapeHtml(formatDate(item.deadline))}</td><td>${tally}<p>${escapeHtml(item.result_text)}</p></td><td>${escapeHtml(communityLabel(item.delivery_status))}${item.error_code ? `<p>${escapeHtml(communityLabel(item.error_code))}</p>` : ""}${item.retry_at ? `<small>${escapeHtml(tr("Retry at"))}: ${escapeHtml(formatDate(item.retry_at))}</small>` : ""}</td><td>${["pending", "active", "verification"].includes(item.phase) ? communityButton("cancel-community-session", "Cancel session", item, guild) : ""}</td></tr>`;
-    }), "No community sessions yet.");
-    const board = bingo.board;
-    const marks = new Map((board?.marks || []).map((mark) => [mark.cell_index, mark]));
-    const confirmed = new Set((board?.marks || []).filter((mark) => mark.confirmer_id).map((mark) => mark.cell_index));
-    const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]].filter((line) => line.every((cell) => confirmed.has(cell))).length;
-    $("#community-bingo").innerHTML = board ? `<p>${escapeHtml(tr("Week"))}: ${escapeHtml(board.week_key)} · ${escapeHtml(tr("Completed lines"))}: ${lines}</p>` + table(["Cell", "Habit", "Status", "Marker", "Confirmer"], board.cells.map((cell, index) => {
-      const mark = marks.get(index);
-      return `<tr><td>${index + 1}</td><td>${escapeHtml(cell[state.locale === "ro-RO" ? "text_ro" : "text_en"])}</td><td>${escapeHtml(tr(mark?.confirmer_id ? "Confirmed" : mark ? "Awaiting confirmation" : "Unmarked"))}</td><td>${escapeHtml(mark?.marker_id || "—")}</td><td>${escapeHtml(mark?.confirmer_id || "—")}</td></tr>`;
-    }), "No weekly board.") : `<div class="empty">${escapeHtml(tr("No weekly board."))}</div>`;
-    state.communityHabits = bingo.habits;
-    $("#community-habits").innerHTML = table(["ID", "English habit", "Romanian habit", "Actions"], bingo.habits.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.text_en)}</td><td>${escapeHtml(item.text_ro)}</td><td>${communityButton("edit-community-habit", "Edit", item, guild)} ${communityButton("delete-community-habit", "Remove habit", item, guild)}</td></tr>`), "No active habits.");
-    $("#community-quotes").innerHTML = `<p>${escapeHtml(tr("Pending author consent"))}: ${escapeHtml(quotes.pending_count)}</p>` + table(["ID", "Quote", "Author", "Approved", "Actions"], quotes.quotes.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.quote_text)}</td><td>${escapeHtml(item.author_name)}<small>${escapeHtml(item.author_id)}</small></td><td>${escapeHtml(formatDate(item.approved_at))}</td><td>${communityButton("delete-community-quote", "Remove quote", item, guild)}</td></tr>`), "No approved quotes.");
-    $("#community-titles").innerHTML = table(["User", "Symbolic title", "Awarded", "Actions"], titles.titles.map((item) => `<tr><td>${escapeHtml(item.user_id)}</td><td>${escapeHtml(item.title_key)}</td><td>${escapeHtml(formatDate(item.awarded_at))}</td><td>${communityButton("delete-community-title", "Remove title", item, guild, `data-user-id="${escapeHtml(item.user_id)}" data-title-key="${escapeHtml(item.title_key)}"`)}</td></tr>`), "No symbolic titles.");
-  }
-
-  async function loadCommunity() {
-    const ticket = version("community");
-    const guildSnapshot = state.guildId;
-    const targets = ["sessions", "bingo", "habits", "quotes", "titles"].map((name) => $(`#community-${name}`));
-    if (state.communityGuild !== guildSnapshot) {
-      state.communityGuild = guildSnapshot;
-      state.communityHabits = [];
-      resetCommunityHabit();
-    }
-    let guild;
-    try { guild = requireGuild(); }
-    catch (_error) {
-      targets.forEach((target) => { target.innerHTML = `<div class="empty">${escapeHtml(tr("Enter a server ID above."))}</div>`; });
-      return;
-    }
-    const current = () => ticket.current() && state.guildId === guildSnapshot;
-    targets.forEach((target) => { target.innerHTML = `<div class="empty">${escapeHtml(tr("Loading community data…"))}</div>`; });
+  async function loadUsers() {
+    const ticket = version("users");
+    const target = $("#users-list");
+    const scope = $("#users-scope").value;
     try {
-      const reports = await Promise.all(["sessions", "bingo", "quotes", "titles"].map((name) => api(`/community/${name}?${query({guild_id: guild})}`)));
-      if (!current()) return;
-      renderCommunity(...reports, guild);
-    } catch (_error) {
-      if (!current()) return;
-      targets.forEach((target) => { target.innerHTML = `<div class="empty" role="alert">${escapeHtml(tr("Community data could not be loaded. Please try again."))} <button class="button secondary" data-action="load-community">${escapeHtml(tr("Retry"))}</button></div>`; });
+      const data = await api(`/interactions?${query(scope ? { scope } : {})}`);
+      if (!ticket.current()) return;
+      const headers = ["User", "Feature", "Where", "Uses", "First seen", "Last seen", "Last command", "Actions"];
+      target.innerHTML = data.interactions.length ? `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map((label) => `<th>${escapeHtml(tr(label))}</th>`).join("")}</tr></thead><tbody>${data.interactions.map((item) => `<tr><td>${escapeHtml(item.user_name || tr("Unknown user"))}<small>${escapeHtml(item.user_id)}</small></td><td>${escapeHtml(tr(item.feature === "flights" ? "Flights" : "Wishlist"))}</td><td>${item.scope_type === "dm" ? escapeHtml(tr("Direct message")) : `${escapeHtml(item.guild_name || tr("Unknown server"))}<small>${escapeHtml(item.guild_id)}</small>`}</td><td>${escapeHtml(item.count)}</td><td>${escapeHtml(formatDate(item.first_at))}</td><td>${escapeHtml(formatDate(item.last_at))}</td><td>/${escapeHtml(item.last_action)}</td><td><button class="button secondary" data-action="open-user-feature" data-user-id="${escapeHtml(item.user_id)}" data-feature="${escapeHtml(item.feature)}">${escapeHtml(tr("Open"))}</button></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${escapeHtml(tr("No wishlist or flight activity recorded yet."))}</div>`;
+    } catch (error) {
+      if (ticket.current()) target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
     }
   }
 
-  async function saveCommunityHabit(form, data) {
-    const guild = requireGuild();
-    if (form.dataset.guildId !== guild || state.communityGuild !== guild) throw new Error(tr("Reload community data before making changes."));
-    const habit = String(data.get("habit_id") || "");
-    await api(habit ? `/community/bingo/habits/${encodeURIComponent(habit)}` : "/community/bingo/habits", {method: habit ? "PUT" : "POST", body: JSON.stringify({guild_id: guild, text_en: data.get("text_en"), text_ro: data.get("text_ro")})});
-    if (state.guildId === guild) { resetCommunityHabit(); await loadCommunity(); }
-  }
-
-  async function communityAction(button) {
-    const action = button.dataset.action;
-    const guild = requireGuild();
-    if (button.dataset.guildId !== guild || state.communityGuild !== guild) throw new Error(tr("Reload community data before making changes."));
-    const id = button.dataset.id;
-    if (action === "edit-community-habit") {
-      const habit = state.communityHabits.find((item) => String(item.id) === id);
-      if (!habit) throw new Error(tr("Reload community data before making changes."));
-      const form = $("#community-habit-form");
-      for (const [name, value] of Object.entries({habit_id: id, text_en: habit.text_en, text_ro: habit.text_ro})) form.elements.namedItem(name).value = value;
-      form.dataset.guildId = guild;
-      $("#community-habit-title").textContent = tr("Edit bilingual habit");
-      $("[data-action='new-community-habit']").hidden = false;
-      return;
-    }
-    const changes = {
-      "cancel-community-session": {path: `/community/sessions/${encodeURIComponent(id)}/cancel`, method: "POST", confirmation: "Cancel session", detail: id},
-      "delete-community-habit": {path: `/community/bingo/habits/${encodeURIComponent(id)}`, method: "DELETE", confirmation: "Remove habit", detail: id},
-      "delete-community-quote": {path: `/community/quotes/${encodeURIComponent(id)}`, method: "DELETE", confirmation: "Remove quote and cancel its quizzes", detail: id},
-      "delete-community-title": {path: `/community/titles/${encodeURIComponent(button.dataset.userId)}/${encodeURIComponent(button.dataset.titleKey)}`, method: "DELETE", confirmation: "Remove symbolic title", detail: `${button.dataset.titleKey} (${button.dataset.userId})`},
-    };
-    const change = changes[action];
-    if (!change || !confirm(`${tr(change.confirmation)} #${change.detail} ${tr("from server")} ${guild}?`)) return;
-    try {
-      await api(change.path, {method: change.method, body: JSON.stringify({guild_id: guild})});
-      if (state.guildId === guild) { toast("Community change saved."); await loadCommunity(); }
-    } catch (_error) {
-      if (state.guildId === guild) throw new Error(tr("Community change could not be saved. Refresh and try again."));
-    }
-  }
-
-  const loaders = { community: loadCommunity, preferences: loadPreferences, overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, birthdays: loadBirthdays, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
+  const loaders = { users: loadUsers, preferences: loadPreferences, overview: loadOverview, keywords: loadKeywords, reminders: loadReminders, birthdays: loadBirthdays, jokes: loadJokes, wishlist: loadWishlist, flights: loadFlights, memory: loadMemory, analytics: loadAnalytics, settings: loadSettings };
   function navigate(page) {
     if (!loaders[page]) return;
     state.page = page;
     $$(".page").forEach((node) => node.classList.toggle("active", node.id === `page-${page}`));
     $$(".nav-item").forEach((node) => node.classList.toggle("active", node.dataset.page === page));
     $("#page-title").textContent = $(`#page-${page}`).dataset.title;
-    $("#global-user-scope").hidden = page === "analytics";
+    $("#global-user-scope").hidden = page === "analytics" || page === "users";
     document.body.classList.remove("menu-open");
     clearInterval(state.statsTimer); state.statsTimer = null;
     loaders[page]();
@@ -694,11 +595,6 @@
   }
 
   function bindForms() {
-    $("#community-habit-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, (data) => saveCommunityHabit(form, data), "Community change saved."); });
-    $("#profile-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => {
-      const payload = Object.fromEntries(data); payload.currency ||= null; payload.quiet_start ||= null; payload.quiet_end ||= null;
-      await api(`/assistant-profiles/${requireUser()}`, {method:"PATCH",body:JSON.stringify(payload)}); await loadPreferences();
-    }, "Saved."); });
     for (const input of $$("#flight-form [list='airport-options']")) {
       let timer; input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(async () => {
         try { const rows=await api(`/flights/airports?q=${encodeURIComponent(input.value)}`); $("#airport-options").innerHTML=rows.map((row)=>`<option value="${escapeHtml(row.iata_code)}">${escapeHtml(row.municipality)} · ${escapeHtml(row.name)}</option>`).join(""); } catch (_error) {}
@@ -755,20 +651,16 @@
   async function loadPreferences() {
     let user; try { user = requireUser(); } catch (error) { toast(error.message, true); return; }
     const ticket = version("preferences");
-    const [profile, notifications] = await Promise.all([api(`/assistant-profiles/${user}`), api(`/notifications?${query({ user_id: user })}`)]);
+    const notifications = await api(`/notifications?${query({ user_id: user })}`);
     if (!ticket.current()) return;
-    for (const [name, value] of Object.entries(profile)) {
-      const input = $("#profile-form").elements.namedItem(name); if (input) input.value = value ?? "";
-    }
     $("#notifications-list").innerHTML = `<p><span data-ui-label>Pending</span>: ${notifications.counts.pending || 0} · <span data-ui-label>Failed</span>: ${notifications.counts.failed || 0} · <span data-ui-label>Sent</span>: ${notifications.counts.sent || 0}</p>` + notifications.items.map((item) => `<div class="memory-message"><strong>${escapeHtml(item.source)} #${escapeHtml(item.item_key)}</strong><p>${escapeHtml(tr(item.state))} · ${escapeHtml(formatDate(item.due_at))} ${escapeHtml(item.last_error || "")}</p>${item.state === "failed" ? `<button class="button secondary" data-action="retry-notification" data-id="${item.id}">Retry</button>` : ""}</div>`).join("");
   }
 
   async function handleAction(button) {
     const action = button.dataset.action;
     try {
-      if (action === "load-community") return loadCommunity();
-      if (action === "new-community-habit") return resetCommunityHabit();
-      if (action.includes("-community-")) return await communityAction(button);
+      if (action === "load-users") return loadUsers();
+      if (action === "open-user-feature") { state.userId = button.dataset.userId; $("#global-user-id").value = state.userId; localStorage.setItem("bot-dashboard-user", state.userId); state.selectedWishlist = null; state.selectedFlight = null; return navigate(button.dataset.feature === "flights" ? "flights" : "wishlist"); }
       if (action === "close-reminder-editor") { $("#reminder-editor").close(); return; }
       if (action === "load-preferences") return loadPreferences();
       if (action === "retry-notification") { await api(`/notifications/${button.dataset.id}/retry`, {method:"POST"}); return loadPreferences(); }
@@ -855,9 +747,10 @@
     $("#menu-button").addEventListener("click", () => document.body.classList.toggle("menu-open"));
     $("#scrim").addEventListener("click", () => document.body.classList.remove("menu-open"));
     let scopeTimer;
-    const updateScope = () => { version("community"); state.communityGuild = null; clearTimeout(scopeTimer); scopeTimer = setTimeout(() => { state.guildId = $("#global-guild-id").value.trim(); state.userId = $("#global-user-id").value.trim(); localStorage.setItem("bot-dashboard-guild", state.guildId); localStorage.setItem("bot-dashboard-user", state.userId); state.selectedWishlist = null; state.selectedFlight = null; loaders[state.page](); }, 350); };
+    const updateScope = () => { clearTimeout(scopeTimer); scopeTimer = setTimeout(() => { state.guildId = $("#global-guild-id").value.trim(); state.userId = $("#global-user-id").value.trim(); localStorage.setItem("bot-dashboard-guild", state.guildId); localStorage.setItem("bot-dashboard-user", state.userId); state.selectedWishlist = null; state.selectedFlight = null; loaders[state.page](); }, 350); };
     $("#global-guild-id").addEventListener("input", updateScope); $("#global-user-id").addEventListener("input", updateScope);
     $("#memory-scope").addEventListener("change", loadMemory);
+    $("#users-scope").addEventListener("change", loadUsers);
     $("#analytics-period").addEventListener("change", loadAnalytics);
     $("#analytics-command-sort").addEventListener("change", renderAnalyticsCommands);
     $("#login-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, async (data) => login(data.get("token"))); });

@@ -7,7 +7,6 @@ import pytest
 from discord import app_commands
 
 import db
-from features.natural_commands import NaturalCommandsFeature
 from features.wishlist import WishlistFeature
 from llm.capacity import CapacityBusy
 from web.app import create_app
@@ -146,20 +145,3 @@ def test_scheduled_scrape_background_busy_preserves_snapshot_and_alerts(tmp_db, 
     assert db.get_scraped_item(7, url)[14] == FAILURE_BUSY
     assert db.get_price_history(7, url) == history
     delivery.assert_not_awaited()
-
-
-def test_natural_wishlist_add_explains_temporary_busy(tmp_db, monkeypatch):
-    message = SimpleNamespace(
-        author=SimpleNamespace(id=7, send=AsyncMock()),
-        channel=SimpleNamespace(id=20), reference=None,
-        reply=AsyncMock(), add_reaction=AsyncMock(),
-    )
-    monkeypatch.setattr("features.natural_commands.extract_mention_text", lambda *_: "track https://shop.example/item")
-    wishlist = SimpleNamespace(add_item_for_user=AsyncMock(return_value=SimpleNamespace(status=FAILURE_BUSY)))
-    feature = NaturalCommandsFeature(None, bot_id=99, wishlist=wishlist, flights=None, reminders=None)
-
-    assert asyncio.run(feature.handle_message(message)) is True
-
-    assert "temporarily busy" in message.reply.await_args.args[0]
-    assert "try again" in message.reply.await_args.args[0]
-    message.add_reaction.assert_not_awaited()

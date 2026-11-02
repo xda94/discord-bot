@@ -4,7 +4,6 @@ import json
 import sqlite3
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from string import Formatter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -15,21 +14,9 @@ from db import reminders, notifications
 from assistant_profiles import effective_profile, AssistantProfile
 from command_time import duration, calendar_time, reminder_time, next_occurrence, number
 from i18n import CATALOG, language_for
-from natural_commands import parse_natural_command, NaturalCommandError
-from features.natural_commands import NaturalCommandsFeature
 from features.reminders import RemindersFeature, ReminderControls
 from features.wishlist import WishlistFeature
 from notifications import delivery_at, drain
-from action_proposals import validate_proposal, authorize_proposal
-
-CORPUS=json.loads((Path(__file__).parent.parent/'data/natural-command-eval.json').read_text())
-
-
-@pytest.mark.parametrize('case',CORPUS,ids=lambda case:case['text'])
-def test_reviewed_bilingual_corpus(case):
-    result=parse_natural_command(case['text'])
-    kind='conversation' if result is None else type(result).__name__
-    assert kind==case['expected']
 
 
 @pytest.mark.parametrize('text,seconds',[
@@ -39,15 +26,6 @@ def test_reviewed_bilingual_corpus(case):
 ])
 def test_complete_duration(text,seconds):
     assert duration(text)==seconds
-
-
-def test_original_reminder_text_and_url_are_preserved():
-    assert parse_natural_command('adu-mi aminte peste o oră să Sun Acasă.').text=='Sun Acasă.'
-    url='https://Example.com/Știre?ID=ABC'
-    assert parse_natural_command('urmărește '+url+'.').url==url
-    result=parse_natural_command('amintește-mi peste 1 oră și 30 de minute să sun acasă')
-    assert result.seconds==5400 and result.text=='sun acasă'
-    assert isinstance(parse_natural_command('amintește-mi peste 1 oră și 30 de minute'),NaturalCommandError)
 
 
 @pytest.mark.parametrize('text,lang,expected',[
@@ -141,94 +119,6 @@ def test_uncertain_claim_not_resent_and_snooze_is_separate(tmp_db):
     assert reminders.get(rid)['recurrence']=='daily'
 
 
-def message(text,event_id=100,user_id=1,channel_id=10,mentioned=True):
-    return SimpleNamespace(id=event_id,content=f'<@99> {text}' if mentioned else text,clean_content=text,
-        mentions=[SimpleNamespace(id=99,display_name='Bot')] if mentioned else [],role_mentions=[],channel_mentions=[],
-        author=SimpleNamespace(id=user_id,send=AsyncMock()),channel=SimpleNamespace(id=channel_id),guild=None,
-        reference=None,reply=AsyncMock(),add_reaction=AsyncMock())
-
-
-def natural_feature():
-    return NaturalCommandsFeature(None,bot_id=99,wishlist=object.__new__(WishlistFeature),flights=None,reminders=RemindersFeature)
-
-
-def test_timezone_clarification_and_message_dedup(tmp_db):
-    feature=natural_feature()
-    first=message('amintește-mi mâine la 9 să sun acasă')
-    assert asyncio.run(feature.handle_message(first))
-    assert reminders.list_for(1)==[]
-    first.add_reaction.assert_not_awaited()
-    assert 'fus orar' in first.reply.await_args.args[0]
-    other=message('Europe/Bucharest',101,user_id=2)
-    assert asyncio.run(feature.handle_message(other)) is False
-    missing=message('Europe/Bucharest',102,mentioned=False)
-    assert asyncio.run(feature.handle_message(missing)) is False
-    follow=message('Europe/Bucharest',103)
-    assert asyncio.run(feature.handle_message(follow))
-    assert len(reminders.list_for(1))==1
-    assert asyncio.run(feature.handle_message(follow)) is False
-    follow.add_reaction.assert_awaited_once_with('✅')
-    duplicate=message('adu-mi aminte peste o oră să sun acasă',104)
-    asyncio.run(feature.handle_message(duplicate))
-    asyncio.run(feature.handle_message(duplicate))
-    assert len(reminders.list_for(1))==2
-    duplicate.add_reaction.assert_awaited_once_with('✅')
-
-
-def test_acknowledgment_failure_does_not_repeat_action(tmp_db):
-    feature=natural_feature()
-    msg=message('remind me in one hour to stretch')
-    msg.add_reaction.side_effect=RuntimeError('no reaction permission')
-    asyncio.run(feature.handle_message(msg))
-    asyncio.run(feature.handle_message(msg))
-    assert len(reminders.list_for(1))==1
-
-
-def test_owner_scoped_product_resolution_and_price_target(tmp_db):
-    db.add_scraped_item(1,'https://example.com/headphones','Căști',100,True,'RON')
-    db.add_scraped_item(2,'https://example.com/private','Private item',100,True,'RON')
-    feature=natural_feature()
-    msg=message('anunță-mă când căști scad sub 50 lei')
-    asyncio.run(feature.handle_message(msg))
-    with db._connect() as c:
-        assert c.execute('SELECT target_price FROM scraped_items WHERE user_id=1').fetchone()[0]==50
-        assert c.execute('SELECT target_price FROM scraped_items WHERE user_id=2').fetchone()[0] is None
-    unauthorized=message('nu mai urmări #2',101)
-    asyncio.run(feature.handle_message(unauthorized))
-    unauthorized.add_reaction.assert_not_awaited()
-    assert len(db.get_user_scraped_items(2))==1
-
-
-@pytest.mark.parametrize('proposal',[
-    {'intent':'execute_python','slots':{}},
-    {'intent':'target','slots':{'reference':'x','price':True,'currency':'RON'}},
-    {'intent':'graph','slots':{'days':True}},
-    {'intent':'delete_item','slots':{'reference':'x','user_id':2}},
-    {'intent':'restock','slots':{'reference':'x','enabled':'yes'}},
-    {'intent':'reminder_cancel','slots':{'reminder_id':True}},
-])
-def test_invalid_proposals(proposal):
-    with pytest.raises(ValueError):
-        validate_proposal(proposal)
-
-
-@pytest.mark.parametrize('text,proposal',[
-    ('salut',{'intent':'track','slots':{'reference':'https://invented.example/'}}),
-    ('nu urmări https://example.com/item',{'intent':'track','slots':{'reference':'https://example.com/item'}}),
-    ('"track https://example.com/item"',{'intent':'track','slots':{'reference':'https://example.com/item'}}),
-    ('remind me tomorrow to call',{'intent':'reminder','slots':{'when':'tomorrow at 9','text':'call'}}),
-    ('anunță-mă când căști scad sub 500 lei',{'intent':'target','slots':{'reference':'căști','price':600,'currency':'RON'}}),
-])
-def test_invented_or_unauthorized_operands_make_no_writes(tmp_db,text,proposal):
-    feature=natural_feature()
-    msg=message(text)
-    asyncio.run(feature.execute_proposal(msg,proposal))
-    assert reminders.list_for()==[]
-    msg.add_reaction.assert_not_awaited()
-    with db._connect() as c:
-        assert c.execute('SELECT COUNT(*) FROM action_executions').fetchone()[0]==0
-
-
 def test_button_checks_ownership(tmp_db):
     rid=reminders.create(1,10,time.time()+100,'call')
     async def run():
@@ -270,75 +160,6 @@ def test_failed_dm_survives_restart_and_retry(tmp_db):
     asyncio.run(drain(client))
     assert notifications.summary()=={'sent':1}
     assert 'Observed at' in user.send.await_args.args[0]
-
-
-def test_reminder_text_spacing_and_language_override():
-    from natural_commands import ShowWishlistAction
-    result = parse_natural_command('te rog adu-mi   aminte peste o oră să Sun  Acasă.\nIa cheile!')
-    assert result.text == 'Sun  Acasă.\nIa cheile!'
-    assert isinstance(parse_natural_command('show my wishlist in Romanian'), ShowWishlistAction)
-    assert parse_natural_command('remind me in one hour to write in English').text == 'write in English'
-    assert parse_natural_command('what happens then?') is None
-    assert isinstance(parse_natural_command('remind me in one hour to call and show my wishlist'), NaturalCommandError)
-
-
-def test_clarification_rejects_unrelated_text_and_accepts_explicit_field(tmp_db):
-    feature = natural_feature()
-    first = message('remind me in one hour')
-    asyncio.run(feature.handle_message(first))
-    assert (1, 10) in feature.pending
-    assert asyncio.run(feature.handle_message(message('how are you?', 101))) is False
-    assert reminders.list_for(1) == []
-    assert asyncio.run(feature.handle_message(message('text: Call  home.', 102)))
-    assert reminders.list_for(1)[0]['message'] == 'Call  home.'
-
-
-def test_clarification_cancel_channel_isolation_and_expiry(tmp_db):
-    feature = natural_feature()
-    asyncio.run(feature.handle_message(message('remind me in one hour')))
-    assert asyncio.run(feature.handle_message(message('text: wrong channel', 101, channel_id=11))) is False
-    asyncio.run(feature.handle_message(message('cancel', 102)))
-    assert feature.pending == {} and reminders.list_for() == []
-    asyncio.run(feature.handle_message(message('remind me in one hour', 103)))
-    waiting = feature.pending[(1, 10)]
-    feature.pending[(1, 10)] = (0, *waiting[1:])
-    asyncio.run(feature._expire.coro(feature))
-    assert feature.pending == {}
-    with db._connect() as c:
-        outcomes = [r[0] for r in c.execute("SELECT activity FROM analytics_daily WHERE activity LIKE '%/timeout' OR activity LIKE '%/abandoned'")]
-    assert len(outcomes) == 2
-
-
-@pytest.mark.parametrize('proposal,text', [
-    ({'intent':'flights','slots':{}}, 'salut'),
-    ({'intent':'wishlist','slots':{}}, 'show my flights'),
-    ({'intent':'reminder','slots':{'when':'tomorrow at 9','text':'call','recurrence':'weekly'}}, 'remind me tomorrow at 9 to call'),
-    ({'intent':'target','slots':{'reference':'headphones','price':500,'currency':'EUR'}}, 'notify me when headphones drop below 500 lei'),
-    ({'intent':'graph','slots':{'reference':'#1','days':90}}, 'graph #1 for 30 days'),
-    ({'intent':'restock','slots':{'reference':'#1','enabled':True}}, 'disable restock only for #1'),
-])
-def test_proposals_cannot_invent_semantics(proposal, text):
-    validate_proposal(proposal)
-    with pytest.raises(ValueError):
-        authorize_proposal(proposal, text)
-
-
-@pytest.mark.parametrize('bad', [{'intent': {}, 'slots':{}}, {'intent':'wishlist','slots':[]}, [], None])
-def test_malformed_envelopes_do_not_escape_validation(bad):
-    with pytest.raises(ValueError):
-        validate_proposal(bad)
-
-
-def test_model_action_envelope_and_conversation_cannot_claim_success():
-    from llm.responses import _parse_mention_result
-    action = {'intent':'reminder','slots':{'when':'one hour','text':'call'}}
-    result = _parse_mention_result(json.dumps({'text':'','reaction':None,'action':action}), 'remind me in one hour to call', allow_action=True)
-    assert result.action == action
-    with pytest.raises(ValueError):
-        _parse_mention_result(json.dumps({'text':'Saved.','reaction':None,'action':action}), 'remind me in one hour to call', allow_action=True)
-    for text in ('I have saved your reminder.', 'Am salvat reminderul.'):
-        with pytest.raises(ValueError):
-            _parse_mention_result(json.dumps({'text':text,'reaction':None}), 'save a reminder')
 
 
 def test_outbox_preserves_due_time_and_partial_progress(tmp_db):
@@ -413,8 +234,6 @@ def test_auth_and_lifecycle_api_contract(tmp_db):
     client = create_app({'TESTING':True,'API_TOKEN':'test-token'}).test_client()
     headers = {'Authorization':'Bearer test-token', 'X-Discord-ID-Format':'string'}
     assert client.get('/notifications').status_code == 401
-    for payload in ({'timezone':42}, {'currency':{}}, {'quiet_start':'25:00'}):
-        assert client.patch('/assistant-profiles/1',json=payload,headers=headers).status_code == 400
     response = client.post('/reminders/add',headers=headers,json={'user_id':'1','creator_id':'2','channel_id':'10','remind_at':time.time()+100,'message':'call'})
     assert response.status_code == 200
     rid = response.json['id']
@@ -423,7 +242,6 @@ def test_auth_and_lifecycle_api_contract(tmp_db):
     assert client.patch(f'/reminders/{rid}',headers=headers,json={'message':'updated'}).status_code == 200
     assert client.patch(f'/reminders/{rid}',headers=headers,json={'timezone':'Invalid/Zone'}).status_code == 400
     assert client.post('/reminders/add',headers=headers,json=3).status_code == 400
-    assert client.get('/analytics/natural?period=invalid',headers=headers).status_code == 400
     assert client.delete(f'/reminders/delete/{rid}',headers=headers).status_code == 200
 
 
@@ -454,22 +272,6 @@ def test_airport_aliases_and_city_ambiguity():
     assert resolve_airport('otp') == 'OTP'
 
 
-@pytest.mark.parametrize('text', ['adu-mi aminte într-o oră să sun', 'adu mi aminte peste o oră să sun'])
-def test_idiomatic_romanian_duration_variants(text):
-    parsed = parse_natural_command(text)
-    assert parsed.seconds == 3600 and parsed.text == 'sun'
-
-
-def test_bare_wishlist_and_natural_reminder_text_edit(tmp_db):
-    from natural_commands import ShowWishlistAction, NaturalClarification
-    assert isinstance(parse_natural_command('lista de dorințe în lei'), ShowWishlistAction)
-    assert isinstance(parse_natural_command('adu-mi aminte să sun acasă'), NaturalClarification)
-    rid = reminders.create(1,10,time.time()+3600,'old')
-    feature = natural_feature()
-    asyncio.run(feature.handle_message(message(f'modifică textul reminderului #{rid} cu Sun  Acasă.')))
-    assert reminders.get(rid)['message'] == 'Sun  Acasă.'
-
-
 def test_local_calendar_api_uses_explicit_zone_and_rejects_gap(tmp_db):
     from web.app import create_app
     from zoneinfo import ZoneInfo
@@ -483,23 +285,6 @@ def test_local_calendar_api_uses_explicit_zone_and_rejects_gap(tmp_db):
     row = reminders.get(response.json['id'])
     assert datetime.fromtimestamp(row['remind_at'],ZoneInfo(row['timezone'])).hour == 9
     assert client.patch(f"/reminders/{row['id']}",headers=headers,json={'local_time':'2027-03-28T03:30'}).status_code == 400
-
-
-def test_model_actions_are_opt_in_and_single_generation(monkeypatch):
-    from llm import responses
-    monkeypatch.delenv('NATURAL_LLM_ENABLED',raising=False)
-    assert not responses.natural_llm_enabled()
-    monkeypatch.setenv('NATURAL_LLM_ENABLED','1')
-    calls = []
-    def query(**kwargs):
-        calls.append(kwargs)
-        return json.dumps({'text':'','reaction':None,'action':{'intent':'wishlist','slots':{}}})
-    monkeypatch.setattr(responses.client,'query_llm',query)
-    result = responses.generate_mention_result('Tester','show my wishlist',context_messages=[],model='discord-bot')
-    assert result.action['intent'] == 'wishlist' and len(calls) == 1
-    assert 'action' in calls[0]['response_schema']['required']
-    with pytest.raises(ValueError):
-        responses._parse_mention_result('{"text":"Hello","reaction":null}','hi',allow_action=True)
 
 
 def test_dashboard_startup_elements_exist(tmp_db):
@@ -523,29 +308,6 @@ def test_dashboard_startup_elements_exist(tmp_db):
 ])
 def test_calendar_clock_phrases(value, expected):
     assert calendar_time(value, 'Europe/Bucharest', now=stamp('2026-03-27T12:00:00+00:00')) == stamp(expected)
-
-
-def test_ambiguous_target_price_followup_preserves_language_and_rejects_unrelated(tmp_db):
-    url = 'https://example.com/headphones'
-    item_id = db.add_scraped_item(1,url,'căști',2000,True,'RON')
-    feature = natural_feature()
-    first = message('anunță-mă când căști scad sub 1.500 lei')
-    asyncio.run(feature.handle_message(first))
-    assert (1,10) in feature.pending
-    unrelated = message('1500 what is the weather',101)
-    assert not asyncio.run(feature.handle_message(unrelated))
-    assert (1,10) in feature.pending
-    follow = message('1500 lei',102)
-    asyncio.run(feature.handle_message(follow))
-    assert db.get_scraped_item(1,url)[9] == 1500
-    follow.add_reaction.assert_awaited_once_with('✅')
-
-
-def test_timezone_followup_retains_creation_language(tmp_db):
-    feature = natural_feature()
-    asyncio.run(feature.handle_message(message('amintește-mi mâine la 9 să sun')))
-    asyncio.run(feature.handle_message(message('Europe/Bucharest',101)))
-    assert reminders.list_for(1)[0]['language'] == 'ro'
 
 
 def test_concurrent_workers_claim_each_due_reminder_once(tmp_db):
@@ -577,12 +339,11 @@ def test_new_feature_commands_register_with_runtime(tmp_db):
     import discord
     from discord import app_commands
     from features.flights import FlightTrackerFeature
-    from features.assistant_profiles import AssistantProfilesFeature
     from features.onboarding import OnboardingFeature
     from features.help_feature import HelpFeature
     client = discord.Client(intents=discord.Intents.none())
     tree = app_commands.CommandTree(client)
-    for feature in (RemindersFeature, WishlistFeature, FlightTrackerFeature, AssistantProfilesFeature, OnboardingFeature, HelpFeature):
+    for feature in (RemindersFeature, WishlistFeature, FlightTrackerFeature, OnboardingFeature, HelpFeature):
         feature(client, tree)
     names = {command.name for command in tree.get_commands()}
     assert {'start','help','remind','reminder-list','reminder-edit','reminder-cancel','reminder-snooze','flight-tracker-budget','wishlist-show'} <= names
@@ -629,29 +390,6 @@ def test_auto_language_keeps_each_queued_alert_creation_language(tmp_db):
     assert 'Price dropped' in texts[1]
 
 
-@pytest.mark.parametrize('proposal,text', [
-    ({'intent':'track','slots':{'reference':'https://example.com/a'}},'could you track https://example.com/a and show my wishlist'),
-    ({'intent':'track','slots':{'reference':'https://example.com/a'}},'could you track https://example.com/a but do not actually save it'),
-    ({'intent':'reminder','slots':{'when':'one hour','text':'call'}},'could you remind me in one hour and thirty minutes to call'),
-])
-def test_model_cannot_execute_a_partial_or_denied_request(proposal,text):
-    validate_proposal(proposal)
-    with pytest.raises(ValueError):
-        authorize_proposal(proposal,text)
-
-
-def test_romanian_refresh_preserves_product_title(tmp_db):
-    url = 'https://example.com/a'
-    db.add_scraped_item(1,url,'Price: In stock',100,True,'RON')
-    feature = natural_feature()
-    feature.wishlist.refresh_items_for_user = AsyncMock(return_value=['Refreshed the requested item.\nRefreshed: **Price: In stock**\nPrice: 90 RON | In stock'])
-    request = message('actualizează #1')
-    asyncio.run(feature.handle_message(request))
-    output = request.author.send.await_args.args[0]
-    assert '**Price: In stock**' in output and 'Preț: 90 RON' in output
-    assert 'Am actualizat produsul cerut.' in output
-
-
 def test_calendar_edit_button_requires_explicit_timezone(tmp_db):
     rid = reminders.create(1,10,time.time()+100,'call')
     interaction = SimpleNamespace(id=200,user=SimpleNamespace(id=1),response=SimpleNamespace(send_message=AsyncMock(),send_modal=AsyncMock(),defer=AsyncMock()))
@@ -683,6 +421,13 @@ def test_conversational_completion_claims_cannot_acknowledge_actions(answer):
     from llm.responses import _parse_mention_result
     with pytest.raises(ValueError):
         _parse_mention_result(json.dumps({'text':answer,'reaction':None}),'remind me later to call')
+
+
+def test_mention_schema_has_no_action_route():
+    import llm.responses
+    assert 'action' not in llm.responses.MENTION_RESPONSE_SCHEMA['properties']
+    assert not hasattr(llm.responses, 'natural_llm_enabled')
+    assert llm.responses.action_candidate('remind me later') is True
 
 
 def test_romanian_auto_language_without_diacritics():

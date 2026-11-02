@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from db.connection import _connect
@@ -90,18 +89,3 @@ def set_assistant_profile(user_id: int, **updates):
     except Exception:
         logger.exception("Failed to update assistant profile for user %s", user_id)
         return None
-
-
-def delete_assistant_profile(user_id: int) -> bool | None:
-    try:
-        with _connect(commit=True) as c:
-            c.execute("DELETE FROM assistant_profiles WHERE user_id = ?", (user_id,))
-            removed = c.rowcount > 0
-            c.execute("UPDATE notification_outbox SET due_at=? WHERE user_id=? AND state='pending' AND sent_parts=0", (time.time(),user_id))
-            return removed
-    except Exception:
-        logger.exception("Failed to reset assistant profile for user %s", user_id)
-        return None
-
-
-reset_assistant_profile = delete_assistant_profile

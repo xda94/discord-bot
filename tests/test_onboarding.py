@@ -29,7 +29,7 @@ def tree(*names):
 
 
 def view(language='en', **kwargs):
-    return onboarding.OnboardingView(1, language, tree('remind', 'natural-language'), **kwargs)
+    return onboarding.OnboardingView(1, language, tree('remind', 'wishlist-show'), **kwargs)
 
 
 async def select(current, value, **kwargs):
@@ -288,9 +288,9 @@ def test_timezone_update_retains_notification_rescheduling(tmp_db):
     asyncio.run(run())
 
 
-def test_ready_feature_and_natural_guide_navigation_edit_same_message(tmp_db):
+def test_ready_feature_navigation_edits_same_message(tmp_db):
     async def run():
-        current=view(bot_mention='<@99>')
+        current=view()
         await select(current,'en')
         await button(current,'skip_now')
         event=await button(current,'explore_features')
@@ -299,26 +299,31 @@ def test_ready_feature_and_natural_guide_navigation_edit_same_message(tmp_db):
         await help_view.children[0].callback(category)
         assert '/remind' in category.response.edit_message.await_args.kwargs['content']
         category.response.send_message.assert_not_awaited()
-        guide_event=await button(help_view,'natural_examples')
-        guide=guide_event.response.edit_message.await_args.kwargs['view']
-        assert '<@99>' in guide_event.response.edit_message.await_args.kwargs['content']
-        returned=await button(guide,'back_to_setup')
+        returned=await button(help_view,'back_to_setup')
         assert returned.response.edit_message.await_args.kwargs['view'] is current
-        event=await button(current,'natural_examples')
-        assert event.response.edit_message.await_args.kwargs['view'].user_id==1
-        event.response.send_message.assert_not_awaited()
+    asyncio.run(run())
+
+
+def test_wishlist_category_lists_worth_it_and_community_is_gone(tmp_db):
+    async def run():
+        assert 'community' not in onboarding.CATEGORIES
+        current=onboarding.HelpView(1,'en',tree('wishlist-show','worth-it'))
+        assert 'Community games' not in [getattr(child,'label',None) for child in current.children]
+        event=interaction()
+        await next(child for child in current.children if getattr(child,'label',None)=='Wishlist').callback(event)
+        assert event.response.send_message.await_args.args[0]=='/wishlist-show · /worth-it'
     asyncio.run(run())
 
 
 def test_help_reference_discovers_commands_and_filters_disabled_memory(tmp_db):
     async def run():
-        current=onboarding.HelpView(1,'en',tree('remind','natural-language','memory-show','llm-memory','llm-memory-purge'),memory_disabled=True)
+        current=onboarding.HelpView(1,'en',tree('remind','wishlist-show','memory-show','llm-memory','llm-memory-purge'),memory_disabled=True)
         assert 'Memory' not in [getattr(child,'label',None) for child in current.children]
         event=interaction()
         full=next(child for child in current.children if getattr(child,'label',None)=='Complete reference')
         await full.callback(event)
         content=event.response.send_message.await_args.args[0]
-        assert '/natural-language' in content
+        assert '/wishlist-show' in content
         assert '/memory-' not in content and '/llm-memory' not in content
         bad=interaction(user_id=2)
         await full.callback(bad)

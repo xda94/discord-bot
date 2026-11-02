@@ -104,19 +104,19 @@ HELP_TEXT = (
     "five-minute cooldown; cooling items are skipped during an all-item refresh.\n\n"
     "**/wishlist-show** `[currency]`\n"
     "List every URL you currently track with its latest price and stock status. "
-    "When omitted, currency uses your assistant-profile default if set, otherwise each row "
+    "When omitted, currency uses your saved currency preference if set, otherwise each row "
     "uses its native currency (as quoted by the merchant or guessed from the URL's TLD). "
     "Pass `currency` (RON, DKK, EUR, USD, GBP) to convert "
     "every row into that single currency instead.\n\n"
     "**/wishlist-graph** `<url>` `[currency]` `[days]`\n"
     "Generate a price-evolution chart for a single tracked URL. Omitted currency uses your "
-    "assistant-profile default if set, then the item's own currency. Optional `currency` "
+    "saved currency preference if set, then the item's own currency. Optional `currency` "
     "(RON, DKK, EUR, USD, GBP) converts "
     "the Y-axis into that unit instead. Set days to any whole number from 1–180 (default 180). "
     "Use 7/30/90-day buttons or Custom days on the graph.\n\n"
     "**/wishlist-graph-all** `[currency]` `[days]` `[percentage]`\n"
     "Generate a combined price-evolution chart across **all** your tracked items. Omitted "
-    "currency uses your assistant-profile default if set, then the majority currency in "
+    "currency uses your saved currency preference if set, then the majority currency in "
     "your list (so the largest number of items appear without "
     "conversion). Optional `currency` (RON, DKK, EUR, USD, GBP) overrides the default and "
     "converts prices to that currency. Set days to 1–180 (default 180). "
@@ -126,7 +126,7 @@ HELP_TEXT = (
     "**/flight-tracker-add** `<origin>` `<destination>` `<start-date>` `<end-date>` "
     "`[adults]` `[currency]`\n"
     "Track a fixed-date round trip per user using 3-letter IATA codes and YYYY-MM-DD dates. "
-    "Omitted currency uses your assistant-profile default if set, then EUR. "
+    "Omitted currency uses your saved currency preference if set, then EUR. "
     "The first time you use it, a private login modal asks for your single SerpApi API Key. "
     "It is validated and saved per Discord user. "
     "The bot checks every 5 hours by default and DMs when it finds the first price or a "
@@ -147,76 +147,14 @@ HELP_TEXT = (
     "(data from azisespala.ro). On holy days tradition says you don't wash — the bot tells "
     "you which it is and names the day. Optionally pass a date (`ZZ.LL` or `ZZ.LL.AAAA`, "
     "e.g. `25.12`) to check another day.\n\n"
-    "**/tribunal** `<accused>` `<accusation>`\n"
-    "Start Tribunal with an immediate 600-second vote for all human server members, "
-    "including the accused. Humans can change one vote; ties/no votes are neutral.\n\n"
-    "**/meeting** `<subject>` `<options>`\n"
-    "Start a 600-second meeting vote with 2–5 distinct options separated by |. "
-    "Ties/no votes are neutral; results edit the original message after restart too.\n\n"
-    "**/quest** `[user]` `[text]`\n"
-    "Take a catalog challenge privately, or write your own with text (1–300 characters). "
-    "Text is required when assigning to another member; it is kept as written. "
-    "Messages mention the recipient and assigner throughout the quest. "
-    "Changed text replaces your pending/active assignment with a new invitation; "
-    "verification and another member's assignment cannot be replaced. "
-    "An offer to another member tags them in the channel; only they can accept or "
-    "decline within 24 hours. Only the recipient can complete or abandon it. "
-    "One open quest per recipient. After acceptance, submit within seven days, then "
-    "let others verify it for ten minutes. Only a strict positive majority awards "
-    "a symbolic title, never a Discord role.\n\n"
-    "**/quest-show-active** `[user]`\n"
-    "Privately list all accepted, unexpired active quests in this server, or "
-    "select a user to filter by recipient. Entries show the challenge, recipient, "
-    "assigner and deadline, with a link to the original message. Only the "
-    "recipient can complete or abandon it there.\n\n"
-    "**/bingo**\n"
-    "Show the shared 3×3 board for the bot's local ISO week, beginning Monday. "
-    "Mark manually and ask another human to confirm; no chat monitoring.\n\n"
-    "**/bingo-habit** `<text-ro>` `<text-en>` `[id]` / **/bingo-habit-delete** `<id>`\n"
-    "Manage Server members can add/edit/remove bilingual habits. Keep 9–50 active "
-    "habits; edits affect future boards.\n\n"
-    "**/quote-add** `<quote>` `<user>`\n"
-    "Enter a quote (maximum 1,200 characters) and the server member who said it. "
-    "Their DM card frames the full quote and shows the server, channel name and submitter. "
-    "The selected author has 24 hours to approve the exact text and attribution "
-    "by DM for guild-wide access, including members without source-channel access. "
-    "Blocked DMs cancel nomination.\n\n"
-    "**/quote** / **/who-said** / **/quote-delete** `<id>`\n"
-    "Show approved museum quotes, quiz the author for ten minutes (at least two "
-    "distinct authors), or withdraw as author/Manage Messages moderator. "
-    "Authors and quiz choices show member mentions; numbered answer buttons "
-    "distinguish members with the same name. Authors "
-    "also have a persistent removal control in their consent DM, even after leaving. "
-    "Deletion revokes quizzes and stored text but cannot recall screenshots or "
-    "previous ordinary messages.\n\n"
-    "**/excuse** `<reason>` `<style>`\n"
-    "Show a private excuse in corporate, grandmother, gamer, or public-servant style. "
-    "The result mentions you and shows your original reason and selected style. "
-    "Reason limit: 500 characters. Private reasons and generated responses are not saved.\n\n"
     "**/worth-it** `<url>`\n"
     "Privately show current, minimum, maximum and median recorded prices, plus a calculated "
     "buy-or-wait verdict and concrete advice from both voices. At least seven "
-    "prices and fresh stock data are needed. The completed result mentions only you. No refresh or purchase.\n\n"
-    "**/horoscope** `[theme]`\n"
-    "Deterministic general/work/gaming/household forecast for the bot's local date. "
-    "Same server/member/date/theme survives restart without an LLM.\n\n"
-    "Community commands require a server except /excuse and /worth-it, which also "
-    "work in DMs. On a server, their results appear in the command channel, visible "
-    "only to you with Discord's Dismiss message control. No result is sent by DM. "
-    "Humor uses one bounded model call with a local fallback; "
-    "bingo, quest selection, quiz and horoscope use no model. Completed sessions "
-    "last 30 days after closure; bingo history lasts 30 days after the local ISO "
-    "week ends. Unapproved quotes remain until their consent deadline, approved "
-    "quotes until deletion and titles until administrative removal. Open /help → "
-    "Community games for the full English/Romanian guide. These features have no "
-    "natural-language mention commands.\n\n"
+    "prices and fresh stock data are needed. The completed result mentions only you. No refresh or purchase. "
+    "Works in servers and DMs; the result is visible only to you.\n\n"
     "**/llm-set** `<model>`\n"
     "Select one of the llama.cpp model aliases configured in `.env` "
     "(`LLAMA_CPP_ALLOWED_MODELS`).\n\n"
-    "**/assistant-profile** / **/assistant-profile-set** / **/assistant-profile-reset**\n"
-    "Privately show, update, or reset your global language, tone, currency, timezone, "
-    "notification-style, and LLM-detail preferences. Defaults are auto language, default "
-    "tone, feature currency, UTC, standard notifications, and balanced detail.\n\n"
     "**/llm-inactivity** `<activate|deactivate>`\n"
     "Activate or deactivate automatic LLM inactivity nudges for this server. "
     "Requires the **Manage Server** permission.\n\n"
@@ -245,14 +183,6 @@ HELP_TEXT = (
     "impressions, preferences, and topics supplement live chat history. One request per user at a time with "
     "a cooldown after completion. "
     "Set `BOT_ID` in `.env` to your bot's user ID.\n\n"
-    "**/natural-language**\n"
-    "Open a private English/Romanian guide with supported mention-command examples for "
-    "relative, calendar and recurring reminders, reminder management, wishlist tracking, "
-    "targets, restock alerts, refreshes, graphs and listing saved flights. Mention the real "
-    "bot account and give one request. Recognized commands execute immediately; ✅ means "
-    "success. Results are private; blocked DMs name the corresponding slash alternative. "
-    "Calendar/recurring reminders require a confirmed timezone, and clarifications last "
-    "ten minutes. Guide language controls do not change your saved profile.\n\n"
     "The person who asked may manually add 👍 or 👎 to an LLM mention reply. "
     "Contextual emoji reactions are added to human messages, never as seeded feedback "
     "on bot replies. Feedback from anyone else is ignored.\n\n"
@@ -311,27 +241,11 @@ class HelpFeature:
             logger.info(f"Command /help called by {interaction.user}")
             import db
             from i18n import t
-            from features.onboarding import HelpView
-            from features.natural_language_help import display_language
-            lang = display_language(interaction)
-            bot_mention = getattr(getattr(self.client, "user", None), "mention", None)
+            from features.onboarding import HelpView, display_language
+            lang = display_language(interaction, db.get_assistant_profile(interaction.user.id))
             await interaction.response.send_message(
                 t('help', lang),
                 view=HelpView(interaction.user.id, lang, self.tree,
-                              memory_disabled='/memory-' not in self.help_text,
-                              bot_mention=bot_mention),
-                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
-            )
-
-        @self.tree.command(
-            name="natural-language", description="Explore supported English and Romanian mention commands privately"
-        )
-        async def natural_language(interaction: discord.Interaction):
-            from features.natural_language_help import NaturalLanguageHelpView, display_language, guide_content
-            language = display_language(interaction)
-            bot_mention = getattr(getattr(self.client, "user", None), "mention", None)
-            await interaction.response.send_message(
-                guide_content(language, bot_mention=bot_mention),
-                view=NaturalLanguageHelpView(interaction.user.id, language, bot_mention=bot_mention),
+                              memory_disabled='/memory-' not in self.help_text),
                 ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
             )
