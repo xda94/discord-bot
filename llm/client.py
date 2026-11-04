@@ -188,7 +188,6 @@ def query_llm(
     image_mime: str | None = None,
     base_url: str = LLAMA_CPP_BASE_URL,
     timeout: int | None = None,
-    thinking: bool = False,
     capacity_policy: str = "interactive",
     queue_timeout: float | None = None,
 ) -> str:
@@ -235,7 +234,6 @@ def query_llm(
         "messages": messages,
         "stream": False,
         "max_tokens": DEFAULT_MAX_TOKENS,
-        "chat_template_kwargs": {"enable_thinking": thinking},
     }
 
     if options:

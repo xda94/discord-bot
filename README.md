@@ -84,8 +84,7 @@ LLM_MENTION_MAX_TOKENS=384
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
 | `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Live context has a 6,000-character budget (4,000 for vision). Default: `0`. Set it to `5` so the bot can answer questions about recent messages and pick up the channel's language for very short questions; every extra message makes each reply slower on a CPU-only host. |
-| `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. With `LLM_MENTION_THINKING=1` this budget also covers the hidden reasoning, so leave room for llama-server's `--reasoning-budget`. |
-| `LLM_MENTION_THINKING` | No (bot) | `1` lets thinking models reason before @mention replies; every other request (teases, reactions, summons, birthdays) always disables thinking. Requires a bounded `--reasoning-budget` on llama-server. Improves answers about chat history at the cost of slower replies. Default: off. |
+| `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -104,17 +103,21 @@ Start llama.cpp before the bot. The alias must match
 
 ```bash
 llama-server \
-  -hf unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL \
+  -hf unsloth/gemma-4-E2B-it-GGUF:Q8_0 \
   --no-mmproj-offload \
   --alias discord-bot \
   --host 127.0.0.1 \
   --port 8080 \
-  --ctx-size 4096 \
+  --ctx-size 32768 \
   --parallel 1 \
   --threads 3 \
   --threads-batch 3 \
+  --flash-attn auto \
+  --cache-prompt \
+  --reasoning off \
   --swa-full \
-  --cache-reuse 64
+  --cache-reuse 64 \
+  --cache-ram 1024
 ```
 
 On a four-core host, three inference threads leave one core available for the
@@ -150,11 +153,11 @@ server reports `"vision": true` under `modalities`:
 curl -s http://127.0.0.1:8080/props
 ```
 
-The reported Ubuntu deployment as of 2026-10-12 uses
-`unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL`, alias `gemma4:e4b`, build
-`b10909-a2878d30d`, and a systemd `MemoryMax=10G` limit. Its `/props` response
-advertises vision support. This confirms capability loading; visual accuracy
-still needs a direct image test such as `scripts/check_vision.py` below.
+The reported Ubuntu deployment as of 2026-11-04 uses
+`unsloth/gemma-4-E2B-it-GGUF:Q8_0`, alias `gemma4:e2b`, a 32,768-token context,
+and a systemd `MemoryMax=10G` limit. Confirm `/props` advertises vision after
+any model change; visual accuracy still needs a direct image test such as
+`scripts/check_vision.py` below.
 Use the deployed alias in `LLAMA_CPP_ALLOWED_MODELS`, `LLAMA_CPP_DEFAULT_MODEL`,
 and any `MENTION_LLAMA_CPP_MODEL` override.
 
@@ -165,10 +168,8 @@ for model/projector and endpoint details.
 Requests are user-only by default. Mention answers and empty-ping summons add a
 short, mention-specific `system` instruction that names the bot (its live server
 nickname, so no name is configured in the repo) and asks for direct final output;
-other generators remain user-only. Every request also sends
-`chat_template_kwargs: {"enable_thinking": false}` (except @mention replies when
-`LLM_MENTION_THINKING=1`), because thinking models such as Gemma 4 otherwise spend
-short output budgets on hidden reasoning and the reply fails. These settings do not guarantee compliance from every model or chat
+other generators remain user-only. The bot sends no reasoning setting; control
+thinking on llama-server (the deployment uses `--reasoning off`). These settings do not guarantee compliance from every model or chat
 template. If multiple aliases are listed, each one must be reachable
 through the configured endpoint (for example through a compatible model router).
 
@@ -462,8 +463,7 @@ calculated verdict; LLM commentary cannot change it. Comparisons use the tracked
 item's recorded native units, assuming its currency has stayed the same. The
 historical table has no per-observation currency, so there is no conversion or
 way to detect historical currency changes. No future price drop is promised.
-Humor uses one short llama.cpp call through shared capacity, with thinking
-disabled, at most 220 output tokens and a 30-second generation timeout. Busy,
+Humor uses one short llama.cpp call through shared capacity, with at most 220 output tokens and a 30-second generation timeout. Busy,
 timed-out or invalid generation uses a deterministic local fallback.
 
 **Target alerts and source status** — a target fires once when its price crosses
@@ -540,7 +540,7 @@ To distinguish server vision problems from bot prompting, run this from the
 project on the llama.cpp host (using the bot's Python environment):
 
 ```bash
-python scripts/check_vision.py --model gemma4:e4b --base-url http://127.0.0.1:8080
+python scripts/check_vision.py --model gemma4:e2b --base-url http://127.0.0.1:8080
 ```
 
 This checks advertised vision support and sends an in-memory test image first

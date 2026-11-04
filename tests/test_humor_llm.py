@@ -16,7 +16,6 @@ def test_one_bounded_interactive_call(monkeypatch):
     assert result == "The coffee has filed an appeal."
     query.assert_called_once()
     options = query.call_args.kwargs
-    assert options["thinking"] is False
     assert options["timeout"] == 30
     assert options["options"]["max_tokens"] <= 220
     assert options["capacity_policy"] == "interactive"

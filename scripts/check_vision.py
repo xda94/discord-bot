@@ -17,7 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Compare direct llama.cpp vision with the bot prompt, without Discord traffic."
     )
-    parser.add_argument("--model", help="llama-server alias, e.g. gemma4:e4b")
+    parser.add_argument("--model", help="llama-server alias, e.g. gemma4:e2b")
     parser.add_argument("--base-url", help="llama-server URL; defaults to .env or localhost")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")

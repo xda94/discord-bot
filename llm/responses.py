@@ -58,10 +58,6 @@ def get_mention_max_tokens() -> int:
     return max(1, int(os.getenv("LLM_MENTION_MAX_TOKENS", "384")))
 
 
-def get_mention_thinking() -> bool:
-    return os.getenv("LLM_MENTION_THINKING", "").strip().lower() in ("1", "true", "yes")
-
-
 def build_tease_prompt(mood: str, username: str, context: str) -> str:
     style = MOOD_STYLE.get(mood, mood)
     safe_username = html.escape(username, quote=True)
@@ -515,7 +511,6 @@ def generate_mention_result(
                 model=model,
                 system_prompt=system_prompt,
                 options={"format": "json", "max_tokens": get_mention_max_tokens()},
-                thinking=get_mention_thinking(),
                 response_schema=MENTION_RESPONSE_SCHEMA,
                 image_bytes=image_bytes,
                 image_mime=image_mime,

@@ -91,7 +91,7 @@ The documented non-Docker deployment uses two PM2 processes. `package.json` is c
 
 The reported production hardware is an Intel N150 with 16 GB RAM. It is not a
 Pi Zero W. The llama.cpp service currently has a 10 GB systemd memory limit and
-a 4,096-token context.
+a 32,768-token context.
 Docker uses Python 3.13, `vl-convert-python`, and DejaVu fonts. Wishlist PNGs
 render locally without Chrome, Altair, or Matplotlib. Install changed Python
 requirements and rebuild the image when deploying renderer changes.
@@ -617,7 +617,7 @@ contradictory/invalid output falls back to the deterministic voices.
 
 `features/humor_common.py` owns bilingual text and safe catalogs. `llm/humor.py`
 uses existing shared llama.cpp capacity through `asyncio.to_thread`, one call
-with thinking disabled, at most 220 tokens and a 30-second timeout. Empty,
+with at most 220 tokens and a 30-second timeout. Empty,
 malformed, oversized, busy or timed-out output falls back locally with no
 repair/retry call.
 
@@ -895,33 +895,35 @@ The project previously used Ollama but now talks directly to llama.cpp's
 OpenAI-compatible `/v1/chat/completions` API through `llm/client.py`.
 `ollama_client.py` and the `*_OLLAMA_*` configuration names were removed.
 
-The reported production deployment as of 2026-10-12 uses a 10 GB service budget
-on the Intel N150 and Gemma 4 E4B UD-Q4_K_XL weights, a 4,096-token context,
-three CPU threads, one parallel slot, and the model's matching vision projector.
-The Ubuntu host runs llama.app build `b10909-a2878d30d` (`0.4.0-dev`), and
-`/props` advertises vision, video, and audio support. This verifies advertised
-capabilities; image recognition still requires a live visual check.
+The reported production deployment as of 2026-11-04 uses a 10 GB service budget
+on the Intel N150 and Gemma 4 E2B Q8_0 weights, a 32,768-token context,
+three CPU threads, one parallel slot, the model's matching vision projector, and
+`--reasoning off`, so the bot sends no reasoning setting. Confirm `/props`
+advertises vision after any model change; image recognition still requires a
+live visual check.
 `--no-mmproj-offload` keeps projector work on the CPU-only host;
 `--no-mmproj` must not be present because it disables vision. Prompt caching and
 64-token chunk reuse complement the cache-friendly application prompts:
 
 ```bash
-/home/robertivan/.llama-app/llama serve \
-  -hf unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL \
+Environment=HOME=/home/robertivan
+Environment=LLAMA_CACHE=/home/robertivan/.cache/llama.cpp
+
+ExecStart=/home/robertivan/.llama-app/llama serve \
+  -hf unsloth/gemma-4-E2B-it-GGUF:Q8_0 \
   --no-mmproj-offload \
-  --alias gemma4:e4b \
+  --alias gemma4:e2b \
   --host 127.0.0.1 \
   --port 8080 \
-  --ctx-size 4096 \
+  --ctx-size 32768 \
   --parallel 1 \
   --threads 3 \
   --threads-batch 3 \
   --flash-attn auto \
   --cache-prompt \
+  --reasoning off \
   --swa-full \
   --cache-reuse 64 \
-  --reasoning-effort low \
-  --reasoning-budget 128 \
   --cache-ram 1024
 ```
 
@@ -929,7 +931,7 @@ Three threads leave one of the N150's four cores available to the OS, Discord
 bot, and API. Giving llama.cpp all four cores can make the host unresponsive
 during inference even when the Python queue and event loop are healthy.
 
-`-hf` downloads and caches the GGUF in the service user's Hugging Face cache.
+`-hf` downloads and caches the GGUF in `LLAMA_CACHE`.
 For this Gemma repository it also selects the matching multimodal projector
 automatically. The alias must match
 `LLAMA_CPP_DEFAULT_MODEL`/`LLAMA_CPP_ALLOWED_MODELS`. Binding to `127.0.0.1`
@@ -942,7 +944,7 @@ processed roughly 360 prompt tokens at 18.5 tokens/second and generated at
 about 7.5 tokens/second. Prompt evaluation was therefore the dominant latency.
 `llm/responses.py` now keeps each instruction compact and places reusable rules
 before changing history, user, and price fields so llama-server can retain a
-larger common prefix between requests. The current 4,096-token context permits
+larger common prefix between requests. The current 32,768-token context permits
 longer combined prompts and output but does not itself make inference faster.
 
 The reported `systemd` service runs as `robertivan`, with

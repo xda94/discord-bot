@@ -651,27 +651,6 @@ def test_summon_prompt_uses_recent_chat_for_language():
     assert "language of this recent chat" not in build_summon_prompt("Ana")
 
 
-@pytest.mark.parametrize(("value", "expected"), [("", False), ("0", False), ("1", True), ("true", True)])
-def test_mention_thinking_follows_env(monkeypatch, value, expected):
-    query = MagicMock(return_value='{"text":"Hi.","reaction":null}')
-    monkeypatch.setattr("llm.client.query_llm", query)
-    monkeypatch.setenv("LLM_MENTION_THINKING", value)
-
-    generate_mention_result("Alice", "hello")
-
-    assert query.call_args.kwargs["thinking"] is expected
-
-
-def test_short_generators_never_think(monkeypatch):
-    query = MagicMock(return_value="Hey, what's up?")
-    monkeypatch.setattr("llm.client.query_llm", query)
-    monkeypatch.setenv("LLM_MENTION_THINKING", "1")
-
-    generate_summon_reply("Alice")
-
-    assert "thinking" not in query.call_args.kwargs
-
-
 def test_history_tags_are_removed_from_replies(monkeypatch):
     query = MagicMock(
         return_value='{"text":"He asked \'Nova (you) ce e viata?\' and You (Nova) said: hi","reaction":null}'

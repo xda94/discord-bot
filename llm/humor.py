@@ -62,7 +62,6 @@ async def generate_humor(kind, language, facts, fallback, background=False):
             system_prompt=instructions,
             options={"max_tokens": 220, "temperature": 0.7},
             timeout=30,
-            thinking=False,
             capacity_policy="background" if background else "interactive",
             queue_timeout=0 if background else 2,
         )
