@@ -110,7 +110,9 @@ def effective_profile(stored: Mapping | AssistantProfile | None) -> AssistantPro
     return AssistantProfile(**validate_profile_updates(**values))
 
 
-def profile_prompt_preferences(profile: AssistantProfile) -> str:
+def profile_prompt_preferences(
+    profile: AssistantProfile, *, include_language: bool = True
+) -> str:
     """Render bounded language/style guidance for mention prompt builders."""
     if profile == DEFAULT_PROFILE:
         return ""
@@ -130,4 +132,5 @@ def profile_prompt_preferences(profile: AssistantProfile) -> str:
         "concise": "be concise",
         "detailed": "give a detailed answer within the response limit",
     }[profile.llm_behavior]
-    return f"Preferences unless explicitly overridden: {language}; {tone}; {detail}."
+    parts = [language, tone, detail] if include_language else [tone, detail]
+    return f"Preferences unless explicitly overridden: {'; '.join(parts)}."

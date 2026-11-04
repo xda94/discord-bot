@@ -216,8 +216,8 @@ must produce a new answer or reaction rather than repeating or merely
 paraphrasing the current message. The prompt explicitly asks it to answer from
 the assistant's perspective and start with the answer. Drafts, translations, and
 coaching are permitted when requested. Chat history
-and a directly replied-to message help resolve meaning but never select the
-response language. Structured mention output contains answer text plus an
+and a directly replied-to message help resolve meaning; a replied-to message
+never selects the response language. Structured mention output contains answer text plus an
 optional allowed emoji. Invalid JSON, empty text, and obvious echoes receive one
 retry before the bot returns a short generation-failure response.
 Echo validation runs after shared requester/bot label cleanup, handles short
@@ -269,8 +269,10 @@ permission/deletion failures are logged concisely without interrupting other
 handlers. Missing `Add Reactions` permission prevents only the emoji reaction;
 the mention reply still succeeds.
 
-Mention replies derive their output language from the current request rather
-than channel history. Generated teases likewise derive their
+Mention replies follow the language of the current message, even when the
+requester saved a different language in `/start`. The saved language applies
+only when that message is too short to tell or is an uncaptioned image; with no
+saved language, a too-short message falls back to channel history. Generated teases likewise derive their
 language only from the triggering message; English prompt rules, mood names,
 and style descriptions must not select the output language.
 

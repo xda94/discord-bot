@@ -32,6 +32,7 @@ from mention_utils import (
     strip_leading_reply_labels,
 )
 from llm.responses import (
+    IMAGE_DESCRIPTION_REQUEST,
     MentionResult,
     format_chat_line,
     generate_mention_result,
@@ -89,9 +90,6 @@ REFERENCE_CONTEXT_CHAR_BUDGET = 6000
 VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
-IMAGE_DESCRIPTION_REQUEST = (
-    "Describe the visible contents of the attached image accurately and concisely."
-)
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 _KNOWN_IMAGE_EXTENSIONS = set(_IMAGE_EXTENSIONS) | {
     ".heic",

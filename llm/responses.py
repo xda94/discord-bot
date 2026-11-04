@@ -25,6 +25,9 @@ MENTION_SYSTEM_PROMPT = (
     "Return one final, ready-to-send Discord message, without thinking or "
     "preamble. Be concise; explain only when useful or when asked why."
 )
+IMAGE_DESCRIPTION_REQUEST = (
+    "Describe the visible contents of the attached image accurately and concisely."
+)
 
 PRICE_CHANGE_TONES: dict[str, str] = {
     "funny": "funny and witty",
@@ -112,26 +115,36 @@ def build_mention_system_prompt(bot_name: str = "") -> str:
     )
 
 
-def _language_rules(language: str, has_history: bool) -> tuple[str, str]:
-    """The full language rule for the head and its short reminder for the end."""
-    if language == "auto":
-        fallback = (
-            " (if it is too short to tell, the language of <chat_history>)"
-            if has_history
-            else ""
-        )
-        return (
-            f"Reply in the language of <current_message>{fallback}, even when it "
-            "differs from these instructions.",
-            "Reply in the language of <current_message>.",
-        )
-    name = "English" if language == "en" else "Romanian"
-    rule = f"use {name} unless <current_message> explicitly requests another language."
-    return f"Always {rule}", rule[0].upper() + rule[1:]
+def _language_rules(
+    language: str, has_history: bool, *, image_only: bool = False
+) -> tuple[str, str]:
+    """The full language rule for the head and its short reminder for the end.
+
+    The mention's own language wins; a saved language is only a fallback. An
+    image without a caption has no user text, so the saved language applies.
+    """
+    name = {"en": "English", "ro": "Romanian"}.get(language)
+    if name and image_only:
+        return f"Always use {name}.", f"Use {name}."
+    if name:
+        fallback = f" (if it is too short to tell, {name})"
+    elif has_history:
+        fallback = " (if it is too short to tell, the language of <chat_history>)"
+    else:
+        fallback = ""
+    return (
+        f"Reply in the language of <current_message>{fallback}, even when it "
+        "differs from these instructions.",
+        "Reply in the language of <current_message>.",
+    )
 
 
 def build_mention_prompt_head(
-    *, has_history: bool = False, language: str = "auto", json_reply: bool = False
+    *,
+    has_history: bool = False,
+    language: str = "auto",
+    json_reply: bool = False,
+    image_only: bool = False,
 ) -> str:
     """The part of every mention prompt shared by requests with the same settings."""
     head = """Reply directly to <current_message>, using the context below when relevant.
@@ -150,7 +163,7 @@ Rules:
             '- Always return JSON: {"text": "your answer", "reaction": null}; '
             '"reaction" is null or one emoji.\n'
         )
-    language_rule, _ = _language_rules(language, has_history)
+    language_rule, _ = _language_rules(language, has_history, image_only=image_only)
     return head + (
         f"- {language_rule} Start with your answer; never repeat, correct, or "
         "paraphrase <current_message>.\n\n"
@@ -237,10 +250,12 @@ def build_mention_prompt(
     json_reply: bool = False,
 ) -> str:
     """Build one user prompt that turns chat history into reply context."""
+    image_only = content == IMAGE_DESCRIPTION_REQUEST
     prompt = build_mention_prompt_head(
         has_history=bool(context_messages),
         language=assistant_profile.language,
         json_reply=json_reply,
+        image_only=image_only,
     )
 
     if has_image:
@@ -254,7 +269,7 @@ def build_mention_prompt(
             "to describe; solve or explain a visible task only when <current_message> "
             "explicitly asks for it.\n"
         )
-    preferences = profile_prompt_preferences(assistant_profile)
+    preferences = profile_prompt_preferences(assistant_profile, include_language=False)
     if preferences:
         prompt += f"{preferences}\n"
 
@@ -279,7 +294,7 @@ def build_mention_prompt(
     safe_username = html.escape(username, quote=True)
     safe_content = html.escape(content, quote=False)
     _, language_reminder = _language_rules(
-        assistant_profile.language, bool(context_messages)
+        assistant_profile.language, bool(context_messages), image_only=image_only
     )
     return prompt + (
         f'<current_message from="{safe_username}">\n{safe_content}\n</current_message>\n\n'

@@ -4,7 +4,7 @@ import db
 import pytest
 
 from assistant_profiles import DEFAULT_PROFILE, effective_profile, validate_profile_updates
-from llm.responses import build_mention_prompt, build_summon_prompt
+from llm.responses import IMAGE_DESCRIPTION_REQUEST, build_mention_prompt, build_summon_prompt
 
 
 def test_profile_read_does_not_create_and_defaults_are_effective(tmp_db):
@@ -52,10 +52,26 @@ def test_profile_prompt_defaults_and_explicit_language_precedence():
         "timezone": "UTC", "notification_style": "standard",
         "llm_behavior": "concise",
     })
-    prompt = build_mention_prompt("Ana", "Answer in English", assistant_profile=profile)
-    assert "use Romanian unless <current_message> explicitly requests another language" in prompt
+    prompt = build_mention_prompt("Ana", "What are you doing?", assistant_profile=profile)
+    assert "Reply in the language of <current_message> (if it is too short to tell, Romanian)" in prompt
+    assert prompt.endswith("Reply in the language of <current_message>.")
+    assert "use Romanian" not in prompt
     assert "professional, formal" in prompt
     assert "be concise" in prompt
     assert "unless the requester explicitly asks for another language" in build_summon_prompt(
         "Ana", assistant_profile=profile
     )
+
+
+def test_uncaptioned_image_uses_saved_language():
+    profile = effective_profile({"language": "ro"})
+    prompt = build_mention_prompt(
+        "Ana", IMAGE_DESCRIPTION_REQUEST, has_image=True, assistant_profile=profile
+    )
+    assert "- Always use Romanian." in prompt
+    assert prompt.endswith("Use Romanian.")
+
+    captioned = build_mention_prompt(
+        "Ana", "What is this?", has_image=True, assistant_profile=profile
+    )
+    assert captioned.endswith("Reply in the language of <current_message>.")

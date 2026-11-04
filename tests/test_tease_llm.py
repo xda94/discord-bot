@@ -706,7 +706,8 @@ def test_mention_prompt_states_rules_up_front_and_ends_with_reminders(monkeypatc
     )
 
 
-def test_fixed_language_profile_sets_the_rule_and_the_reminder():
-    prompt = build_mention_prompt("Ana", "hi", assistant_profile=AssistantProfile(language="en"))
-    assert "- Always use English unless <current_message> explicitly requests another language." in prompt
-    assert prompt.endswith("Use English unless <current_message> explicitly requests another language.")
+def test_saved_language_is_only_a_fallback_for_the_current_message():
+    prompt = build_mention_prompt("Ana", "ce faci?", assistant_profile=AssistantProfile(language="en"))
+    assert "- Reply in the language of <current_message> (if it is too short to tell, English)" in prompt
+    assert "Always use English" not in prompt
+    assert prompt.endswith("Reply in the language of <current_message>.")
