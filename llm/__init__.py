@@ -1,2 +1,2 @@
-"""LLM transport, response generation, worker, and memory services."""
+"""LLM transport, response generation, and worker services."""
 

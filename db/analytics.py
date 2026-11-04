@@ -14,7 +14,7 @@ logger = logging.getLogger("database")
 
 
 _ANALYTICS_CATEGORIES = {
-    "command", "mention", "control", "automatic", "scheduled", "processing", "feedback",
+    "command", "mention", "control", "automatic", "scheduled", "processing",
     "failure",
 }
 

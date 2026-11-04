@@ -25,7 +25,6 @@ from features.flights import FlightTrackerFeature
 from features.inactivity import InactivityFeature
 from features.jokes import JokesFeature
 from features.keywords import KeywordsFeature
-from features.llm_feedback import LLMFeedbackFeature
 from features.reminders import RemindersFeature
 from notifications import NotificationsFeature
 from features.response_gate import ResponseGate
@@ -33,11 +32,6 @@ from features.wishlist import WishlistFeature
 from features.sponsors import SponsorsFeature
 from features.stats import StatsFeature
 from features.teases import TeasesFeature
-from features.user_memory import (
-    UserMemoryFeature,
-    is_automatic_memory_enabled,
-    is_memory_disabled,
-)
 
 from llm.client import LlamaCppError, get_default_model
 
@@ -90,40 +84,17 @@ wishlist = WishlistFeature(client, tree)
 flights = FlightTrackerFeature(client, tree)
 stats = StatsFeature(client, tree)
 azi_se_spala = AziSeSpalaFeature(client, tree)
-llm_feedback = LLMFeedbackFeature(client, tree, BOT_ID)
 humor = HumorFeature(client, tree)
-MEMORY_DISABLED = is_memory_disabled()
-AUTOMATIC_MEMORY_ENABLED = not MEMORY_DISABLED and is_automatic_memory_enabled()
-user_memory = (
-    None
-    if MEMORY_DISABLED
-    else UserMemoryFeature(client, tree, automatic_enabled=AUTOMATIC_MEMORY_ENABLED)
-)
 llm_mention = LLMMentionFeature(
     client,
     tree,
     bot_id=BOT_ID,
-    feedback=llm_feedback,
-    memory=user_memory,
 )
 context_reactions = ContextReactionFeature(llm_mention)
-help_feature = HelpFeature(
-    client,
-    tree,
-    automatic_memory_enabled=AUTOMATIC_MEMORY_ENABLED,
-    memory_disabled=MEMORY_DISABLED,
-)
-onboarding = OnboardingFeature(client,tree,memory_disabled=MEMORY_DISABLED)
-logger.info(
-    "LLM memory mode=%s",
-    "disabled" if MEMORY_DISABLED else ("automatic" if AUTOMATIC_MEMORY_ENABLED else "manual"),
-)
+help_feature = HelpFeature(client, tree)
+onboarding = OnboardingFeature(client, tree)
 
-MESSAGE_HANDLERS = (
-    (inactivity, user_memory, llm_mention, keywords, context_reactions, teases)
-    if AUTOMATIC_MEMORY_ENABLED
-    else (inactivity, llm_mention, keywords, context_reactions, teases)
-)
+MESSAGE_HANDLERS = (inactivity, llm_mention, keywords, context_reactions, teases)
 
 BACKGROUND_FEATURES = (
     sponsors,
@@ -164,11 +135,6 @@ async def on_message(message: discord.Message):
     for handler in MESSAGE_HANDLERS:
         if await handler.handle_message(message):
             return
-
-
-@client.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    await llm_feedback.handle_raw_reaction_add(payload)
 
 
 try:

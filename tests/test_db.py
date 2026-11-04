@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import db
 import pytest
@@ -172,49 +172,6 @@ def test_successful_connection_transaction_commits(tmp_db):
     assert db.get_setting("transaction-test") == "committed"
 
 
-def test_memory_entry_schema_migrates_to_all_memory_categories(tmp_path, monkeypatch):
-    database = tmp_path / "legacy-memory.db"
-    monkeypatch.setattr(db.connection, "DB_FILE", str(database))
-    with sqlite3.connect(database) as connection:
-        connection.execute("""
-            CREATE TABLE llm_memory_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scope_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                kind TEXT NOT NULL CHECK (kind IN ('fact', 'topic')),
-                content TEXT NOT NULL,
-                normalized_content TEXT NOT NULL,
-                source_text TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                UNIQUE(scope_id, user_id, kind, normalized_content)
-            )
-        """)
-        connection.execute(
-            "INSERT INTO llm_memory_entries VALUES (7, 100, 9, 'fact', "
-            "'Owns a cat', 'owns a cat', 'legacy', 1, 1)"
-        )
-
-    db.init_db()
-
-    assert db.get_llm_memory_entries(100, 9)[0][:3] == (7, "fact", "Owns a cat")
-    assert db.apply_llm_memory_delta(
-        100,
-        9,
-        (
-            {
-                "kind": "opinion",
-                "content": "Prefers open standards",
-                "source_text": "source",
-            },
-        ),
-        (),
-        (),
-    )
-    assert db.get_llm_memory_entries(100, 9)[0][1] == "opinion"
-
-
-
 def test_responses_add_get_remove(tmp_db):
     assert db.add_response("hello", "world", GUILD_A) is True
     assert db.add_response("hello", "earth", GUILD_A) is True
@@ -234,7 +191,6 @@ def test_responses_are_isolated_per_guild(tmp_db):
 
     assert db.get_all_responses(GUILD_A) == {"ping": ["guild-a"]}
     assert db.get_all_responses(GUILD_B) == {"ping": ["guild-b"]}
-
 
 
 def test_birthdays_table_is_created_and_init_is_repeatable(tmp_db):
@@ -324,7 +280,6 @@ def test_remove_response_returns_false_when_missing(tmp_db):
     assert db.remove_response("never_added", GUILD_A) is False
 
 
-
 def test_cache_invalidated_immediately_on_add(tmp_db):
     """An add in this process must be visible on the very next read,
     regardless of TTL — `add_response` calls `_invalidate_responses_cache`."""
@@ -394,7 +349,6 @@ def test_cache_is_per_guild(tmp_db):
     assert db.get_all_responses(GUILD_B) is cached_b
 
 
-
 def test_add_scraped_item_stock_true_stored_as_one(tmp_db):
     item_id = db.add_scraped_item(123, "https://example.com/a", stock=True)
     assert item_id
@@ -422,7 +376,6 @@ def test_add_scraped_item_rejects_duplicate_url(tmp_db):
     second = db.add_scraped_item(123, "https://example.com/a")
     assert first
     assert second is None
-
 
 
 def test_update_preserves_fields_passed_as_none(tmp_db):
@@ -466,7 +419,6 @@ def test_update_stock_none_does_not_flip_status(tmp_db):
     assert db.get_user_scraped_items(123)[0][2] == 1
 
 
-
 def test_delete_scraped_item_removes_price_history(tmp_db):
     """With `PRAGMA foreign_keys = ON` (set in `_connect`) the cascade on
     `price_history.item_id` actually fires. The explicit cascade in
@@ -500,141 +452,6 @@ def test_scraped_item_preferences_and_check_status_round_trip(tmp_db):
     assert cleared[9:12] == (None, None, 0)
 
 
-
-def test_llm_feedback_keeps_only_compact_rating_metadata(tmp_db):
-    assert db.track_llm_response(1001, 123, "mention")
-    assert db.get_llm_response_feedback(1001)[0:3] == (123, "mention", None)
-
-    assert not db.set_llm_response_rating(1001, 999, 1)
-    assert db.set_llm_response_rating(1001, 123, -1)
-    row = db.get_llm_response_feedback(1001)
-    assert row[0:3] == (123, "mention", -1)
-    assert row[7] is not None
-
-
-@pytest.mark.parametrize("raise_on_error", [False, True])
-def test_llm_feedback_summary_preserves_grouping_and_latest_requester_rating(
-    tmp_db, raise_on_error
-):
-    responses = [
-        (1001, "summon", "model-a", "v1", -1),
-        (1002, "mention", "model-b", "v1", 1),
-        (1003, "mention", "model-a", "v2", -1),
-        (1004, "mention", "model-a", "v1", -1),
-        (1005, "mention", None, None, -1),
-        (1006, "mention", "model-a", "v1", -1),
-        (1007, "mention", "model-a", None, 1),
-    ]
-    for message_id, category, model, prompt_version, rating in responses:
-        assert db.track_llm_response(
-            message_id, 123, category, guild_id=GUILD_A,
-            model=model, prompt_version=prompt_version,
-        )
-        assert db.set_llm_response_rating(message_id, 123, rating)
-
-    assert db.set_llm_response_rating(1004, 123, 1)
-    assert not db.set_llm_response_rating(1006, 999, 1)
-    assert db.track_llm_response(
-        1008, 123, "mention", guild_id=GUILD_A,
-        model="model-a", prompt_version="v1",
-    )
-    assert not db.set_llm_response_rating(1008, 999, 1)
-    for message_id, guild_id in [(1009, GUILD_B), (1010, None)]:
-        assert db.track_llm_response(
-            message_id, 123, "mention", guild_id=guild_id,
-            model="model-a", prompt_version="v1",
-        )
-        assert db.set_llm_response_rating(message_id, 123, 1)
-
-    assert db.get_llm_feedback_summary(GUILD_A, raise_on_error=raise_on_error) == [
-        ("mention", "unknown", "unknown", 1, 0, 1),
-        ("mention", "model-a", "unknown", 1, 1, 0),
-        ("mention", "model-a", "v1", 2, 1, 1),
-        ("mention", "model-a", "v2", 1, 0, 1),
-        ("mention", "model-b", "v1", 1, 1, 0),
-        ("summon", "model-a", "v1", 1, 0, 1),
-    ]
-
-
-@pytest.mark.parametrize("raise_on_error", [False, True])
-def test_llm_feedback_summary_empty_guild(tmp_db, raise_on_error):
-    assert db.get_llm_feedback_summary(GUILD_A, raise_on_error=raise_on_error) == []
-
-
-@pytest.mark.parametrize("failure", ["connect", "execute", "fetchall"])
-@pytest.mark.parametrize("options", [{}, {"raise_on_error": False}, {"raise_on_error": True}])
-def test_llm_feedback_summary_failure_handling(monkeypatch, caplog, failure, options):
-    error = sqlite3.OperationalError("summary failed")
-    connection = MagicMock()
-    if failure == "connect":
-        connection.side_effect = error
-    else:
-        cursor = connection.return_value.__enter__.return_value
-        getattr(cursor, failure).side_effect = error
-    monkeypatch.setattr(db.bot_data, "_connect", connection)
-
-    if options.get("raise_on_error"):
-        with pytest.raises(sqlite3.OperationalError, match="summary failed") as raised:
-            db.get_llm_feedback_summary(GUILD_A, **options)
-        assert raised.value is error
-    else:
-        assert db.get_llm_feedback_summary(GUILD_A, **options) == []
-
-    assert len(caplog.records) == 1
-    record = caplog.records[0]
-    assert record.name == "database"
-    assert record.levelname == "ERROR"
-    assert record.getMessage() == f"Failed to summarize LLM feedback for guild {GUILD_A}"
-    assert record.exc_info[1] is error
-
-
-
-def test_llm_memory_channel_configuration_defaults_off_and_is_scoped(tmp_db):
-    assert db.is_llm_memory_channel_enabled(1, 10) is False
-    assert db.set_llm_memory_channel_enabled(1, 10, True)
-    assert db.is_llm_memory_channel_enabled(1, 10) is True
-    assert db.is_llm_memory_channel_enabled(1, 11) is False
-    assert db.get_enabled_llm_memory_channels() == [(1, 10)]
-
-    assert db.set_llm_memory_channel_enabled(1, 10, False)
-    assert db.is_llm_memory_channel_enabled(1, 10) is False
-    assert db.get_enabled_llm_memory_channels() == []
-
-
-def test_llm_user_memory_is_isolated_by_scope_and_user(tmp_db):
-    assert db.set_llm_user_memory(100, 7, "Guild A")
-    assert db.set_llm_user_memory(200, 7, "Guild B")
-    assert db.set_llm_user_memory(0, 7, "DM")
-    assert db.set_llm_user_memory(100, 8, "Other user")
-
-    assert db.get_llm_user_memory(100, 7) == "Guild A"
-    assert db.get_llm_user_memory(200, 7) == "Guild B"
-    assert db.get_llm_user_memory(0, 7) == "DM"
-    assert db.get_llm_user_memory(100, 8) == "Other user"
-
-
-def test_llm_memory_purge_preserves_preferences(tmp_db):
-    db.set_llm_user_memory(100, 7, "Profile")
-    db.set_llm_user_memory(100, 8, "Profile")
-    db.set_llm_user_memory(200, 7, "Other guild")
-    db.set_llm_memory_preference(100, 7, False)
-
-    assert db.purge_guild_llm_user_memories(100) == 2
-    assert db.get_llm_user_memory(100, 7) is None
-    assert db.get_llm_user_memory(100, 8) is None
-    assert db.get_llm_user_memory(200, 7) == "Other guild"
-    assert db.get_llm_memory_preference(100, 7) is False
-
-
-def test_llm_memory_preference_round_trip(tmp_db):
-    assert db.get_llm_memory_preference(100, 7) is None
-    assert db.set_llm_memory_preference(100, 7, False)
-    assert db.get_llm_memory_preference(100, 7) is False
-    assert db.set_llm_memory_preference(100, 7, True)
-    assert db.get_llm_memory_preference(100, 7) is True
-
-
-
 def test_guild_activity_upsert_per_guild(tmp_db):
     db.set_guild_activity(guild_id=1, last_time=100.0, channel_id=10)
     db.set_guild_activity(guild_id=1, last_time=200.0, channel_id=20)
@@ -664,7 +481,6 @@ def test_guild_inactivity_setting_is_isolated_per_guild(tmp_db):
     assert db.is_guild_inactivity_enabled(1) is True
 
 
-
 def test_exchange_rate_round_trip(tmp_db):
     db.set_exchange_rate("DKK", 7.45)
     assert db.get_exchange_rate("DKK") == 7.45
@@ -672,13 +488,11 @@ def test_exchange_rate_round_trip(tmp_db):
     assert db.get_exchange_rate("XYZ") is None
 
 
-
 def test_get_all_jokes_empty_when_no_data(tmp_db):
     """Smoke test that we get an empty list, not None — the API's `/jokes`
     route iterates the result and would crash on None."""
     result = db.get_all_jokes()
     assert result == []
-
 
 
 def test_guild_joke_config_round_trip(tmp_db):
@@ -767,7 +581,6 @@ def test_clear_guild_joke_config_preserves_sent_history(tmp_db):
     with db._connect() as c:
         c.execute("SELECT COUNT(*) FROM guild_joke_sent WHERE guild_id = ?", (111,))
         assert c.fetchone()[0] == 1
-
 
 
 def test_get_unsent_joke_for_guild_returns_unsent(tmp_db):
@@ -885,3 +698,15 @@ def test_init_db_drops_legacy_community_tables(tmp_db):
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert not names & set(tables)
     assert "scraped_items" in names
+
+
+def test_init_db_drops_removed_memory_and_feedback_tables(tmp_db):
+    with db._connect(commit=True) as c:
+        c.execute("CREATE TABLE llm_memory_entries (id INTEGER)")
+        c.execute("CREATE TABLE llm_response_feedback (id INTEGER)")
+    db.init_db()
+    with db._connect() as c:
+        c.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'llm_%'"
+        )
+        assert c.fetchall() == []

@@ -37,7 +37,6 @@
       <button class="nav-item" data-page="wishlist"><span>♡</span>Wishlist</button>
       <button class="nav-item" data-page="flights"><span>✈</span>Flights</button>
       <button class="nav-item" data-page="users"><span>◎</span>Users</button>
-      <button class="nav-item" data-page="memory"><span>◉</span>LLM memory</button>
       <button class="nav-item" data-page="analytics"><span>⌁</span>Analytics</button>
       <button class="nav-item" data-page="preferences"><span>☷</span>Notifications</button>
       <button class="nav-item" data-page="settings"><span>⚙</span>Bot settings</button>
@@ -72,7 +71,6 @@
         <div class="summary-grid">
           <article class="panel"><div class="panel-title"><div><p class="eyebrow">SAVED DATA</p><h3>Records</h3></div></div><div class="count-grid" id="record-counts"><div><strong>—</strong><span>Keywords</span></div><div><strong>—</strong><span>Reminders</span></div><div><strong>—</strong><span>Birthdays</span></div><div><strong>—</strong><span>Jokes</span></div><div><strong>—</strong><span>Wishlist</span></div></div></article>
           <article class="panel"><div class="panel-title"><div><p class="eyebrow">SELECTED SERVER</p><h3>Top keywords</h3></div><span class="scope-pill">server</span></div><div id="overview-keywords" class="empty">Enter a server ID above.</div></article>
-          <article class="panel table-panel"><div class="panel-title"><div><p class="eyebrow">RATED REPLIES</p><h3>LLM feedback</h3></div><span class="scope-pill">server</span></div><div id="overview-feedback" class="empty">Enter a server ID above.</div></article>
         </div>
       </section>
 
@@ -130,26 +128,13 @@
         <article class="panel table-panel"><div class="panel-title"><h3>Activity</h3><label>Where<select id="users-scope"><option value="">All</option><option value="guild">Servers</option><option value="dm">Direct messages</option></select></label></div><div id="users-list" class="empty">Loading activity…</div></article>
       </section>
 
-      <section class="page" id="page-memory" data-title="LLM memory">
-        <div class="page-heading"><div><p class="eyebrow">SERVER AND USER CONTROL</p><h2>Persistent LLM memory</h2><p>Manage enabled channels and inspect or erase saved memory for the selected user.</p></div><button class="button secondary" data-action="load-memory">Refresh</button></div>
-        <div class="two-column">
-          <article class="panel"><div class="panel-title"><div><h3>Channel memory</h3><p>Equivalent to <code>/llm-memory</code>.</p></div><span class="scope-pill">server</span></div><form id="memory-channel-form" class="form-stack"><label>Channel ID<input name="channel_id" inputmode="numeric" required pattern="[0-9]+" placeholder="Discord channel ID"></label><div id="memory-channel-state" class="empty">Enter a channel ID to inspect its status.</div><div class="button-row"><button type="button" class="button secondary" data-action="check-memory-channel">Check status</button><button type="button" class="button primary" data-action="set-memory-channel" data-enabled="true">Enable</button><button type="button" class="button danger ghost" data-action="set-memory-channel" data-enabled="false">Disable</button></div></form><div class="subsection"><h4>Enabled channels</h4><div id="memory-channels-list" class="empty">Enter a server ID.</div></div></article>
-          <article class="panel"><div class="panel-title"><div><h3>User controls</h3><p>Equivalent to the personal memory commands.</p></div><span class="scope-pill">user</span></div><label>Memory scope<select id="memory-scope"><option value="server">Selected server</option><option value="dm">Direct messages</option></select></label><div id="memory-user-summary" class="empty">Enter a user ID to inspect memory.</div><div class="button-row"><button class="button primary" data-action="set-memory-preference" data-enabled="true">Opt in</button><button class="button secondary" data-action="set-memory-preference" data-enabled="false">Opt out & erase</button><button class="button danger ghost" data-action="forget-memory-user">Forget saved memory</button></div></article>
-        </div>
-        <div class="two-column memory-data-grid">
-          <article class="panel table-panel"><div class="panel-title"><div><h3>Saved synthesis</h3><p>Facts, impressions, preferences, and topics used when this user mentions the bot.</p></div><span class="scope-pill">user</span></div><div id="memory-entries-list" class="empty">No user selected.</div></article>
-          <article class="panel table-panel"><div class="panel-title"><div><h3>Raw chat retention</h3><p>New messages are synthesized daily, then their source text is deleted.</p></div><span class="scope-pill">user</span></div><div id="memory-transcript-list" class="empty">Raw conversation is not stored as durable memory.</div></article>
-        </div>
-        <article class="panel danger-zone"><div><h3>Purge server memory</h3><p>Erase every user’s saved entries, transcript, and pending observations in the selected server. Channel settings and opt-out preferences are preserved.</p></div><button class="button danger ghost" data-action="purge-memory-guild">Purge server memory</button></article>
-      </section>
-
       <section class="page" id="page-preferences" data-title="Notifications">
         <div class="page-heading"><div><h2>Notification delivery</h2><p>Pending and failed tracking notifications for the selected user.</p></div><button class="button secondary" data-action="load-preferences">Refresh</button></div>
         <article class="panel"><h3>Notification backlog</h3><div id="notifications-list" class="empty">Select a user to inspect notifications.</div></article>
       </section>
 
       <section class="page" id="page-settings" data-title="Bot settings">
-        <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>Bot settings</h2><p>Sponsor and model settings apply to all servers. Inactivity and feedback use the selected server.</p></div><button class="button secondary" data-action="load-settings">Refresh</button></div>
+        <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>Bot settings</h2><p>Sponsor and model settings apply to all servers. Inactivity uses the selected server.</p></div><button class="button secondary" data-action="load-settings">Refresh</button></div>
         <div class="two-column">
           <article class="panel table-panel"><div class="panel-title"><div><h3>Sponsor tiers</h3><p>Global catalog. Edits affect active sponsorship probability and display without extending its expiry; custom messages remain exclusive to the existing <code>ultra</code> tier.</p></div><span class="scope-pill global">All servers</span></div><div id="sponsor-tiers-list" class="empty">Loading sponsor tiers…</div></article>
           <article class="panel"><div class="panel-title"><div><h3 id="sponsor-tier-form-title">Create tier</h3><p>Annual prices are in lei. Chance is entered as a percent.</p></div><span class="scope-pill global">All servers</span></div><form id="sponsor-tier-form" class="form-stack"><input type="hidden" name="tier_id"><label>Tier name<input name="name" required maxlength="80" autocomplete="off"></label><label>Annual price in lei<input name="price_per_year" required inputmode="decimal" maxlength="30" placeholder="12.50"></label><label>Chance (%)<input name="chance_percent" required inputmode="decimal" maxlength="30" placeholder="12.5"></label><div class="button-row"><button class="button primary">Create tier</button><button type="button" class="button secondary" data-action="new-sponsor-tier" hidden>Cancel edit</button></div></form></article>
@@ -170,7 +155,6 @@
             <p class="setting-note">To start or renew a sponsorship, use /sponsor-set in Discord.</p>
           </article>
         </div>
-        <article class="panel table-panel"><div class="panel-title"><div><h3>LLM feedback</h3><p>At least 10 likes in a group qualify it for administrator review. Prompt or model changes require administrator approval.</p></div><span class="scope-pill">Selected server</span></div><div id="settings-feedback" class="empty">Enter a server ID to load feedback.</div></article>
       </section>
 
       <section class="page" id="page-analytics" data-title="Analytics">
@@ -189,7 +173,7 @@
           <article class="panel table-panel"><div class="panel-title"><div><h3>Unused commands</h3><p>Active commands with zero invocations in this period.</p></div></div><div id="analytics-unused" class="empty">Loading commands…</div></article>
         </div>
         <div class="two-column analytics-columns">
-          <article class="panel table-panel"><div class="panel-title"><div><h3>Other bot features</h3><p>Controls, automatic behavior, scheduled deliveries, processing, and feedback.</p></div></div><div id="analytics-features" class="empty">Loading features…</div></article>
+          <article class="panel table-panel"><div class="panel-title"><div><h3>Other bot features</h3><p>Controls, automatic behavior, scheduled deliveries, and processing.</p></div></div><div id="analytics-features" class="empty">Loading features…</div></article>
           <article class="panel table-panel"><div class="panel-title"><div><h3>Failures</h3><p>Failed command execution, delivery, generation, provider, and processing operations.</p></div></div><div id="analytics-failures" class="empty">No failures in this period.</div></article>
         </div>
         <article class="panel"><h3>Delivery health</h3><div id="delivery-health" class="empty">Loading delivery health…</div></article>

@@ -15,8 +15,6 @@ The major capabilities are:
 - Per-server keyword responses and keyword usage statistics
 - Mood-based random teases
 - Queued local-LLM text and image responses when the bot is mentioned
-- Startup-selectable automatic or user-managed persistent conversational memory
-- Requester-only 👍/👎 feedback on LLM mention replies
 - One-off and recurring reminders with lifecycle records, retry/reconciliation,
   snooze, and private management controls
 - Global per-user assistant profiles for language, tone, currency, explicit
@@ -33,7 +31,7 @@ The major capabilities are:
 - Romanian Orthodox calendar lookup through azisespala.ro
 - Private `/worth-it` buy-or-wait commentary for tracked wishlist items
 - Deployer-only daily usage analytics for commands, mentions, controls,
-  automatic behavior, scheduled deliveries, background processing, feedback,
+  automatic behavior, scheduled deliveries, background processing,
   per-user wishlist/flight usage, and delivery backlog state
 
 ## Runtime architecture
@@ -51,8 +49,7 @@ There are two executable Python entry points.
 5. Enables Discord's message-content intent.
 6. Creates one `discord.Client` and one `app_commands.CommandTree`.
 7. Initializes the SQLite schema and migrations.
-8. Selects automatic or manual memory from `LLM_MEMORY_ENABLED` and constructs
-   every feature object.
+8. Constructs every feature object.
 9. Runs the Discord client.
 
 When Discord signals `on_ready`, command sync, catalog refresh, and each background feature start independently; one failure is logged without preventing the others. Repeated ready events are safe because each feature checks whether its loop is already running. Frequent message/admission writes and reminder/notification/flight/wishlist scheduling operations use `asyncio.to_thread` to avoid blocking Discord during database lock waits.
@@ -71,8 +68,7 @@ When Discord signals `on_ready`, command sync, catalog refresh, and each backgro
   administration, host metrics, and saved-data analytics.
 
 The API covers keyword CRUD/analytics, reminders, joke pools and guild schedules,
-wishlist snapshots/preferences/refresh, mention-model configuration, feedback
-summaries, guild inactivity switches, flight credentials/trackers/history, and
+wishlist snapshots/preferences/refresh, mention-model configuration, guild inactivity switches, flight credentials/trackers/history, and
 global settings. A public `/health` probe checks API/database availability and
 returns HTTP 200 or 503 without credentials or exception details. It is an operator
 data/config interface: request `user_id` fields select records; they do not
@@ -106,7 +102,6 @@ Every non-bot message passes through the handlers in this order:
 
 ```text
 InactivityFeature
-    -> UserMemoryFeature (automatic mode only)
     -> LLMMentionFeature
     -> KeywordsFeature
     -> ContextReactionFeature
@@ -116,9 +111,6 @@ InactivityFeature
 The semantics are:
 
 - `InactivityFeature` records guild activity and always allows dispatch to continue.
-- In automatic mode, `UserMemoryFeature` captures eligible text into bounded
-  process-local buffers and always allows dispatch to continue. Manual mode does
-  not place it in the ordinary-message dispatch chain.
 - `LLMMentionFeature` returns `True` for a bot mention, including cooldown replies, so keyword and tease handling stop.
 - `KeywordsFeature` returns `True` after sending a keyword response, so teasing stops for that message.
 - `ContextReactionFeature` occasionally queues a contextual emoji for ordinary
@@ -140,7 +132,7 @@ convention.
 
 ### `assistant_profiles.py` and `db/assistant_profiles.py`
 
-Store one global preference row per Discord user, separate from memory. `/start`
+Store one global preference row per Discord user. `/start`
 writes language and timezone; no command or dashboard control changes the other
 stored values, which are still honored. Defaults are `auto` language, `default` tone, no currency
 override, `UTC`, immediate delivery, no quiet hours, `standard` notifications,
@@ -205,17 +197,8 @@ waiters, served in FIFO order through POSIX file locks. The bot reserves globall
 before adding a mention to its persistent worker queue; a fourth action receives
 a retry-later response. Reservations span retries. Cancelled callers retain execution capacity until any running HTTP
 worker thread finishes. Per-user pending protection and cooldowns still apply.
-Background memory and ordinary-message reactions start only when shared
-capacity is idle and occupy no interactive waiting positions. The memory
-scheduler reserves globally before scanning its database and skips the scan
-under contention. Successful memory commits wait one configured active-chunk
-rest before the next chunk. Consecutive failures start at twice that rest and
-double up to the consolidation interval; a successful commit resets this
-process-local backoff. Skipped work preserves backoff and extraction progress
-and does not count as a failure. If a periodic
-wake falls inside the required delay, it waits only the remaining time rather
-than adding another full interval. This prevents repeated failed extraction
-from continuously occupying the CPU-only inference server.
+Ordinary-message reactions start only when shared capacity is idle and occupy
+no interactive waiting positions.
 llama.cpp calls run in worker threads, preventing blocking inference from
 freezing the Discord event loop. Each user may have only one pending mention
 job. `llm/client.py` sends requests to llama-server's
@@ -231,9 +214,7 @@ contextual questions such as “pareri?” or “what do you think?”. The mode
 produce exactly one ready-to-send reply in the current message's language and
 must produce a new answer or reaction rather than repeating or merely
 paraphrasing the current message. The prompt explicitly asks it to answer from
-the assistant's perspective and start with the answer. Saved memory is
-attributed to the requester; recall uses `you`/`your` instead of turning that
-person's details into assistant `I`/`my` statements. Drafts, translations, and
+the assistant's perspective and start with the answer. Drafts, translations, and
 coaching are permitted when requested. Chat history
 and a directly replied-to message help resolve meaning but never select the
 response language. Structured mention output contains answer text plus an
@@ -246,8 +227,6 @@ Schular?` repeated with restored Romanian diacritics. The retry includes the
 validation reason and directs the model to answer, rather than copy or correct
 the question. A quoted question followed by an actual answer remains valid.
 This is a textual repetition check, not a semantic correctness check.
-Text, memory, vision, and vision-plus-memory replies use separate
-`mention-v10-direct*` feedback versions; summons use `summon-v2`.
 Validation warnings include the model alias and specific rejection reason
 (such as empty text, an echo, or an unsupported reaction), without logging
 prompt or completion text. Text that becomes empty after normalization is
@@ -255,12 +234,11 @@ reported separately from an echo.
 
 Each request includes a finite `max_tokens` value. Mention replies use 384 by
 default, configurable through `LLM_MENTION_MAX_TOKENS`; short teases, summons,
-inactivity nudges, and price messages use 96; reactions use 32; and memory
-extraction uses 1,024 by default, configurable through
-`LLM_MEMORY_MAX_TOKENS`. Both configurable limits have a minimum of 1. This
+inactivity nudges, and price messages use 96; and reactions use 32. The
+configurable limit has a minimum of 1. This
 avoids llama-server's unbounded generation default. A response ended because
 it exhausted its token limit is rejected, even if its partial text is valid
-JSON, so incomplete memory output cannot acknowledge and delete observations.
+JSON.
 
 The feature tracks:
 
@@ -269,7 +247,7 @@ The feature tracks:
 - Optional recent channel context, controlled by `LLM_CONTEXT_MESSAGES`
 - A global model selection stored as `settings.mention_model`
 
-Long model output is split into Discord-safe message chunks. A bare mention uses a separate summon-response prompt. A bare mention with an image is instead a vision request that asks for a concise description. A captioned image answers or solves exactly what the caption requests, with visual claims grounded in the attachment. Vision and vision-plus-memory replies have distinct prompt versions in feedback data so they are not compared with text-only replies.
+Long model output is split into Discord-safe message chunks. A bare mention uses a separate summon-response prompt. A bare mention with an image is instead a vision request that asks for a concise description. A captioned image answers or solves exactly what the caption requests, with visual claims grounded in the attachment.
 The sender removes leading requester/bot mentions and labels, including
 Markdown-wrapped forms such as `@Robeeque Balen:`, then inserts one real
 `<@requester_id>` mention into the first chunk. Names used naturally later in
@@ -278,14 +256,7 @@ requester is allowed to be pinged; role/everyone pings and reply-author pings
 are disabled, and continuation chunks allow no mentions. Both normal and bare
 mention replies use this path. The mention is produced in code rather than
 depending on model output.
-The bot may react to the original human message, but does not pre-add feedback
-reactions to its own reply. Only a feedback reaction manually
-added by the original requester can rate the reply; bot reactions and reactions
-from other users are ignored. The feedback table retains message ID, requester
-ID, guild, model alias, prompt version, category, final rating, and timestamps,
-never prompt or completion text. Members with Manage Server can use
-`/llm-feedback-summary` to compare configurations after at least ten
-ratings. The report does not automatically change prompts or models.
+The bot may react to the original human message.
 
 Inference capacity is shared across bot/API processes using the same lock
 directory. The selected model is global rather than guild- or user-specific.
@@ -299,7 +270,7 @@ handlers. Missing `Add Reactions` permission prevents only the emoji reaction;
 the mention reply still succeeds.
 
 Mention replies derive their output language from the current request rather
-than saved memory or channel history. Generated teases likewise derive their
+than channel history. Generated teases likewise derive their
 language only from the triggering message; English prompt rules, mood names,
 and style descriptions must not select the output language.
 
@@ -323,8 +294,7 @@ decode, unsupported-format, or limit failures advance to the next candidate;
 processing stops after one succeeds. Bytes exist only for that active request
 and are neither persisted nor logged. The worker returns a specific message for
 disabled/unavailable vision, failed image processing, or inference failure.
-Vision prompts use a 4,000-character memory/history reference budget; memory
-consolidation still sees only the user's authored text.
+Vision prompts use a 4,000-character history budget.
 
 Production logs from 2026-10-12 confirmed an image-bearing HTTP request timing
 out after 180 seconds despite advertised vision support. Image requests now
@@ -335,99 +305,11 @@ HTTP timeouts are not retried automatically, since server inference may continue
 These changes still require validation against the deployed CPU server.
 
 Generic English/Romanian image-access denials trigger one retry with the same
-image and current question, without stale chat or saved memory. Repeated denials
+image and current question, without stale chat. Repeated denials
 fail through the normal processing-error path; uncertainty about specific visual
 details remains valid. The retry preserves the requester's assistant profile.
-Vision feedback uses the `mention-v13-vision-retry`
-versions. `scripts/check_vision.py` compares a simple direct request with the
+`scripts/check_vision.py` compares a simple direct request with the
 structured bot prompt using a generated red circle, without Discord traffic.
-
-### `features/user_memory.py`
-
-Provides two startup-selected persistent-memory modes. Only the exact value
-`LLM_MEMORY_ENABLED=1` enables automatic mode. `0`, a missing value, or an
-invalid value selects manual mode; invalid values log a warning. Changing modes
-requires a Discord bot restart. Stored memory survives mode changes.
-
-Automatic mode provides channel-controlled persistent memory for mention
-conversations:
-
-- `/llm-memory activate|deactivate|status` manages the current channel and
-  requires Manage Server permission.
-- `/llm-memory-purge PURGE` deletes saved memory for the current server while
-  preserving channel settings and individual opt-outs.
-- `/memory-show`, `/memory-forget`, `/memory-opt-in`, and `/memory-opt-out` give
-  each user private control of their own server- or DM-scoped profile.
-
-Manual mode registers only `/memory-add`, `/memory-show`, and `/memory-erase`:
-
-- `/memory-add <type> <text>` saves at most 200 normalized characters as
-  `like`, `dislike`, `fact`, `interest`, `opinion`, or `other` and explicitly
-  enables that requester's memory preference.
-- `/memory-show` privately groups complete stored memories by type without
-  displaying database IDs.
-- `/memory-erase [text]` deletes all requester-owned entries whose complete text
-  matches after case-folding and whitespace normalization. Omitting `text`
-  deletes all saved and pending memory for that requester in the current scope.
-
-Manual server memory is shared across that requester's mentions in every channel
-of the same server; DMs use the separate scope `0`. Previously synthesized rows
-remain visible and usable. Manual mode does not capture ordinary messages, load
-pending observations into process buffers, or run the synthesis scheduler.
-
-Within automatic mode, memory is disabled by default in guild channels and
-requires explicit user opt-in in DMs. Cycle syntheses are stored as individual
-facts, impressions, likes, dislikes, topics, interests, opinions, and other
-durable notes in SQLite rows with stable IDs and no aggregate
-character cap. The model proposes
-new rows or corrections tied to an exact existing ID and an exact source
-message. Memory content is intentionally stored as subject-neutral fragments,
-such as `Prefers a manual razor`, rather than repeating a person's name or
-pronoun. The synthesis prompt identifies the assistant's configured names and
-directs the model never to treat them as the memory owner. Application code
-also rejects entries whose subject is the bot, assistant, user, or memory owner;
-it validates the source index and row ownership, while unrelated rows retain
-their wording and normalized duplicates are ignored.
-Legacy Markdown profiles migrate to fact rows during database initialization.
-
-Eligible user messages are persisted temporarily as pending observations, so a
-restart does not lose an unfinished cycle. A new channel cycle requires 50
-captured, permitted observations that are each at least 600 seconds old. The
-newest eligible observation becomes a persisted endpoint; later arrivals wait
-for the next cycle. The interval for scans that may start new cycles is
-configured by `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` and defaults to 300
-seconds; it also caps consecutive-failure backoff. Active cycles continue
-successful chunks after the rest configured by
-`LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS`, also 300 seconds by default. A first
-failure waits twice that rest, later failures double the delay up to the cap,
-and the counters reset on process restart.
-The progress table stores the last completed observation ID and, while a cycle
-is active, its fixed endpoint. Each scan admits at most one author group,
-selected by the oldest remaining observation across enabled channels. The group
-is split into chunks of at most 10 messages or 3,000 source characters. New
-observations beyond the endpoint remain pending for the next cycle.
-The extraction prompt labels each pending message with its zero-based
-`source_index`, and its JSON schema limits references to indexes present in the
-current batch. Each response is limited to five additions and five corrections,
-with each memory fragment limited to 200 characters. This bounds generation
-while prioritizing durable details and prevents an invalid model index from
-applying a memory change to unrelated text. Entries with an explicit assistant
-or user subject are discarded before persistence; failed extraction leaves the
-batch available for a later retry.
-Observations are deleted in the same transaction that saves their synthesis;
-failed extraction preserves the active cycle for retry. Only user-authored text
-can produce memory. Memory extraction includes at most 2,000 characters of
-retrieved entries. These are input-character limits, not exact model-token
-counts: JSON, escaping, instructions, and the chat template also consume
-context. Oversized entries are skipped while smaller relevant rows that still
-fit are retained. Splitting does not drop older pending messages.
-Assistant replies and raw conversation transcripts are not persisted. At prompt
-time, synthesized entries are ranked using word overlap and recency. They share
-a 6,000-character reference budget with live channel context (4,000 for
-vision). Server scopes are shared only between enabled
-channels for the same requester; DM memory remains separate. Forget, opt-out,
-and purge remove entries, pending observations, and legacy data. Generation
-guards prevent an in-flight result from recreating deleted data.
 
 ### `features/teases.py`
 
@@ -507,7 +389,7 @@ registration due for retry every 30 minutes during that date; no successful
 greeting is repeated and no belated greeting is sent.
 Revision and date/year guards are repeated after generation to suppress stale
 work when a registration changes during delivery. Blocking LLM generation
-runs through `asyncio.to_thread`; greetings use no name, age, memory, history,
+runs through `asyncio.to_thread`; greetings use no name, age, history,
 or user-authored text. Scheduled delivery, failure, and state-write outcomes
 are recorded in analytics using the saved guild or DM scope.
 
@@ -745,8 +627,8 @@ repair/retry call.
 ### `features/help_feature.py`
 
 Provides `/help`. The help text is split into chunks below Discord's
-2,000-character limit and lists `/worth-it` in every memory mode. `HelpView`
-offers Reminders, Wishlist (including `/worth-it`), Flights and Memory
+2,000-character limit and lists `/worth-it`. `HelpView`
+offers Reminders, Wishlist (including `/worth-it`), and Flights
 categories plus a complete reference, and respects Discord's five buttons per
 row/five rows, including the onboarding return control on row 4. Complete
 reference renders slash-command descriptions and parameters.
@@ -756,13 +638,11 @@ reference renders slash-command descriptions and parameters.
 - `mention_utils.py` recognizes the configured bot mention, removes it from prompts, and resolves the bot's guild display name.
 - `llm/client.py` validates allowed/default model aliases and owns synchronous llama.cpp chat-completion calls, timeouts, optional API-key authentication, finite output limits, generation options, and optional JSON response schemas. It logs request start, completion, timeout, and HTTP-wait duration with model alias, prompt/output sizes, limit, timeout, and image presence, but never prompt or completion content.
 - `llm/responses.py` contains compact, cache-friendly prompt construction and fallback behavior for teases, mentions, summons, inactivity nudges, birthday greetings, and varied price-change commentary. Stable rules precede dynamic user, history, and price data. Short teases, summons, inactivity nudges, price messages, and birthday greetings use a 96-token generation budget. Wishlist price increases and decreases receive one generated reaction in a randomly selected funny, mock-corporate, playful, serious, enthusiastic, or melodramatically sad tone; exact prices remain in deterministic notification text.
-- `llm/memory_extraction.py` owns structured memory prompts and validation;
-  `llm/memory.py` owns memory caches, retrieval, batching, and commit guards.
 - `llm/capacity.py` coordinates one active action and two interactive waiters
   across processes using kernel-owned POSIX locks and FIFO tickets. Requests
   automatically acquire admission unless already inside a reserved action.
 - `llm/worker.py` owns the persistent bot queue and reservation cleanup for
-  mentions, reactions, and memory extraction.
+  mentions and reactions.
 - Mention prompts require a grounded new answer. Structured validation rejects
   malformed, empty, or obviously echoed completions and retries once.
 
@@ -775,18 +655,16 @@ reference renders slash-command descriptions and parameters.
 | Birthday check | Daily at 00:01, then 30-minute failure retries | Send due per-user birthday greetings once successfully delivered |
 | Inactivity check | 30 minutes | Nudge enabled guild channels quiet for 24 hours |
 | Sponsor maintenance | 1 hour | Warn about and clear expired sponsorships |
-| Memory extraction | 5 minutes by default, automatic mode only | Start new cycles on the consolidation interval; drain successful chunks after the active rest and exponentially back off failures up to the consolidation interval |
 | Flight tracker | 5 hours | Check at most one tracker per user |
 | Wishlist scraper | 12 hours | Refresh price/stock and issue alerts |
 | Exchange rates | 24 hours | Refresh EUR-relative conversion rates |
 
 Discord task loops run once shortly after being started. Features contain guards where an immediate post-restart run could waste quota or duplicate work.
 
-Teases, ordinary reactions, inactivity nudges, birthday greetings, memory
-synthesis, and optional price-change prose are opportunistic under shared
+Teases, ordinary reactions, inactivity nudges, birthday greetings, and optional
+price-change prose are opportunistic under shared
 capacity. A skipped birthday does not mark delivery complete; skipped inactivity
-does not reset activity. Their existing schedulers retry eligible work, as does
-the memory scheduler. Price notifications continue with deterministic text when
+does not reset activity. Their existing schedulers retry eligible work. Price notifications continue with deterministic text when
 generated prose is unavailable.
 
 ## Persistence model
@@ -823,17 +701,9 @@ Main tables:
 | `guild_joke_config` | Per-guild schedule and last-send date |
 | `guild_joke_sent` | Per-guild no-repeat joke history |
 | `settings` | Global key/value configuration |
-| `assistant_profiles` | One global preference row per Discord user, independent from memory |
+| `assistant_profiles` | One global preference row per Discord user |
 | `action_executions` | Idempotency claims for Discord messages, buttons, modals, and slash interactions |
 | `scraped_items` | Per-user wishlist entries, alert preferences/state, and latest check status |
-| `llm_response_feedback` | Compact requester-only rating metadata, including guild/model/prompt version |
-| `llm_memory_channels` | Per-channel guild switch for persistent conversational memory |
-| `llm_user_memories` | Legacy profile rows consumed by the one-time migration |
-| `llm_memory_entries` | Stable server- or DM-scoped rows: facts, impressions, likes, dislikes, topics, interests, opinions, and other memories |
-| `llm_memory_transcript` | Retired compatibility table cleared during migration; no new rows are written |
-| `llm_memory_observations` | Temporary user-authored messages awaiting cycle synthesis, deleted after success |
-| `llm_memory_progress` | Per-scope/channel completed checkpoint and optional active cycle endpoint |
-| `llm_memory_preferences` | Explicit per-user opt-in/opt-out state, stored separately from profiles |
 | `price_history` | Wishlist price observations |
 | `exchange_rates` | EUR-relative cached rates |
 | `flight_api_credentials` | Per-user SerpApi key |
@@ -921,18 +791,12 @@ return 422, blocked/unreachable targets return 502, and temporary extraction
 contention returns 503. Refresh also returns 503 for contention and preserves
 the existing snapshot and history on failed checks.
 
-### LLM settings, feedback, and inactivity
+### LLM settings and inactivity
 
 - `GET /llm/mention-model` (current alias and configured allow-list)
 - `PUT /llm/mention-model` (validated model alias)
-- `GET /llm/feedback/summary?guild_id=...` (category/model/prompt-version counts,
-  approval percentage, and a ten-rating comparison threshold)
 - `GET /inactivity/guilds/<guild_id>`
 - `PUT /inactivity/guilds/<guild_id>` (boolean enabled)
-
-Feedback is collected through requester reactions; there is no API endpoint
-that lets an operator submit ratings as arbitrary guild members. Reports do
-not train models or apply prompt changes automatically.
 
 ### Flights
 
@@ -991,8 +855,8 @@ counted and recording failures never block a command.
 The dashboard covers keywords, reminders, jokes and schedules, wishlist items
 and charts, flight credentials/trackers/charts, airport autocomplete, optional
 flight budgets, reminder lifecycle editing, mention-model selection,
-inactivity configuration, persistent-memory channel/user controls, arbitrary
-setting lookup, keyword rankings, LLM feedback summaries, and deployer-only
+inactivity configuration, arbitrary
+setting lookup, keyword rankings, and deployer-only
 analytics. Overview shows live CPU, temperature, memory, disk, and host uptime;
 it polls these host stats every 15 seconds only while Overview is visible.
 Analytics offers 7/30/90-day and all-time periods, optional server scope,
@@ -1022,42 +886,6 @@ Dashboard requests send Discord IDs as decimal strings and request string ID
 responses with `X-Discord-ID-Format: string`, avoiding JavaScript precision
 loss. Existing API clients keep numeric responses when the header is absent.
 Database record IDs remain numeric.
-
-### Persistent memory
-
-- `GET /memory/channels?guild_id=...`
-- `GET /memory/channels/<guild_id>/<channel_id>`
-- `PUT /memory/channels/<guild_id>/<channel_id>` (`enabled` boolean)
-- `GET /memory/users/<user_id>?scope_id=...` (scope `0` is DMs)
-- `PUT /memory/users/<user_id>/preference` (`scope_id`, `enabled`)
-- `DELETE /memory/users/<user_id>` (`scope_id`)
-- `DELETE /memory/guilds/<guild_id>` (`confirmation` must equal `PURGE`)
-
-These routes mirror `/llm-memory`, `/llm-memory-purge`, `/memory-show`,
-`/memory-forget`, `/memory-opt-in`, and `/memory-opt-out`. Opting out deletes
-the selected user's saved memory; forgetting retains their preference; a guild
-purge preserves channel settings and individual preferences. The Discord
-process refreshes API-edited channel/preferences caches within 30 seconds and
-reconciles process-local observation buffers before using them, preventing a
-stale queued batch from recreating API-deleted memory.
-The routes and dashboard remain available in manual mode for inspection,
-deletion, and preconfiguration. Channel and preference controls affect automatic
-mode; manual Discord commands remain requester-scoped.
-
-Settings are unrestricted global keys once API authentication succeeds.
-
-Analytics starts fresh when its schema is first initialized and does not infer
-historical activity from other tables. Command invocations count before command
-callback validation, while autocomplete is excluded. Mentions count once per
-human message even when cooldown or capacity rejects the request. Successful
-automatic and scheduled deliveries count after Discord accepts the send;
-completed processing counters are separate from user-facing activity. Stored
-analytics contain no message content, command arguments, credentials, or
-per-user history. Daily UTC totals are retained indefinitely.
-Failures are stored as a separate category and include application-command
-errors plus unsuccessful generation, Discord delivery, provider, and background
-processing operations. Only the fixed operation name is stored, never exception
-text or submitted values.
 
 ## Logging and configuration
 
@@ -1152,12 +980,11 @@ must differ.
 separate logger/file names. `LOG_DIR` controls the file location and
 `LOG_LEVEL` controls console/file verbosity, defaulting to `INFO`.
 LLM diagnostics record queue admission or rejection, scheduler skip reasons,
-memory batch/commit counts, HTTP lifecycle events, token/cache usage, and
+HTTP lifecycle events, token/cache usage, and
 llama-server prompt and generation timings. Each request receives a short
 correlation ID, while every line includes the logger name, process ID, and
 thread name. Logs include sizes and Discord/database IDs where useful but
-exclude message, prompt, completion, and image contents. `DEBUG` additionally
-records per-observation memory capture metadata.
+exclude message, prompt, completion, and image contents.
 
 Important environment values include:
 
@@ -1181,10 +1008,6 @@ Important environment values include:
 - `ASK_COOLDOWN_SECONDS`
 - `LLM_CONTEXT_MESSAGES`
 - `LLM_MENTION_MAX_TOKENS`
-- `LLM_MEMORY_ENABLED`
-- `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`
-- `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS`
-- `LLM_MEMORY_MAX_TOKENS`
 - `LLM_REACTION_CHANCE`
 - `LLM_REACTION_COOLDOWN_SECONDS`
 - `TEASE_LLM_ENHANCE`
@@ -1226,12 +1049,6 @@ The test suite mirrors the primary service boundaries and contains coverage for:
 - Birthday parsing, command registration, private save/delete behavior,
   destination replacement, due-date delivery, retries, race guards, mentions,
   analytics, and state-write failures
-- LLM feedback ownership and compact-rating persistence
-- Persistent-memory scoping, channel/user controls, thresholded cycle synthesis,
-  checkpoint recovery, failed-extraction retries, privacy invalidation, row
-  migration/corrections, input budgeting, throttling, and deletion races
-- Automatic/manual mode parsing and command registration, manual add/show,
-  normalized text deletion, server/DM isolation, and scheduler suppression
 - Contextual reaction selection, cooldowns, worker-idle behavior, and permission failures
 - Scraper URL validation and extraction methods
 - Currency conversion
@@ -1264,8 +1081,8 @@ ordering, and nullable/available host metrics including temperature.
 button/modal updates, missing data, invalid baselines, error recovery, and
 slash-option registration. `tests/test_chart_renderer.py` covers real PNG
 rendering, duplicate titles, percentage calculations, and time-axis formatting.
-Mention tests cover explicit requester tags, one-ping multipart replies, and
-feedback registration; command-naming tests cover the hyphen convention.
+Mention tests cover explicit requester tags and one-ping multipart replies;
+command-naming tests cover the hyphen convention.
 
 CI has both a Python 3.13 pytest workflow and a Docker build/Compose-validation
 workflow. Neither workflow starts a live Discord bot.

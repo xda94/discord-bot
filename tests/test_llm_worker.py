@@ -15,7 +15,6 @@ def _feature():
     feature = object.__new__(LLMMentionFeature)
     feature._user_pending = set()
     feature._user_last_ask = {}
-    feature._memory_pending = set()
     feature._reaction_pending_channels = set()
     feature._worker = SingleSlotWorker(
         feature._process_queued_job, feature._finish_queued_job,

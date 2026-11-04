@@ -7,20 +7,6 @@ logger = logging.getLogger("discord_bot")
 
 DISCORD_MESSAGE_LIMIT = 1900
 
-MANUAL_MEMORY_HELP_TEXT = (
-    "**/memory-add** `<type>` `<text>`\n"
-    "Save up to 200 characters for yourself as Likes, Dislikes, Facts, Interests, "
-    "Opinions, or Other. Server memories are available in every channel of that "
-    "server.\n\n"
-    "**/memory-show**\n"
-    "Privately show the complete memories saved about you here, grouped by type.\n\n"
-    "**/memory-erase** `[text]`\n"
-    "Paste the complete stored text to erase matching memories, or omit `text` "
-    "to erase all of your memory in this server or DM. Matching ignores case "
-    "and repeated whitespace.\n\n"
-)
-
-
 def _chunk_text(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     """Split `text` into chunks <= `limit` chars, breaking on paragraph
     boundaries (`\\n\\n`) so a command's description never gets cut in half.
@@ -158,79 +144,25 @@ HELP_TEXT = (
     "**/llm-inactivity** `<activate|deactivate>`\n"
     "Activate or deactivate automatic LLM inactivity nudges for this server. "
     "Requires the **Manage Server** permission.\n\n"
-    "**/llm-memory** `<activate|deactivate|status>`\n"
-    "Manage persistent user memory in the current channel. Memory starts disabled, "
-    "and changing it requires **Manage Server**. Activation posts a public privacy "
-    "notice. Deactivation stops capture/use but retains saved memory.\n\n"
-    "**/llm-memory-purge** `<confirmation>`\n"
-    "Server managers can enter `PURGE` to permanently remove all saved memory "
-    "for this server. Channel settings and individual opt-outs remain unchanged.\n\n"
-    "**/memory-show**\n"
-    "Privately show the saved memory synthesis for you in this server or DM, including "
-    "facts, impressions, preferences, interests, opinions, and topics. Raw chat is "
-    "deleted after synthesis.\n\n"
-    "**/memory-forget**\n"
-    "Erase all saved memory and pending observations here without opting out.\n\n"
-    "**/memory-opt-out** / **/memory-opt-in**\n"
-    "Stop and erase persistent memory for yourself, or enable it again. DM memory "
-    "is separate from server memory and requires explicit opt-in.\n\n"
     "**@bot** (mention)\n"
     "Ping the bot: it replies directly in the thread — no model name, no question "
     "echo, no thinking message. Empty ping gets a short \"what do you need?\" style "
     "reply; ping with text gets an LLM answer using your saved language/tone/detail preferences "
     "unless the request explicitly overrides them. Model: `MENTION_LLAMA_CPP_MODEL` "
-    "in `.env`. In memory-enabled channels, the same requester's synthesized facts, "
-    "impressions, preferences, and topics supplement live chat history. One request per user at a time with "
+    "in `.env`. One request per user at a time with "
     "a cooldown after completion. "
     "Set `BOT_ID` in `.env` to your bot's user ID.\n\n"
-    "The person who asked may manually add 👍 or 👎 to an LLM mention reply. "
-    "Contextual emoji reactions are added to human messages, never as seeded feedback "
-    "on bot replies. Feedback from anyone else is ignored.\n\n"
-    "**/llm-feedback-summary**\n"
-    "Server managers can compare rated LLM reply configurations for this server. "
-    "The report needs at least 10 ratings per model/prompt combination before "
-    "it marks a comparison as ready.\n\n"
     "**/help**\n"
     "Show this message."
 )
 
 
-def build_help_text(automatic_memory_enabled: bool, memory_disabled: bool = False) -> str:
-    memory_start = HELP_TEXT.index("**/llm-memory**")
-    mention_start = HELP_TEXT.index("**@bot** (mention)")
-    if memory_disabled:
-        text = HELP_TEXT[:memory_start] + HELP_TEXT[mention_start:]
-        return text.replace(
-            " In memory-enabled channels, the same requester's synthesized facts, "
-            "impressions, preferences, and topics supplement live chat history.",
-            "",
-        )
-    if automatic_memory_enabled:
-        return HELP_TEXT
-
-    text = HELP_TEXT[:memory_start] + MANUAL_MEMORY_HELP_TEXT + HELP_TEXT[mention_start:]
-    return text.replace(
-        "In memory-enabled channels, the same requester's synthesized facts, "
-        "impressions, preferences, and topics supplement live chat history.",
-        "The requester's manually saved memories and any existing synthesized "
-        "memories supplement live chat history throughout the current server or DM.",
-    )
-
-
 class HelpFeature:
     """The /help command."""
 
-    def __init__(
-        self,
-        client: discord.Client,
-        tree: app_commands.CommandTree,
-        *,
-        automatic_memory_enabled: bool = True,
-        memory_disabled: bool = False,
-    ):
+    def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
         self.client = client
         self.tree = tree
-        self.help_text = build_help_text(automatic_memory_enabled, memory_disabled)
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -245,7 +177,6 @@ class HelpFeature:
             lang = display_language(interaction, db.get_assistant_profile(interaction.user.id))
             await interaction.response.send_message(
                 t('help', lang),
-                view=HelpView(interaction.user.id, lang, self.tree,
-                              memory_disabled='/memory-' not in self.help_text),
+                view=HelpView(interaction.user.id, lang, self.tree),
                 ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
             )

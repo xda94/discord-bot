@@ -1,14 +1,11 @@
 import asyncio
 import json
 import logging
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
-from discord import app_commands
 
-import db
 from llm.client import LlamaCppError
 from features.llm_mention import (
     AskJob,
@@ -16,18 +13,10 @@ from features.llm_mention import (
     ReactionJob,
     strip_leading_reply_labels,
 )
-from features.user_memory import UserMemoryFeature
-from llm.memory_extraction import generate_memory_delta
 from llm.responses import (
     MentionResult,
     generate_mention_result,
 )
-
-
-def _memory_feature():
-    client = discord.Client(intents=discord.Intents.none())
-    tree = app_commands.CommandTree(client)
-    return client, UserMemoryFeature(client, tree)
 
 
 def _message(content="hello", *, user_id=7, guild_id=100, channel_id=10):
@@ -59,7 +48,6 @@ def test_reply_label_cleanup_handles_real_prefix_and_preserves_natural_name():
 
 def test_reply_sender_adds_only_one_requester_mention_with_bot_label():
     feature = object.__new__(LLMMentionFeature)
-    feature.feedback = None
     original = SimpleNamespace(reply=AsyncMock())
     job = AskJob(
         user=SimpleNamespace(id=123, display_name="Robeeque", name="robeeque"),
@@ -76,7 +64,6 @@ def test_reply_sender_adds_only_one_requester_mention_with_bot_label():
 
 def test_worker_sends_only_corrected_answer_after_labeled_short_echo(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
-    feature.feedback = None
     original = SimpleNamespace(reply=AsyncMock(), add_reaction=AsyncMock())
     job = AskJob(
         user=SimpleNamespace(id=123, display_name="Robeeque", name="robeeque"),
@@ -101,7 +88,6 @@ def test_worker_sends_only_corrected_answer_after_labeled_short_echo(monkeypatch
 
 def test_worker_never_posts_a_repeated_question_after_both_attempts_fail(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
-    feature.feedback = None
     original = SimpleNamespace(reply=AsyncMock(), add_reaction=AsyncMock())
     job = AskJob(
         user=SimpleNamespace(id=123, display_name="Robeeque"),
@@ -262,7 +248,6 @@ def test_no_reaction_choice_does_not_touch_message(monkeypatch):
 
 def test_mention_result_reacts_to_original_message(monkeypatch):
     feature = object.__new__(LLMMentionFeature)
-    feature.memory = None
     feature._reaction_pending_channels = set()
     feature._reaction_last_attempt = {}
     feature._reply_mention = AsyncMock(return_value="Felicitări!")
@@ -290,7 +275,6 @@ def test_mention_result_reacts_to_original_message(monkeypatch):
 def test_mention_reaction_permission_failure_is_nonfatal(monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="discord_bot")
     feature = object.__new__(LLMMentionFeature)
-    feature.memory = None
     feature._reaction_pending_channels = set()
     feature._reaction_last_attempt = {}
     feature._reply_mention = AsyncMock(return_value="Felicitări!")
@@ -319,213 +303,3 @@ def test_mention_reaction_permission_failure_is_nonfatal(monkeypatch, caplog):
     assert caplog.records[-1].exc_info is None
 
 
-def test_memory_rows_accumulate_beyond_old_limit_and_correct_one_entry(tmp_db):
-    additions = [
-        {
-            "kind": "fact",
-            "content": f"Durable preference {index}: " + "x" * 240,
-            "source_text": f"source {index}",
-        }
-        for index in range(20)
-    ]
-    assert db.apply_llm_memory_delta(100, 7, additions, (), ())
-    rows = db.get_llm_memory_entries(100, 7)
-    assert sum(len(row[2]) for row in rows) > 4000
-    assert all(row[3].startswith("sha256:") and "source" not in row[3] for row in rows)
-    target_id = rows[-1][0]
-
-    correction = {
-        "id": target_id,
-        "kind": "fact",
-        "content": "Corrected durable preference",
-        "source_text": "I prefer this now",
-    }
-    assert db.apply_llm_memory_delta(100, 7, (), (correction,), ())
-    updated = db.get_llm_memory_entries(100, 7)
-    assert any(row[0] == target_id and row[2] == correction["content"] for row in updated)
-    assert len(updated) == 20
-
-
-def test_memory_delta_validates_source_and_target(monkeypatch):
-    existing = [{"id": 5, "kind": "fact", "content": "Prefers Python"}]
-    monkeypatch.setattr(
-        "llm.client.query_llm",
-        lambda *args, **kwargs: (
-            '{"add":[],"correct":[{"id":5,"kind":"fact",'
-            '"content":"Prefers Rust","source_index":0}]}'
-        ),
-    )
-    result = generate_memory_delta(existing, ["I prefer Rust now"], model="discord-bot")
-    assert result.successful is True
-    assert result.corrections[0]["source_text"] == "I prefer Rust now"
-
-    monkeypatch.setattr(
-        "llm.client.query_llm",
-        lambda *args, **kwargs: (
-            '{"add":[],"correct":[{"id":99,"kind":"fact",'
-            '"content":"Prefers Rust","source_index":0}]}'
-        ),
-    )
-    assert generate_memory_delta(existing, ["I prefer Rust"], model="discord-bot").successful is False
-
-
-def test_memory_delta_prompt_and_schema_use_available_source_indexes(monkeypatch):
-    captured = {}
-
-    def query(prompt, **kwargs):
-        captured["prompt"] = prompt
-        captured["schema"] = kwargs["response_schema"]
-        return '{"add":[],"correct":[]}'
-
-    monkeypatch.setattr("llm.client.query_llm", query)
-
-    result = generate_memory_delta(
-        [], ["First observation", "Second observation"], model="discord-bot"
-    )
-
-    assert result.successful is True
-    assert '"source_index": 0, "content": "First observation"' in captured["prompt"]
-    assert '"source_index": 1, "content": "Second observation"' in captured["prompt"]
-    assert (
-        "fact, impression, like, dislike, topic, interest, opinion, or other"
-        in captured["prompt"]
-    )
-    for key in ("add", "correct"):
-        properties = captured["schema"]["properties"][key]["items"]["properties"]
-        source_index = properties["source_index"]
-        assert source_index["minimum"] == 0
-        assert source_index["maximum"] == 1
-        assert properties["kind"]["enum"] == [
-            "fact",
-            "impression",
-            "like",
-            "dislike",
-            "topic",
-            "interest",
-            "opinion",
-            "other",
-        ]
-
-
-def test_memory_delta_keeps_entries_subject_neutral_and_excludes_bot_subjects(
-    monkeypatch,
-):
-    captured = {}
-
-    def query(prompt, **kwargs):
-        captured["prompt"] = prompt
-        return (
-            '{"add":['
-            '{"kind":"fact","content":"Nova prefers a manual razor",'
-            '"source_index":0},'
-            '{"kind":"fact","content":"The user likes tea",'
-            '"source_index":1},'
-            '{"kind":"fact","content":"Prefers a manual razor",'
-            '"source_index":2}],"correct":[]}'
-        )
-
-    monkeypatch.setattr("llm.client.query_llm", query)
-
-    result = generate_memory_delta(
-        [],
-        ["I use a razor", "I like tea", "I prefer a manual razor"],
-        model="discord-bot",
-        bot_names=("Nova",),
-    )
-
-    assert result.successful is True
-    assert [entry["content"] for entry in result.additions] == [
-        "Prefers a manual razor"
-    ]
-    assert "subject-neutral" in captured["prompt"]
-    assert "Nova" in captured["prompt"]
-    assert "never to the memory owner" in captured["prompt"]
-
-
-def test_memory_delta_accepts_profile_synthesis_categories(monkeypatch):
-    monkeypatch.setattr(
-        "llm.client.query_llm",
-        lambda *args, **kwargs: (
-            '{"add":['
-            '{"kind":"like","content":"Likes tea","source_index":0},'
-            '{"kind":"impression","content":"Seems methodical","source_index":1}'
-            '],"correct":[]}'
-        ),
-    )
-
-    result = generate_memory_delta(
-        [], ["I love tea", "I check every step twice"], model="discord-bot"
-    )
-
-    assert result.successful is True
-    assert [entry["kind"] for entry in result.additions] == ["like", "impression"]
-
-
-def test_raw_transcript_is_not_persisted(tmp_db):
-    assert db.add_llm_memory_transcript(100, 7, 10, "user", "private chat") is False
-    assert db.get_llm_memory_transcript(100, 7) == []
-
-
-def test_old_profile_migrates_once_with_stable_rows(tmp_db):
-    db.set_llm_user_memory(100, 7, "# Preferences\n- Likes Python\n1. Owns a cat")
-    db.init_db()
-    first = db.get_llm_memory_entries(100, 7)
-    db.init_db()
-    second = db.get_llm_memory_entries(100, 7)
-
-    assert [(row[0], row[2]) for row in first] == [(row[0], row[2]) for row in second]
-    assert {row[2] for row in first} == {
-        "Preferences: Likes Python",
-        "Preferences: Owns a cat",
-    }
-    assert db.get_llm_user_memory(100, 7) is None
-
-
-def test_pending_observations_survive_restart_and_become_eligible(tmp_db):
-    db.set_llm_memory_channel_enabled(100, 10, True)
-    client, feature = _memory_feature()
-    message = _message("I am building a Discord bot 0")
-    for index in range(50):
-        message.clean_content = f"I am building a Discord bot {index}"
-        asyncio.run(feature.handle_message(message))
-    asyncio.run(client.close())
-
-    client2, restored = _memory_feature()
-    batches = restored.eligible_batches(now=time.time() + 10 * 60 + 1)
-    assert len(batches) == 1
-    assert len(batches[0].observations) == 50
-    asyncio.run(client2.close())
-
-
-def test_commit_rejects_change_without_supporting_user_message(tmp_db):
-    db.set_llm_memory_channel_enabled(100, 10, True)
-    client, feature = _memory_feature()
-    message = _message("I prefer Rust")
-    asyncio.run(feature.handle_message(message))
-    batch = feature.context_for(message).batch
-
-    assert feature.commit_delta(
-        batch,
-        ({"kind": "fact", "content": "Prefers Go", "source_text": "invented"},),
-        (),
-    ) is False
-    assert db.get_llm_memory_entries(100, 7) == []
-    assert feature.context_for(message).batch is not None
-    asyncio.run(client.close())
-
-
-def test_forget_deletes_entries_and_pending_observations(tmp_db):
-    db.set_llm_memory_channel_enabled(100, 10, True)
-    db.apply_llm_memory_delta(
-        100,
-        7,
-        ({"kind": "fact", "content": "Likes Python", "source_text": "source"},),
-        (),
-        (),
-    )
-    db.add_llm_memory_observation(100, 7, 100, 10, "pending")
-
-    assert db.delete_all_llm_user_memory(100, 7) == 2
-    assert db.get_llm_memory_entries(100, 7) == []
-    assert db.get_llm_memory_transcript(100, 7) == []
-    assert db.get_llm_memory_observations(100, 7) == []

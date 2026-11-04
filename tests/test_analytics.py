@@ -288,7 +288,6 @@ def test_multipart_llm_delivery_counts_once_and_failed_delivery_is_not_counted(m
                 raise RuntimeError("send failed")
 
     feature = llm_mention.LLMMentionFeature.__new__(llm_mention.LLMMentionFeature)
-    feature.feedback = None
     user = SimpleNamespace(id=5, display_name="User", name="User")
     text = "word " * 900
     success_job = llm_mention.AskJob(

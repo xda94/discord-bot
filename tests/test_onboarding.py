@@ -57,7 +57,7 @@ def test_start_registers_private_language_screen_without_writes(tmp_db):
         assert current.timeout==600 and current.screen=='language'
         assert current.language=='ro'
         assert {option.value for option in current.children[0].options}=={'en','ro','auto'}
-        assert next(option for option in current.children[0].options if option.default).value=='auto'
+        assert not any(option.default for option in current.children[0].options)
         assert db.get_assistant_profile(1) is None
     asyncio.run(run())
 
@@ -73,12 +73,9 @@ def test_language_selection_updates_only_language_and_same_message(tmp_db,code,l
         event=await select(current,code,locale=locale)
         saved=db.get_assistant_profile(1)
         assert saved==dict(original,language=code)
-        assert current.language==expected and current.screen=='timezone'
+        assert current.language==expected and current.screen=='ready'
         assert event.response.edit_message.await_args.kwargs['view'] is current
         event.response.send_message.assert_not_awaited()
-        values=[option.value for option in current.children[0].options]
-        assert values==list(onboarding.COMMON_TIMEZONES)
-        assert next(option for option in current.children[0].options if option.default).value=='Europe/Bucharest'
     asyncio.run(run())
 
 
@@ -109,12 +106,51 @@ def test_existing_profile_skip_and_reopen_reread_saved_preferences(tmp_db):
         current=view('ro',profile=initial)
         await select(current,'ro')
         db.set_assistant_profile(1,language='en',timezone='Europe/Lisbon')
-        await button(current,'skip_now')
+        await button(current,'change_timezone')
         assert current.language=='en'
+        assert 'Europe/Lisbon' in current.content()
+        await button(current,'skip_now')
         assert 'Europe/Lisbon' in current.content() and 'Relative reminders' not in current.content()
-        await button(current,'change_language')
-        assert next(option for option in current.children[0].options if option.default).value=='en'
         assert db.get_assistant_profile(1)['tone']=='playful'
+    asyncio.run(run())
+
+
+def test_first_setup_asks_for_timezone_once(tmp_db):
+    async def run():
+        current=view()
+        await select(current,'en')
+        assert current.screen=='timezone'
+        assert [option.value for option in current.children[0].options]==list(onboarding.COMMON_TIMEZONES)
+        await select(current,'Europe/Bucharest')
+        assert current.screen=='ready'
+        assert db.get_assistant_profile(1)['timezone']=='Europe/Bucharest'
+    asyncio.run(run())
+
+
+def test_saved_timezone_can_be_picked_again(tmp_db):
+    saved=db.set_assistant_profile(1,timezone='Europe/Bucharest')
+    async def run():
+        current=view(profile=saved)
+        await select(current,'en')
+        await button(current,'change_timezone')
+        assert not any(option.default for option in current.children[0].options)
+        await select(current,'Europe/Bucharest')
+        assert current.screen=='ready'
+    asyncio.run(run())
+
+
+def test_browse_screens_do_not_repeat_the_timezone_prompt(tmp_db):
+    prompt=t('setup_timezone','en')
+    async def run():
+        current=view()
+        await select(current,'en')
+        assert prompt in current.content()
+        await button(current,'browse_timezones')
+        assert prompt not in current.content() and t('setup_regions','en') in current.content()
+        await select(current,'Europe')
+        assert prompt not in current.content() and 'Europe' in current.content()
+        await select(current,current.children[0].options[0].value)
+        assert current.screen=='ready'
     asyncio.run(run())
 
 
@@ -240,6 +276,7 @@ def test_save_failure_retains_screen_and_offers_owned_retry(tmp_db,monkeypatch,f
         current=view(profile=original)
         if field=='timezone':
             await select(current,'en')
+            await button(current,'change_timezone')
         screen=current.screen
         monkeypatch.setattr(db,'set_assistant_profile',Mock(return_value=None,side_effect=RuntimeError('failure') if failure=='exception' else None))
         await select(current,'ro' if field=='language' else 'UTC')
@@ -253,7 +290,7 @@ def test_save_failure_retains_screen_and_offers_owned_retry(tmp_db,monkeypatch,f
         event=interaction()
         await retry.callback(event)
         assert db.set_assistant_profile.call_args.kwargs=={field:'ro' if field=='language' else 'UTC'}
-        assert current.screen==('timezone' if field=='language' else 'ready')
+        assert current.screen=='ready'
         assert db.get_assistant_profile(1)['currency']=='EUR'
         event.response.send_message.assert_not_awaited()
     asyncio.run(run())
@@ -315,16 +352,15 @@ def test_wishlist_category_lists_worth_it_and_community_is_gone(tmp_db):
     asyncio.run(run())
 
 
-def test_help_reference_discovers_commands_and_filters_disabled_memory(tmp_db):
+def test_help_reference_discovers_commands(tmp_db):
     async def run():
-        current=onboarding.HelpView(1,'en',tree('remind','wishlist-show','memory-show','llm-memory','llm-memory-purge'),memory_disabled=True)
+        current=onboarding.HelpView(1,'en',tree('remind','wishlist-show'))
         assert 'Memory' not in [getattr(child,'label',None) for child in current.children]
         event=interaction()
         full=next(child for child in current.children if getattr(child,'label',None)=='Complete reference')
         await full.callback(event)
         content=event.response.send_message.await_args.args[0]
         assert '/wishlist-show' in content
-        assert '/memory-' not in content and '/llm-memory' not in content
         bad=interaction(user_id=2)
         await full.callback(bad)
         assert 'another user' in bad.response.send_message.await_args.args[0]

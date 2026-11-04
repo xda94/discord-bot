@@ -1,6 +1,6 @@
 # Discord Keyword Responder Bot
 
-A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, global per-user assistant profiles, automatic or user-managed per-user LLM memory, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
+A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, global per-user assistant profiles, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
 ---
 
@@ -61,7 +61,6 @@ LLAMA_CPP_BASE_URL=http://127.0.0.1:8080
 LLAMA_CPP_DEFAULT_MODEL=discord-bot
 LLAMA_CPP_ALLOWED_MODELS=discord-bot
 LLM_MENTION_MAX_TOKENS=384
-LLM_MEMORY_ENABLED=0
 ```
 
 | Variable | Required | Notes |
@@ -73,7 +72,7 @@ LLM_MEMORY_ENABLED=0
 | `API_TOKEN` | Required (API data routes) | Data/configuration routes require `Authorization: Bearer <token>` and return HTTP 503 when unset. Dashboard/static assets and `/health` are public. |
 | `SPONSOR_PASSWORD` | No (bot) | Password required by the `/sponsor-set` and `/sponsor-set-tiers` Discord modals. Dashboard tier writes use `API_TOKEN` instead. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
-| `LOG_LEVEL` | No | Logging verbosity for console and rotating files. Default: `INFO`; use `DEBUG` to include per-observation memory capture metadata. |
+| `LOG_LEVEL` | No | Logging verbosity for console and rotating files. Default: `INFO`. |
 | `LLAMA_CPP_BASE_URL` | No (bot) | `llama-server` base URL. Default: `http://127.0.0.1:8080`. Docker defaults to `http://host.docker.internal:8080`. A URL ending in `/v1` is also accepted. |
 | `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
@@ -84,14 +83,9 @@ LLM_MEMORY_ENABLED=0
 | `LLM_CAPACITY_DIR` | No | Shared POSIX lock directory for bot/API LLM capacity. Defaults to `.llm-capacity` beside `DB_FILE`; Compose uses `/data/.llm-capacity` for both services. |
 | `LLAMA_CPP_API_KEY` | No | Optional bearer token when `llama-server` is configured to require an API key. |
 | `ASK_COOLDOWN_SECONDS` | No (bot) | Per-user cooldown for mentions after each answer finishes. Default: `60` (1 minute). |
-| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Synthesized memory and live context share a 6,000-character budget (4,000 for vision). Default: `0`. Set it to `5` so the bot can answer questions about recent messages and pick up the channel's language for very short questions; every extra message makes each reply slower on a CPU-only host. |
+| `LLM_CONTEXT_MESSAGES` | No (bot) | Maximum number of recent live channel messages considered for mentions. Live context has a 6,000-character budget (4,000 for vision). Default: `0`. Set it to `5` so the bot can answer questions about recent messages and pick up the channel's language for very short questions; every extra message makes each reply slower on a CPU-only host. |
 | `LLM_MENTION_MAX_TOKENS` | No (bot) | Maximum output tokens for one @mention reply. Default: `384`; minimum: `1`. With `LLM_MENTION_THINKING=1` this budget also covers the hidden reasoning, so leave room for llama-server's `--reasoning-budget`. |
-| `LLM_MENTION_THINKING` | No (bot) | `1` lets thinking models reason before @mention replies; every other request (teases, reactions, summons, birthdays, memory) always disables thinking. Requires a bounded `--reasoning-budget` on llama-server. Improves answers about chat history at the cost of slower replies. Default: off. |
-| `LLM_MEMORY_DISABLED` | No (bot) | `1` turns LLM memory off entirely: no `/memory-*` or `/llm-memory*` commands, no automatic capture, and no saved memory in mention prompts (yours or other people's). Overrides `LLM_MEMORY_ENABLED`. Saved notes add a few hundred tokens to every mention, which on a CPU-only host is often the largest part of the reply time. Default: off. |
-| `LLM_MEMORY_ENABLED` | No (bot) | Memory mode selected at startup. Only `1` enables automatic channel capture and synthesis. `0`, a missing value, or an invalid value uses manual memory through `/memory-add`, `/memory-show`, and `/memory-erase`. Restart the bot after changing it. |
-| `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS` | No (bot) | Automatic mode only. Interval between scans that may start new memory cycles and cap for consecutive-failure backoff. Default: `300` (5 minutes); minimum: `1`. A new channel cycle needs 50 captured, permitted messages that are each at least 600 seconds old. |
-| `LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS` | No (bot) | Automatic mode only. Rest between successful chunks and base interval for consecutive-failure backoff while a memory cycle is active. Default: `300` (5 minutes); minimum: `1`. |
-| `LLM_MEMORY_MAX_TOKENS` | No (bot) | Automatic mode only. Maximum output tokens for one memory extraction. Default: `1024`; minimum: `1`. |
+| `LLM_MENTION_THINKING` | No (bot) | `1` lets thinking models reason before @mention replies; every other request (teases, reactions, summons, birthdays) always disables thinking. Requires a bounded `--reasoning-budget` on llama-server. Improves answers about chat history at the cost of slower replies. Default: off. |
 | `LLM_REACTION_CHANCE` | No (bot) | Chance that an eligible ordinary message is considered for one contextual emoji reaction. Default: `0.10`. |
 | `LLM_REACTION_COOLDOWN_SECONDS` | No (bot) | Shared per-channel cooldown for contextual reactions. Default: `60`. |
 | `TEASE_LLM_ENHANCE` | No (bot) | Rewrite random teases through llama.cpp. Default: `true`. Set `false` to disable generated teases. |
@@ -130,16 +124,14 @@ unresponsive even though the bot's event loop itself is not blocked.
 Keep `--ctx-size` at `4096` or more (per slot, when `--parallel` is above 1). A
 mention prompt is about 250 tokens of instructions; with
 `LLM_CONTEXT_MESSAGES=5` and typical chat it grows to roughly 450 tokens, but
-with the full 6,000-character memory and history budget it reaches about 2,300
+with the full 6,000-character history budget it reaches about 2,300
 tokens. A 2048-token context then rejects the request and the mention reply
 fails.
 
 On a CPU-only host, reading the prompt takes most of the reply time (an Intel
 N150 with three threads reads about 11 tokens per second). Set
 `LLM_CONTEXT_MESSAGES` to `5`: enough for questions about recent messages, at
-about 100 tokens of typical chat. Saved memory notes are usually the largest
-part of the prompt (20 notes add roughly 250–500 tokens), so on a slow host consider
-`LLM_MEMORY_DISABLED=1`.
+about 100 tokens of typical chat.
 
 `--swa-full --cache-reuse 64` let every mention reuse the already processed
 instructions (about 250 tokens) instead of reading them again; Gemma 4's
@@ -278,7 +270,7 @@ IP from a phone or computer on the same network and sign in with the same
 sent as an `Authorization: Bearer` header, and removed on logout or an
 unauthorized response. The dashboard manages
 keywords, reminders, birthdays, jokes, wishlist items, flight trackers, and bot settings.
-It also manages persistent LLM memory channels and user controls, and shows
+It also shows
 saved keyword/LLM/price analytics plus live mini PC CPU, temperature, memory,
 disk, and uptime metrics. Server and user IDs select records; they are not an
 authentication mechanism. Under Bot settings it also manages the global sponsor
@@ -348,8 +340,9 @@ Timezone setup is optional: Skip preserves any saved timezone and writes
 nothing. Relative reminders work without a confirmed timezone; calendar and
 recurring schedules require one, including when your choice is UTC. Language
 and timezone changes preserve your other preferences, and reopening `/start`
-begins with your current language setting. Controls belong to the requester
-and expire after ten minutes.
+begins with your current language setting. If a timezone is already confirmed,
+choosing a language goes straight to the ready screen, where Change timezone
+is available. Controls belong to the requester and expire after ten minutes.
 
 ### Birthdays
 
@@ -505,18 +498,9 @@ Successful flight observations, price history, budget crossing state, and any ne
 | `/stats` | Portable Windows/Linux/macOS host stats: platform, CPU/cores, RAM, current drive/filesystem, network, uptime, and bot memory. Temperature/load show `N/A` when the host does not expose them. |
 | `/llm-set <model>` | Set the allowed llama.cpp model alias used when the bot is mentioned. **60s cooldown** per user for mentions. |
 | `/llm-inactivity <activate\|deactivate>` | Enable or disable LLM-generated inactivity nudges for this server. Requires **Manage Server** permission. Existing servers default to enabled. |
-| `/llm-memory <activate\|deactivate\|status>` | Automatic mode (`LLM_MEMORY_ENABLED=1`) only. Manage memory capture in the current channel; requires **Manage Server**. |
-| `/llm-memory-purge <confirmation>` | Automatic mode only. Delete all saved memory for this server by entering `PURGE`. Channel settings and user opt-outs are preserved. |
-| `/memory-add <type> <text>` | Manual mode only. Save up to 200 characters as Likes, Dislikes, Facts, Interests, Opinions, or Other in the current server or DM. |
-| `/memory-show` | Privately show your complete saved memories, grouped by type, in the current server or DM. Available in both modes. |
-| `/memory-erase [text]` | Manual mode only. Paste complete stored text to erase its matches, ignoring case and repeated whitespace; omit `text` to erase everything here. |
-| `/memory-forget` | Automatic mode only. Erase synthesized entries and pending observations here without opting out. |
-| `/memory-opt-out` | Automatic mode only. Stop memory and erase all of your memory data in the current server or DM. |
-| `/memory-opt-in` | Automatic mode only. Re-enable memory for you; required before automatic memory can operate in DMs. |
 | `@bot` | Replies in-thread and tags the requester once. Empty ping → short prompt back; with text → one direct LLM answer. |
 | `@bot <text>` | Uses `MENTION_LLAMA_CPP_MODEL` and the configured recent context to resolve brief questions; returns one ready-to-send reply in the current message's language rather than response options. |
 | `@bot` + image | Inspects the first processable directly attached JPEG, PNG, GIF, WebP, BMP, or TIFF. With a caption it answers that request; without one it gives a concise description. |
-| `/llm-feedback-summary` | Manage Server only; review this server’s rated reply configurations, administrator recommendations, and groups qualified after 10 likes. |
 
 Vision requests accept JPEG, PNG, GIF, WebP, BMP, and TIFF directly attached to
 the mention, using the first image that can be processed in attachment order.
@@ -533,9 +517,9 @@ one-image limit. Text and image mentions share capacity with
 API inference: one active action and at most two interactive waiters, served
 in FIFO order. Further requests receive a retry-later response; each user can
 have only one pending mention. Attachment bytes are
-downloaded only after a job is admitted, are never logged or persisted, and are
-never included in memory consolidation. Vision jobs reserve more model context
-for image tokens by limiting memory plus recent history to 4,000 characters
+downloaded only after a job is admitted and are never logged or persisted.
+Vision jobs reserve more model context for image tokens by limiting recent
+history to 4,000 characters
 instead of the normal 6,000.
 
 Image inference uses `LLAMA_CPP_VISION_TIMEOUT` (600 seconds by default) to allow
@@ -547,7 +531,7 @@ without image contents. Resizing can lose small text; use a crop or raise
 `LLM_IMAGE_MAX_EDGE` when needed. These limits do not guarantee a completion time.
 
 If a vision reply claims that no image is available, the bot retries once with
-the same image and current question, without old chat or memory that might
+the same image and current question, without old chat that might
 reinforce that claim. The retry preserves the user's language and style profile.
 A repeated denial is reported as a processing failure;
 it is not sent as a request to re-upload an already valid PNG/JPEG.
@@ -569,9 +553,9 @@ Bot and API coordinate through POSIX file locks in `LLM_CAPACITY_DIR`. The bot
 reserves capacity before queuing a job and holds the same reservation across
 retries. Cancelling an async caller
 retains execution capacity while its HTTP worker thread is still running.
-Teases, ordinary reactions, inactivity nudges, birthday greetings, memory
-synthesis, and optional price-change prose run only when shared capacity is
-idle and take no interactive waiting positions. Birthday, memory, and inactivity
+Teases, ordinary reactions, inactivity nudges, birthday greetings, and optional
+price-change prose run only when shared capacity is idle and take no interactive
+waiting positions. Birthday and inactivity
 work remains eligible for its existing scheduler after a skip; deterministic
 price notifications still continue without generated prose.
 
@@ -584,12 +568,8 @@ prove that llama-server has stopped its remote computation.
 Mention prompts tell the model who it is (the bot's server nickname) and who it
 is replying to (the requester's display name), and ask it to start with the
 answer. In chat history and replied-to messages, the bot's own lines are marked
-`Name (you):`. Saved memory is labelled as notes about the requester, who is
-addressed as `you` rather than having their details adopted as the assistant's
-own. When a mention also @mentions other server members, up to two of their saved
-profiles (1,000 characters each) are included as notes about them, so the bot can
-answer questions such as "what do you know about @Alex?". Members who opted out,
-channels without memory (automatic mode), and DMs are excluded. Validation removes leading requester/bot labels before comparing
+`Name (you):`.
+Validation removes leading requester/bot labels before comparing
 the reply with the question, including short questions and differences in
 case, punctuation, or diacritics. Echoes receive one corrective retry; a second
 echo produces a generation-failure message instead of posting the question.
@@ -601,21 +581,19 @@ Mention answers and empty-ping summons also use a concise system instruction
 that asks for a ready-to-send final answer without thinking, analysis, planning,
 or preamble. It is intended to preserve the reply budget for visible output;
 the existing token defaults and configuration remain unchanged. Teases,
-reactions, inactivity messages, birthdays, memory extraction, scraper calls,
+reactions, inactivity messages, birthdays, scraper calls,
 and other generators do not receive this instruction. Model and chat-template
 behavior varies, so the instruction reduces unwanted thinking output but cannot
 guarantee its suppression.
 
 Every inference request has an output-token limit: 384 by default for mention
-replies, 96 for short social replies, 32 for reactions, and 1,024 by default
-for memory extraction. Configure mention replies with
-`LLM_MENTION_MAX_TOKENS` and memory extraction with `LLM_MEMORY_MAX_TOKENS`.
+replies, 96 for short social replies, and 32 for reactions. Configure mention
+replies with `LLM_MENTION_MAX_TOKENS`.
 The HTTP timeout limits the client's wait; it is not a server CPU limit.
-Token-limit-truncated responses are treated as failures so incomplete memory
-extractions cannot acknowledge and delete their source messages.
+Token-limit-truncated responses are treated as failures.
 
 Logs include queue admission/rejection, job start/end, scheduler skip reasons,
-memory batch and commit counts, HTTP lifecycle events, prompt/output sizes,
+HTTP lifecycle events, prompt/output sizes,
 token usage, prompt-cache usage, and llama-server prompt/generation timings,
 without message, prompt, completion, or image contents. Each inference gets a
 short request ID for correlation, and every log line includes the logger name,
@@ -623,84 +601,11 @@ process ID, and thread name. A job-start line without a request-start line
 points to preparation; a request-start line followed by a long HTTP wait points
 to llama-server or the connection. CPU usage during model inference is
 expected; these logs help distinguish slow inference from a bot stall. Set
-`LOG_LEVEL=DEBUG` for per-observation memory capture metadata. The deployed
+`LOG_LEVEL=DEBUG` for more detail. The deployed
 llama-server process must be inspected separately to confirm which process is
 consuming CPU.
 
-The bot may react to the original human message with a contextual emoji. It
-does not seed feedback reactions on its own reply. The requester may manually
-add 👍 or 👎 to that reply to rate the answer; reactions from the bot or any
-other user are ignored. The database retains only reply metadata, server,
-model alias, prompt version, final rating, and timestamps—not prompts or
-response text.
-
-`/llm-feedback-summary` qualifies each category/model/prompt-version group for
-administrator review after 10 likes, including historical groups that already
-meet the threshold. The dashboard and
-`GET /llm/feedback/summary?guild_id=<id>` expose the same qualification,
-remaining-like count, approval percentage, and deterministic recommendations.
-Recommendations ask administrators to inspect positive and negative feedback,
-compare configurations separately, and propose a specific future behavior
-change for approval. No model or prompt change is applied automatically, and
-the report stores no prompt or response text. Qualification is based on the
-current final ratings, so changing a like to a dislike can remove it; ten likes
-need not represent ten distinct people, and viewing a report may repeat the
-notice because no delivery history is stored.
-
-`LLM_MEMORY_ENABLED` selects one of two modes when the Discord process starts.
-Only the exact value `1` enables automatic memory; `0`, a missing value, or an
-invalid value selects manual memory. Restart the bot to change modes. Stored
-entries are retained across mode changes, and the API/dashboard remain
-available in both modes. `LLM_MEMORY_DISABLED=1` overrides both modes: memory
-commands are not registered and mention prompts never include saved notes;
-stored entries are kept for when it is turned back on.
-
-In manual mode, `/memory-add` stores one user-authored memory categorized as
-Likes, Dislikes, Facts, Interests, Opinions, or Other. `/memory-show` groups
-the complete stored text by type, and `/memory-erase` deletes matching pasted
-text or everything in the current scope when its argument is omitted. Matching
-ignores case and repeated whitespace. Server memory is available in every
-channel of that server; DMs use a separate scope. Previously synthesized
-entries remain visible and are still supplied to mention prompts. Manual mode
-does not capture messages, load pending observations for processing, or start
-the synthesis scheduler.
-
-In automatic mode, persistent memory stores cycle syntheses as individual
-facts, impressions, likes, dislikes, topics, interests, opinions, and other
-durable notes with stable IDs. Only an explicit newer
-statement can correct a cited row. Exact duplicates are ignored, unrelated
-rows are retained, and storage is not cut down to the prompt size. Existing
-compact profiles migrate automatically on startup.
-
-New user messages are temporarily stored as pending synthesis input. A new
-cycle starts only when one enabled channel has at least 50 captured, permitted
-user messages that are at least 600 seconds old. The newest eligible
-observation becomes that cycle's fixed endpoint; messages arriving after it
-wait for the next cycle. New-cycle scans run every five minutes by default and
-are configurable with `LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS`. An active
-cycle drains one chunk at a time after the rest configured by
-`LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS`, also five minutes by default.
-After a successful chunk, the entries are saved and that chunk's source
-messages are deleted in the same transaction. Failed synthesis retains the
-chunk for retry so messages are not silently lost. Consecutive failures retry
-after twice the active-chunk rest, then double up to the consolidation interval;
-a successful commit resets this process-local backoff. Capacity skips preserve
-the existing backoff and extraction progress and do not count as failures.
-Each scan admits at most one
-chunk of up to 10 messages / 3,000 source characters with up to 2,000
-characters of retrieved entries. These are input-character budgets, not exact
-token counts; JSON, escaping, instructions, and the model's chat template add
-overhead. One extraction may return at most five additions and five corrections,
-each limited to 200 characters. Remaining cycle observations are grouped by author, and the oldest
-remaining author group is selected first. Scans reserve shared background
-capacity before touching the database and skip when bot/API work is pending.
-Successful memory work waits one active-chunk rest;
-failed work follows the backoff above before another chunk is admitted. The
-bot does not persist assistant replies or a raw conversation transcript. At
-prompt time, relevant synthesized entries are ranked by word overlap and
-recency and share the reference budget with live channel context. Memory
-remains server-scoped (with a separate opt-in DM scope) and is never supplied
-to another user.
+The bot may react to the original human message with a contextual emoji.
 
 ---
 
@@ -801,33 +706,14 @@ failed writes return a Discord error or API HTTP 500.
 | `PUT` | `/jokes/guilds/<guild_id>` | `{ "channel_id", "send_time": "HH:MM" }` — create or update |
 | `DELETE` | `/jokes/guilds/<guild_id>` | Deactivate guild |
 
-### LLM feedback and guild activity
+### LLM model and guild activity
 
 | Method | Path | Body / notes |
 |---|---|---|
 | `GET` | `/llm/mention-model` | Active mention model and the environment-defined allow-list |
 | `PUT` | `/llm/mention-model` | `{ "model" }` — accepts only a model in `LLAMA_CPP_ALLOWED_MODELS` |
-| `GET` | `/llm/feedback/summary?guild_id=<id>` | Aggregated ratings plus `qualified_for_review`, `likes_needed`, `recommendations`, `approval_required`, `required_likes`, and `qualified_group_count`; no prompt or response text. Returns a retryable `503` when the database cannot be read. |
 | `GET` | `/inactivity/guilds/<guild_id>` | Whether automatic inactivity messages are enabled |
 | `PUT` | `/inactivity/guilds/<guild_id>` | `{ "enabled": true }` |
-
-### Persistent LLM memory
-
-| Method | Path | Body / notes |
-|---|---|---|
-| `GET` | `/memory/channels?guild_id=<id>` | Enabled memory channels in one server |
-| `GET` | `/memory/channels/<guild_id>/<channel_id>` | Memory status for one channel |
-| `PUT` | `/memory/channels/<guild_id>/<channel_id>` | `{ "enabled": true }`; disabling also clears that channel's pending observations and cycle progress |
-| `GET` | `/memory/users/<user_id>?scope_id=<id>` | Preference, synthesized entries, and any legacy profile; `transcript` remains an empty compatibility field; use scope `0` for DMs |
-| `PUT` | `/memory/users/<user_id>/preference` | `{ "scope_id", "enabled" }`; opting out also erases saved memory |
-| `DELETE` | `/memory/users/<user_id>` | `{ "scope_id" }`; forget memory without changing the preference |
-| `DELETE` | `/memory/guilds/<guild_id>` | `{ "confirmation": "PURGE" }`; preserves channel settings and preferences |
-
-The bot refreshes memory channel and preference caches periodically and checks
-pending observation ownership before applying an in-flight memory update. API-side
-privacy changes therefore take effect without restarting the Discord process.
-Channel and preference controls govern automatic mode; the API remains available
-in manual mode for inspecting, deleting, or preconfiguring retained data.
 
 ### Wishlist
 
@@ -869,7 +755,7 @@ python -m pytest
 
 **CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
 
-Coverage highlights: the `db` package (CRUD, migrations, cascades, memory, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, row-level user memory, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
+Coverage highlights: the `db` package (CRUD, migrations, cascades, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
 
 Reliability checks use the repository `.venv` (Python 3.9.6) and cover shared
 capacity across processes, cancellation, background skips, usable scraper
@@ -899,7 +785,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `assistant_profiles.py` | Discord-free assistant profile validation, defaults, and prompt guidance |
 | `db/` | SQLite connection, schema/migrations, and domain query modules |
 | `db/sponsors.py` | Atomic sponsor-tier catalog reads/writes using the global settings table |
-| `llm/` | llama.cpp client, response generation, memory extraction/store, and single-slot worker |
+| `llm/` | llama.cpp client, response generation, and single-slot worker |
 | `web/` | Flask application factory, authentication/helpers, and four route blueprints |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` location and `LOG_LEVEL` verbosity |
 | `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
@@ -920,9 +806,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
-| `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies, contextual reactions, and background memory work through llama.cpp |
-| `llm_feedback.py` | `LLMFeedbackFeature` | Requester-only 👍/👎 ratings for generated mention replies |
-| `user_memory.py` | `UserMemoryFeature` | Discord commands and event adapter for the shared memory store |
+| `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies and contextual reactions through llama.cpp |
 | `mention_utils.py` | — | Parse @bot mentions using `BOT_ID` |
 | `onboarding.py` | `OnboardingFeature`, `OnboardingView`, `HelpView` | Guided private `/start`, timezone selectors, and feature navigation |
 | `help_feature.py` | `HelpFeature` | `/help` |

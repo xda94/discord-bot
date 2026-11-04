@@ -14,7 +14,6 @@ logger = logging.getLogger("discord_bot")
 @dataclass(frozen=True)
 class WorkerResult:
     outcome: str = "completed"
-    value: Any = None
 
 
 class SingleSlotWorker:

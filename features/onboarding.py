@@ -13,7 +13,6 @@ CATEGORIES = {
  'reminders':('Reminders','Remindere','/remind · /reminder-list · /reminder-edit · /reminder-cancel · /reminder-snooze'),
  'wishlist':('Wishlist','Lista de dorințe','/wishlist-item · /wishlist-show · /wishlist-target-price · /wishlist-restock-only · /wishlist-refresh · /wishlist-graph · /worth-it'),
  'flights':('Flights','Zboruri','/flight-tracker-add · /flight-tracker-login · /flight-tracker-show · /flight-tracker-budget'),
- 'memory':('Memory','Memorie','/memory-show'),
 }
 
 
@@ -32,13 +31,11 @@ def display_language(interaction, profile=None):
 
 
 class HelpView(discord.ui.View):
-    def __init__(self,user_id,language,tree,*,memory_disabled=False,edit_message=False):
+    def __init__(self,user_id,language,tree,*,edit_message=False):
         super().__init__(timeout=600)
         self.user_id=user_id
         self.language=language
         for name,(en,ro,commands) in CATEGORIES.items():
-            if name=='memory' and memory_disabled:
-                continue
             button=discord.ui.Button(label=ro if language=='ro' else en,row=0)
             async def callback(interaction,category=name,content=commands):
                 if not await self.interaction_check(interaction):
@@ -60,8 +57,6 @@ class HelpView(discord.ui.View):
             from features.help_feature import _chunk_text
             lines=[]
             for command in tree.get_commands():
-                if memory_disabled and (command.name.startswith('memory-') or command.name.startswith('llm-memory')):
-                    continue
                 desc=localize(command.description,lang)
                 parameters=' '.join(('[' if not p.required else '<')+p.display_name+(']' if not p.required else '>') for p in command.parameters)
                 lines.append(f'**/{command.name}** {parameters}\n{desc}')
@@ -82,13 +77,12 @@ class HelpView(discord.ui.View):
 
 class OnboardingView(discord.ui.View):
     """One message, partial writes, and bounded IANA timezone selectors."""
-    def __init__(self,user_id,language,tree,*,profile=None,memory_disabled=False):
+    def __init__(self,user_id,language,tree,*,profile=None):
         super().__init__(timeout=600)
         self.user_id=user_id
         self.language=language
         self.tree=tree
         self.profile=profile or {}
-        self.memory_disabled=memory_disabled
         self.screen='language'
         self.group=None
         self.page=0
@@ -181,10 +175,9 @@ class OnboardingView(discord.ui.View):
         self._revision+=1
         if self.screen=='language':
             labels=(('en','English'),('ro','Română'),('auto',t('automatic',self.language)))
-            self._select([discord.SelectOption(label=label,value=code,default=code==self.profile.get('language','auto')) for code,label in labels],'choose_language',self._save_language)
+            self._select([discord.SelectOption(label=label,value=code) for code,label in labels],'choose_language',self._save_language)
         elif self.screen=='timezone':
-            saved=self.profile.get('timezone') if self.profile.get('timezone_configured') else None
-            self._select([discord.SelectOption(label=zone,value=zone,default=zone==saved) for zone in self._common_zones()],'choose_timezone',self._save_timezone)
+            self._select([discord.SelectOption(label=zone,value=zone) for zone in self._common_zones()],'choose_timezone',self._save_timezone)
             self._button('back',self._language)
             self._button('browse_timezones',self._browse)
             self._button('skip_now',self._ready)
@@ -206,8 +199,7 @@ class OnboardingView(discord.ui.View):
             pages=math.ceil(len(zones)/25)
             self.page=min(max(0,self.page),pages-1)
             current=zones[self.page*25:(self.page+1)*25]
-            saved=self.profile.get('timezone') if self.profile.get('timezone_configured') else None
-            self._select([discord.SelectOption(label=zone,value=zone,default=zone==saved) for zone in current],'choose_timezone',self._save_timezone)
+            self._select([discord.SelectOption(label=zone,value=zone) for zone in current],'choose_timezone',self._save_timezone)
             self._button('back',self._groups)
             self._button('previous_page',self._previous,disabled=self.page==0)
             self._button('next_page',self._next,disabled=self.page+1==pages)
@@ -232,13 +224,14 @@ class OnboardingView(discord.ui.View):
             if not self.profile.get('timezone_configured'):
                 content+='\n\n'+t('setup_skip_guidance',lang)
         else:
-            content=t('setup_timezone',lang)
-            if self.profile.get('timezone_configured'):
-                content+='\n'+t('setup_current_timezone',lang,timezone=self.profile.get('timezone','UTC'))
             if self.screen=='groups':
-                content+='\n'+t('setup_regions',lang)
+                content=t('setup_regions',lang)
             elif self.screen=='locations':
-                content+='\n'+t('setup_page',lang,region=self.group,page=self.page+1,pages=math.ceil(len(self.catalog[self.group])/25))
+                content=t('setup_page',lang,region=self.group,page=self.page+1,pages=math.ceil(len(self.catalog[self.group])/25))
+            else:
+                content=t('setup_timezone',lang)
+                if self.profile.get('timezone_configured'):
+                    content+='\n'+t('setup_current_timezone',lang,timezone=self.profile.get('timezone','UTC'))
             if self.catalog_failed:
                 content+='\n\n'+t('timezone_catalog_failed',lang)
         if self.error:
@@ -273,7 +266,8 @@ class OnboardingView(discord.ui.View):
         if not saved:
             await self._failed(interaction)
             return
-        await self._show(interaction,'timezone' if 'language' in update else 'ready')
+        needs_timezone='language' in update and not saved.get('timezone_configured')
+        await self._show(interaction,'timezone' if needs_timezone else 'ready')
 
     async def _save_language(self,interaction,code):
         await self._save(interaction,language=code)
@@ -330,17 +324,17 @@ class OnboardingView(discord.ui.View):
         return view
 
     async def _help(self,interaction):
-        view=HelpView(self.user_id,self.language,self.tree,memory_disabled=self.memory_disabled,edit_message=True)
+        view=HelpView(self.user_id,self.language,self.tree,edit_message=True)
         await interaction.response.edit_message(content=t('help',self.language),view=self._return_button(view))
 
 
 class OnboardingFeature:
-    def __init__(self,client,tree,*,memory_disabled=False):
+    def __init__(self,client,tree):
         self.client=client
         self.tree=tree
         @tree.command(name='start',description='Privately set up language, timezone, and explore features')
         async def start(interaction:discord.Interaction):
             profile=db.get_assistant_profile(interaction.user.id)
             lang=display_language(interaction,profile)
-            view=OnboardingView(interaction.user.id,lang,tree,profile=profile,memory_disabled=memory_disabled)
+            view=OnboardingView(interaction.user.id,lang,tree,profile=profile)
             await interaction.response.send_message(view.content(),view=view,ephemeral=True)

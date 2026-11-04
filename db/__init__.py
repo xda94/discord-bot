@@ -33,8 +33,6 @@ from db.bot_data import (
     get_due_reminders,
     get_guild_joke_config,
     get_joke_by_id,
-    get_llm_feedback_summary,
-    get_llm_response_feedback,
     get_random_response,
     get_setting,
     get_top_keywords,
@@ -50,13 +48,10 @@ from db.bot_data import (
     set_guild_inactivity_enabled,
     set_guild_joke_config,
     set_guild_joke_last_sent,
-    set_llm_response_rating,
     set_setting,
-    track_llm_response,
     update_joke,
 )
 from db.connection import _connect
-from db.constants import LLM_MEMORY_ENTRY_KINDS
 from db.flights import (
     add_flight_price_history,
     add_flight_tracker,
@@ -69,34 +64,6 @@ from db.flights import (
     get_user_flight_trackers,
     set_flight_api_credentials,
     update_flight_tracker_result,
-)
-from db.memory import (
-    add_llm_memory_observation,
-    add_llm_memory_transcript,
-    add_manual_llm_memory_entry,
-    apply_llm_memory_delta,
-    begin_llm_memory_cycle,
-    clear_llm_memory_progress,
-    complete_llm_memory_cycle_if_empty,
-    delete_all_llm_user_memory,
-    delete_llm_memory_channel_observations,
-    delete_llm_memory_entries_by_text,
-    delete_llm_memory_observations,
-    delete_llm_user_memory,
-    get_enabled_llm_memory_channels,
-    get_llm_memory_channel_observations,
-    get_llm_memory_entries,
-    get_llm_memory_observation_channels,
-    get_llm_memory_observations,
-    get_llm_memory_preference,
-    get_llm_memory_progress,
-    get_llm_memory_transcript,
-    get_llm_user_memory,
-    is_llm_memory_channel_enabled,
-    purge_guild_llm_user_memories,
-    set_llm_memory_channel_enabled,
-    set_llm_memory_preference,
-    set_llm_user_memory,
 )
 from db.schema import init_db
 from db.sponsors import get_sponsor_tiers, save_sponsor_tier

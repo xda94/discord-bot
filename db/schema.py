@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 import time
 
 from db.connection import _connect
-from db.constants import LLM_MEMORY_ENTRY_KINDS
 
 logger = logging.getLogger("database")
+
+REMOVED_TABLES = (
+    "llm_response_feedback", "llm_memory_channels", "llm_user_memories",
+    "llm_memory_entries", "llm_memory_transcript", "llm_memory_observations",
+    "llm_memory_progress", "llm_memory_preferences",
+)
 
 def init_db():
     try:
@@ -181,201 +185,6 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_price_history_timestamp "
                 "ON price_history(timestamp)"
             )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_response_feedback (
-                    response_message_id INTEGER PRIMARY KEY,
-                    requester_user_id INTEGER NOT NULL,
-                    category TEXT NOT NULL CHECK (category IN ('mention', 'summon')),
-                    guild_id INTEGER,
-                    model TEXT,
-                    prompt_version TEXT,
-                    rating INTEGER CHECK (rating IN (-1, 1) OR rating IS NULL),
-                    created_at REAL NOT NULL,
-                    rated_at REAL
-                )
-            """)
-            c.execute("PRAGMA table_info(llm_response_feedback)")
-            feedback_columns = {row[1] for row in c.fetchall()}
-            if "guild_id" not in feedback_columns:
-                c.execute("ALTER TABLE llm_response_feedback ADD COLUMN guild_id INTEGER")
-            if "model" not in feedback_columns:
-                c.execute("ALTER TABLE llm_response_feedback ADD COLUMN model TEXT")
-            if "prompt_version" not in feedback_columns:
-                c.execute(
-                    "ALTER TABLE llm_response_feedback ADD COLUMN prompt_version TEXT"
-                )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_feedback_category_rating "
-                "ON llm_response_feedback(category, rating)"
-            )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_feedback_guild "
-                "ON llm_response_feedback(guild_id, category, model, prompt_version)"
-            )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_memory_channels (
-                    guild_id INTEGER NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (guild_id, channel_id)
-                )
-            """)
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_memory_channels_guild "
-                "ON llm_memory_channels(guild_id, enabled)"
-            )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_user_memories (
-                    scope_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    profile TEXT NOT NULL,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (scope_id, user_id)
-                )
-            """)
-            memory_entries_sql = """
-                CREATE TABLE {table_name} (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    kind TEXT NOT NULL CHECK (
-                        kind IN (
-                            'fact', 'impression', 'like', 'dislike', 'topic',
-                            'interest', 'opinion', 'other'
-                        )
-                    ),
-                    content TEXT NOT NULL,
-                    normalized_content TEXT NOT NULL,
-                    source_text TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    UNIQUE(scope_id, user_id, kind, normalized_content)
-                )
-            """
-            c.execute(memory_entries_sql.format(table_name="IF NOT EXISTS llm_memory_entries"))
-            c.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' "
-                "AND name = 'llm_memory_entries'"
-            )
-            memory_entries_definition = (c.fetchone() or ("",))[0] or ""
-            if any(
-                f"'{kind}'" not in memory_entries_definition
-                for kind in LLM_MEMORY_ENTRY_KINDS
-            ):
-                c.execute(
-                    "ALTER TABLE llm_memory_entries "
-                    "RENAME TO llm_memory_entries_legacy"
-                )
-                c.execute(memory_entries_sql.format(table_name="llm_memory_entries"))
-                c.execute(
-                    "INSERT INTO llm_memory_entries "
-                    "(id, scope_id, user_id, kind, content, normalized_content, "
-                    "source_text, created_at, updated_at) "
-                    "SELECT id, scope_id, user_id, kind, content, normalized_content, "
-                    "source_text, created_at, updated_at "
-                    "FROM llm_memory_entries_legacy"
-                )
-                c.execute("DROP TABLE llm_memory_entries_legacy")
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_memory_entries_owner "
-                "ON llm_memory_entries(scope_id, user_id, updated_at DESC)"
-            )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_memory_transcript (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-                    content TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-            """)
-            c.execute("DELETE FROM llm_memory_transcript")
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_memory_transcript_owner "
-                "ON llm_memory_transcript(scope_id, user_id, created_at DESC)"
-            )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_memory_observations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    guild_id INTEGER,
-                    channel_id INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-            """)
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_memory_observations_owner "
-                "ON llm_memory_observations(scope_id, user_id, created_at)"
-            )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_llm_memory_observations_channel "
-                "ON llm_memory_observations(scope_id, channel_id, id)"
-            )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_memory_progress (
-                    scope_id INTEGER NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    last_completed_observation_id INTEGER NOT NULL DEFAULT 0,
-                    active_cycle_endpoint_observation_id INTEGER,
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (scope_id, channel_id)
-                )
-            """)
-            c.execute(
-                "SELECT scope_id, user_id, profile, updated_at FROM llm_user_memories"
-            )
-            for scope_id, user_id, profile, updated_at in c.fetchall():
-                heading = ""
-                for raw_line in profile.splitlines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("#"):
-                        heading = line.lstrip("#").strip().rstrip(":")
-                        continue
-                    item_match = re.match(r"^(?:[-*+]|\d+[.)])\s+", line)
-                    is_item = item_match is not None
-                    fact = line[item_match.end():].strip() if item_match else line
-                    if heading and is_item and not fact.casefold().startswith(
-                        f"{heading}:".casefold()
-                    ):
-                        fact = f"{heading}: {fact}"
-                    fact = " ".join(fact.split())
-                    if not fact:
-                        continue
-                    c.execute(
-                        "INSERT OR IGNORE INTO llm_memory_entries "
-                        "(scope_id, user_id, kind, content, normalized_content, "
-                        "source_text, created_at, updated_at) "
-                        "VALUES (?, ?, 'fact', ?, ?, ?, ?, ?)",
-                        (
-                            scope_id,
-                            user_id,
-                            fact,
-                            fact.casefold(),
-                            "legacy-profile",
-                            updated_at,
-                            updated_at,
-                        ),
-                    )
-                c.execute(
-                    "DELETE FROM llm_user_memories WHERE scope_id = ? AND user_id = ?",
-                    (scope_id, user_id),
-                )
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS llm_memory_preferences (
-                    scope_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-                    updated_at REAL NOT NULL,
-                    PRIMARY KEY (scope_id, user_id)
-                )
-            """)
             c.execute("PRAGMA table_info(flight_api_credentials)")
             credential_columns = {row[1] for row in c.fetchall()}
             if credential_columns and "api_key" not in credential_columns:
@@ -509,6 +318,8 @@ def init_db():
                     PRIMARY KEY (user_id, feature, scope_type, guild_id)
                 )
             """)
+            for table in REMOVED_TABLES:
+                c.execute(f"DROP TABLE IF EXISTS {table}")
             from db.experience_schema import migrate
             migrate(c)
             from db import community_schema

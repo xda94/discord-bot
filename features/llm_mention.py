@@ -17,9 +17,7 @@ from PIL import Image, ImageOps
 import db
 from i18n import t, language_for, localize
 from assistant_profiles import AssistantProfile, DEFAULT_PROFILE, effective_profile
-from analytics import record, record_for
-from features.llm_feedback import LLMFeedbackFeature
-from features.user_memory import UserMemoryFeature
+from analytics import record_for
 from llm.client import (
     LlamaCppError,
     LlamaCppTimeoutError,
@@ -27,14 +25,12 @@ from llm.client import (
     get_mention_model,
     llama_supports_vision,
 )
-from llm.memory import MemoryBatch, MemoryStore
-from llm.capacity import CapacityError, Reservation, busy, reserve
+from llm.capacity import CapacityError, Reservation, reserve
 from mention_utils import (
     extract_mention_text,
     resolve_bot_display_name,
     strip_leading_reply_labels,
 )
-from llm.memory_extraction import generate_memory_delta
 from llm.responses import (
     MentionResult,
     format_chat_line,
@@ -61,36 +57,6 @@ def get_reaction_chance() -> float:
 
 def get_reaction_cooldown_seconds() -> float:
     return max(0.0, float(os.getenv("LLM_REACTION_COOLDOWN_SECONDS", "60")))
-
-
-
-def get_memory_consolidation_interval_seconds() -> float:
-    return max(
-        1.0,
-        float(os.getenv("LLM_MEMORY_CONSOLIDATION_INTERVAL_SECONDS", "300")),
-    )
-
-
-def get_memory_active_chunk_rest_seconds() -> float:
-    return max(
-        1.0,
-        float(os.getenv("LLM_MEMORY_ACTIVE_CHUNK_REST_SECONDS", "300")),
-    )
-
-
-def get_memory_failure_backoff_seconds(consecutive_failures: int) -> float:
-    """Return the post-completion delay for consecutive memory failures."""
-    active_rest = get_memory_active_chunk_rest_seconds()
-    if consecutive_failures <= 0:
-        return active_rest
-    cap = max(active_rest, get_memory_consolidation_interval_seconds())
-    delay = active_rest
-    for _ in range(consecutive_failures):
-        delay = min(cap, delay * 2)
-        if delay >= cap:
-            break
-    return delay
-
 
 def get_model_choices() -> list[app_commands.Choice[str]]:
     return [
@@ -119,15 +85,8 @@ def get_selected_model() -> str:
 
 DISCORD_MESSAGE_LIMIT = 2000
 DISCORD_SAFE_LIMIT = 1990
-MENTION_PROMPT_VERSION = "mention-v12-reminders"
-MEMORY_MENTION_PROMPT_VERSION = "mention-v12-reminders-memory"
-VISION_MENTION_PROMPT_VERSION = "mention-v13-vision-retry"
-VISION_MEMORY_MENTION_PROMPT_VERSION = "mention-v13-vision-retry-memory"
-SUMMON_PROMPT_VERSION = "summon-v3"
 REFERENCE_CONTEXT_CHAR_BUDGET = 6000
 VISION_REFERENCE_CONTEXT_CHAR_BUDGET = 4000
-MAX_MENTIONED_MEMORIES = 2
-MENTIONED_MEMORY_CHAR_BUDGET = 1000
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 IMAGE_DESCRIPTION_REQUEST = (
@@ -264,66 +223,27 @@ def prepare_image(data: bytes) -> tuple[bytes, str]:
     return normalized, image_mime
 
 
-def budget_reference_context(
-    user_memory: str,
-    context_messages: list[str],
-    *,
-    max_chars: int = REFERENCE_CONTEXT_CHAR_BUDGET,
-) -> tuple[str, list[str]]:
-    """Reserve half for memory and half for history, sharing unused capacity."""
-    def escaped_prefix(value: str, budget: int) -> tuple[str, int]:
-        used = 0
-        end = 0
-        for end, character in enumerate(value, start=1):
-            cost = len(html.escape(character, quote=False))
-            if used + cost > budget:
-                return value[:end - 1], used
-            used += cost
-        return value[:end], used
-
-    def select_history(budget: int) -> tuple[list[str], int]:
-        remaining = budget
-        selected_reversed = []
-        used = 0
-        for message in reversed(context_messages):
-            if remaining <= 0:
-                break
-            cost = len(html.escape(message, quote=False))
-            if cost <= remaining:
-                selected_reversed.append(message)
-                remaining -= cost
-                used += cost
-                continue
-            if not selected_reversed:
-                partial, partial_cost = escaped_prefix(message, remaining)
-                if partial:
-                    selected_reversed.append(partial)
-                    used += partial_cost
-            break
-        return list(reversed(selected_reversed)), used
-
-    half = max_chars // 2
-    memory, memory_cost = escaped_prefix(user_memory, half)
-    history_budget = max_chars - memory_cost if memory_cost < half else half
-    history, history_cost = select_history(history_budget)
-    if history_cost < half and len(memory) < len(user_memory):
-        memory, memory_cost = escaped_prefix(user_memory, max_chars - history_cost)
-    elif memory_cost < half and context_messages:
-        history, _ = select_history(max_chars - memory_cost)
-    return memory, history
-
-
-def trim_profile(profile: str, max_chars: int) -> str:
-    """Keep whole entries, most relevant first, within an escaped-size budget."""
-    kept = []
-    used = 0
-    for line in profile.splitlines():
-        cost = len(html.escape(line, quote=False)) + 1
-        if used + cost > max_chars:
-            break
-        kept.append(line)
-        used += cost
-    return "\n".join(kept)
+def budget_chat_history(context_messages: list[str], max_chars: int) -> list[str]:
+    """Keep the newest messages that fit an escaped-size budget."""
+    remaining = max_chars
+    selected = []
+    for message in reversed(context_messages):
+        cost = len(html.escape(message, quote=False))
+        if cost <= remaining:
+            selected.append(message)
+            remaining -= cost
+            continue
+        if not selected:
+            partial = ""
+            for character in message:
+                remaining -= len(html.escape(character, quote=False))
+                if remaining < 0:
+                    break
+                partial += character
+            if partial:
+                selected.append(partial)
+        break
+    return selected[::-1]
 
 
 def split_discord_messages(text: str, *, first_prefix: str = "") -> list[str]:
@@ -373,22 +293,10 @@ class AskJob:
     reply_to: discord.Message | None = None
     summon_only: bool = False
     context_messages: list[str] = field(default_factory=list)
-    user_memory: str = ""
-    memory_enabled: bool = False
-    memory_batch: MemoryBatch | None = None
     image_attachments: tuple[discord.Attachment, ...] = ()
-    prompt_version: str = MENTION_PROMPT_VERSION
     replied_message: str = ""
     bot_names: tuple[str, ...] = ()
     assistant_profile: AssistantProfile = DEFAULT_PROFILE
-    mentioned_memories: tuple[tuple[str, str], ...] = ()
-    reservation: Reservation | None = None
-
-
-@dataclass
-class MemoryJob:
-    batch: MemoryBatch
-    model: str
     reservation: Reservation | None = None
 
 
@@ -419,14 +327,10 @@ class LLMMentionFeature:
         tree: app_commands.CommandTree,
         *,
         bot_id: int,
-        feedback: LLMFeedbackFeature | None = None,
-        memory: UserMemoryFeature | MemoryStore | None = None,
     ):
         self.client = client
         self.tree = tree
         self.bot_id = bot_id
-        self.feedback = feedback
-        self.memory = getattr(memory, "store", memory)
         self._user_last_ask: dict[int, float] = {}
         self._user_pending: set[int] = set()
         self._worker = SingleSlotWorker(
@@ -437,10 +341,6 @@ class LLMMentionFeature:
         self._queue_sequence = 0
         self._processing = False
         self._worker_task: asyncio.Task | None = None
-        self._memory_scheduler_task: asyncio.Task | None = None
-        self._memory_pending: set[tuple[int, int]] = set()
-        self._memory_last_finished: float | None = None
-        self._memory_consecutive_failures = 0
         self._reaction_pending_channels: set[int] = set()
         self._reaction_last_attempt: dict[int, float] = {}
         self._register_commands()
@@ -453,12 +353,6 @@ class LLMMentionFeature:
         self._worker.start()
         self._worker_task = self._worker.task
 
-    def _model_busy(self) -> bool:
-        try:
-            return busy()
-        except CapacityError:
-            return True
-
     async def _queue_worker(self) -> None:
         await self._worker.run()
 
@@ -467,12 +361,6 @@ class LLMMentionFeature:
         if isinstance(job, AskJob):
             await self._process_job(job)
             return WorkerResult()
-        if isinstance(job, MemoryJob):
-            succeeded = await self._process_memory_job(job)
-            outcome = "failed" if succeeded is False else (
-                "skipped" if succeeded is None else "completed"
-            )
-            return WorkerResult(outcome, succeeded)
         await self._process_reaction_job(job)
         return WorkerResult()
 
@@ -485,16 +373,6 @@ class LLMMentionFeature:
                 asyncio.create_task(self._reply_job_error(
                     job, "The model is busy right now. Please try again shortly."
                 ))
-        elif isinstance(job, MemoryJob):
-            if result.outcome in {"completed", "failed"}:
-                self._memory_last_finished = time.monotonic()
-                if result.outcome == "failed":
-                    self._memory_consecutive_failures = (
-                        getattr(self, "_memory_consecutive_failures", 0) + 1
-                    )
-                else:
-                    self._memory_consecutive_failures = 0
-            self._memory_pending.discard((job.batch.scope_id, job.batch.user_id))
         else:
             self._reaction_pending_channels.discard(job.channel_id)
 
@@ -527,128 +405,6 @@ class LLMMentionFeature:
 
     async def start_tasks(self) -> None:
         self._ensure_worker()
-        if self.memory is None or not getattr(
-            self.memory, "automatic_enabled", True
-        ):
-            logger.info(
-                "Memory scheduler disabled mode=%s",
-                "disabled" if self.memory is None else "manual",
-            )
-            return
-        if self._memory_scheduler_task is None or self._memory_scheduler_task.done():
-            self._memory_scheduler_task = asyncio.create_task(
-                self._memory_scheduler_loop()
-            )
-            logger.info(
-                "Memory scheduler started cycle_interval=%.1fs active_chunk_rest=%.1fs",
-                get_memory_consolidation_interval_seconds(),
-                get_memory_active_chunk_rest_seconds(),
-            )
-
-    async def _memory_scheduler_loop(self) -> None:
-        cycle_interval = get_memory_consolidation_interval_seconds()
-        wait_seconds = get_memory_active_chunk_rest_seconds()
-        next_cycle_scan_at = time.monotonic() + cycle_interval
-        while True:
-            await asyncio.sleep(wait_seconds)
-            now = time.monotonic()
-            cycle_interval = get_memory_consolidation_interval_seconds()
-            active_chunk_rest = get_memory_active_chunk_rest_seconds()
-            consecutive_failures = getattr(
-                self, "_memory_consecutive_failures", 0
-            )
-            required_rest = get_memory_failure_backoff_seconds(
-                consecutive_failures
-            )
-            allow_new_cycles = now >= next_cycle_scan_at
-            if (
-                self._memory_last_finished is not None
-                and now - self._memory_last_finished < required_rest
-            ):
-                logger.info(
-                    "Memory scan skipped reason=%s failures=%d remaining=%.1fs",
-                    "failure-backoff" if consecutive_failures else "rest-interval",
-                    consecutive_failures,
-                    required_rest - (now - self._memory_last_finished),
-                )
-                wait_seconds = max(
-                    0.0,
-                    self._memory_last_finished + required_rest - now,
-                )
-                continue
-            if self.memory is None:
-                logger.info("Memory scan skipped reason=feature-unavailable")
-                wait_seconds = cycle_interval
-                if allow_new_cycles:
-                    next_cycle_scan_at = now + cycle_interval
-                continue
-            if self._model_busy():
-                logger.info(
-                    "Memory scan skipped reason=model-busy processing=%s queue_size=%d",
-                    getattr(self, "_processing", False),
-                    getattr(getattr(self, "_queue", None), "qsize", lambda: 0)(),
-                )
-                wait_seconds = active_chunk_rest
-                continue
-            try:
-                reservation = reserve(policy="background")
-            except CapacityError:
-                wait_seconds = active_chunk_rest
-                continue
-            try:
-                batches = self.memory.eligible_batches(
-                    allow_new_cycles=allow_new_cycles
-                )
-                if allow_new_cycles:
-                    next_cycle_scan_at = now + cycle_interval
-                logger.info(
-                    "Memory scan completed mode=%s eligible_batches=%d",
-                    "new-cycle" if allow_new_cycles else "active-cycle",
-                    len(batches),
-                )
-                for batch in batches:
-                    admitted = await self._enqueue_memory(
-                        batch, get_selected_model(), reservation=reservation
-                    )
-                    if admitted:
-                        reservation = None
-                        break
-            finally:
-                if reservation is not None:
-                    reservation.release()
-            wait_seconds = (
-                active_chunk_rest
-                if batches
-                else max(0.0, next_cycle_scan_at - now)
-            )
-
-    async def _enqueue_memory(
-        self, batch: MemoryBatch, model: str, *, reservation: Reservation | None = None
-    ) -> bool:
-        key = (batch.scope_id, batch.user_id)
-        if key in self._memory_pending:
-            logger.info(
-                "Memory job skipped reason=already-pending scope_id=%s user_id=%s",
-                batch.scope_id,
-                batch.user_id,
-            )
-            return False
-        self._memory_pending.add(key)
-        try:
-            admitted = await self._put_job(
-                1, MemoryJob(batch=batch, model=model, reservation=reservation)
-            )
-        except BaseException:
-            self._memory_pending.discard(key)
-            raise
-        if not admitted:
-            self._memory_pending.discard(key)
-            logger.info(
-                "Memory job not admitted scope_id=%s user_id=%s",
-                batch.scope_id,
-                batch.user_id,
-            )
-        return admitted
 
     async def _reply_mention(self, job: AskJob, text: str) -> str:
         if not text.strip() or job.reply_to is None:
@@ -663,21 +419,13 @@ class LLMMentionFeature:
             names=tuple(user_names) + tuple(job.bot_names),
         )
         parts = split_discord_messages(text, first_prefix=f"<@{job.user.id}> ")
-        reply = await job.reply_to.reply(
+        await job.reply_to.reply(
             parts[0],
             mention_author=False,
             allowed_mentions=discord.AllowedMentions(
                 users=[job.user], roles=False, everyone=False, replied_user=False
             ),
         )
-        if self.feedback is not None:
-            await self.feedback.register_reply(
-                reply,
-                requester_user_id=job.user.id,
-                category="summon" if job.summon_only else "mention",
-                model=job.model,
-                prompt_version=job.prompt_version,
-            )
         if job.channel is not None:
             for part in parts[1:]:
                 await job.channel.send(
@@ -767,8 +515,6 @@ class LLMMentionFeature:
                 generation_kwargs = {
                     "model": job.model,
                     "context_messages": job.context_messages,
-                    "user_memory": job.user_memory,
-                    "memory_enabled": job.memory_enabled,
                     "image_bytes": image_bytes,
                     "image_mime": image_mime,
                     "replied_message": job.replied_message,
@@ -776,7 +522,6 @@ class LLMMentionFeature:
                     "reply_names": (getattr(job.user, "name", ""), *job.bot_names),
                     "assistant_profile": job.assistant_profile,
                     "bot_name": bot_name,
-                    "mentioned_memories": job.mentioned_memories,
                 }
                 result = await asyncio.to_thread(
                     generate_mention_result,
@@ -832,115 +577,6 @@ class LLMMentionFeature:
                 except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
                     logger.info("Could not add mention reaction: %s", exc)
                     await record_for("failure", "mention-reaction", job.reply_to)
-
-
-    async def _process_memory_job(self, job: MemoryJob) -> bool | None:
-        if self.memory is None:
-            logger.info("Memory job stopped reason=feature-unavailable")
-            return None
-        chunks = (
-            self.memory.synthesis_chunks(job.batch)
-            if hasattr(self.memory, "synthesis_chunks")
-            else (job.batch,)
-        )
-        if not chunks:
-            logger.info(
-                "Memory job stopped reason=no-chunks scope_id=%s user_id=%s",
-                job.batch.scope_id,
-                job.batch.user_id,
-            )
-            return None
-        batch = chunks[0]
-        if not self.memory.can_process_batch(batch):
-            logger.info(
-                "Memory job stopped reason=batch-invalid-before-inference "
-                "scope_id=%s user_id=%s",
-                batch.scope_id,
-                batch.user_id,
-            )
-            return None
-        entries = self.memory.entries_for_batch(batch)
-        logger.info(
-            "Memory synthesis prepared scope_id=%s user_id=%s chunks=%d "
-            "messages=%d message_chars=%d entries=%d entry_chars=%d",
-            batch.scope_id,
-            batch.user_id,
-            len(chunks),
-            len(batch.observations), sum(map(len, batch.observations)),
-            len(entries), sum(len(entry["content"]) for entry in entries),
-        )
-        bot_user = getattr(getattr(self, "client", None), "user", None)
-        bot_names = tuple(
-            dict.fromkeys(
-                name.strip()
-                for name in (
-                    getattr(bot_user, "display_name", ""),
-                    getattr(bot_user, "name", ""),
-                )
-                if isinstance(name, str) and name.strip()
-            )
-        )
-        result = await asyncio.to_thread(
-            generate_memory_delta,
-            entries,
-            list(batch.observations),
-            model=job.model,
-            bot_names=bot_names,
-        )
-        if getattr(result, "skipped", False):
-            return None
-        if not result.successful:
-            await record(
-                "failure",
-                "memory-batch",
-                guild_id=batch.scope_id if batch.scope_id else None,
-                scope_type="guild" if batch.scope_id else "dm",
-            )
-            logger.warning(
-                "Memory synthesis failed scope_id=%s user_id=%s observations_retained=%d",
-                batch.scope_id,
-                batch.user_id,
-                len(batch.observations),
-            )
-            return False
-        if not self.memory.can_process_batch(batch):
-            logger.info(
-                "Memory synthesis discarded reason=batch-invalid-after-inference "
-                "scope_id=%s user_id=%s additions=%d corrections=%d",
-                batch.scope_id,
-                batch.user_id,
-                len(result.additions),
-                len(result.corrections),
-            )
-            return None
-        committed = self.memory.commit_delta(
-            batch, result.additions, result.corrections
-        )
-        if committed:
-            await record(
-                "processing",
-                "memory-batch",
-                guild_id=batch.scope_id if batch.scope_id else None,
-                scope_type="guild" if batch.scope_id else "dm",
-            )
-        else:
-            await record(
-                "failure",
-                "memory-batch",
-                guild_id=batch.scope_id if batch.scope_id else None,
-                scope_type="guild" if batch.scope_id else "dm",
-            )
-        logger.info(
-            "Memory synthesis commit scope_id=%s user_id=%s committed=%s "
-            "additions=%d corrections=%d observations=%d",
-            batch.scope_id,
-            batch.user_id,
-            committed,
-            len(result.additions),
-            len(result.corrections),
-            len(batch.observations),
-        )
-        return committed
 
     async def _process_reaction_job(self, job: ReactionJob) -> None:
         content = getattr(job.message, "clean_content", "").strip()
@@ -1013,37 +649,6 @@ class LLMMentionFeature:
             )
             return f"Please wait **{int(remaining) + 1}s** before trying again."
         return None
-
-    def _mentioned_memories(
-        self, message: discord.Message, requester_id: int
-    ) -> tuple[tuple[str, str], ...]:
-        """Saved profiles of other people @mentioned in the same server."""
-        profile_for = getattr(self.memory, "profile_for", None)
-        guild = getattr(message, "guild", None)
-        if profile_for is None or guild is None:
-            return ()
-        others = []
-        for user in getattr(message, "mentions", []):
-            if (
-                user.id in (self.bot_id, requester_id)
-                or getattr(user, "bot", False)
-                or any(user.id == other.id for other in others)
-            ):
-                continue
-            others.append(user)
-        memories = []
-        for user in others[:MAX_MENTIONED_MEMORIES]:
-            profile = profile_for(
-                guild_id=guild.id,
-                channel_id=message.channel.id,
-                user_id=user.id,
-                query=message.clean_content,
-            )
-            if profile:
-                memories.append(
-                    (user.display_name, trim_profile(profile, MENTIONED_MEMORY_CHAR_BUDGET))
-                )
-        return tuple(memories)
 
     def _bot_names(self, guild) -> list[str]:
         """The bot's live server nickname first, then its account names."""
@@ -1141,51 +746,17 @@ class LLMMentionFeature:
             message.channel, bot_name, before=message
         )
 
-        memory_enabled = False
-        user_memory = ""
-        memory_batch = None
-        memory_history = []
-        if not summon_only and self.memory is not None:
-            memory_context = self.memory.context_for(
-                user_id=user_id,
-                guild_id=message.guild.id if message.guild is not None else None,
-                channel_id=message.channel.id,
-                query=message.clean_content,
-            )
-            memory_enabled = memory_context.enabled
-            user_memory = memory_context.profile
-            memory_batch = memory_context.batch
-            memory_history = list(getattr(memory_context, "history", ()))
-
-        context_messages = memory_history + context_messages
-
-        mentioned_memories = (
-            () if summon_only else self._mentioned_memories(message, user_id)
-        )
-        user_memory, context_messages = budget_reference_context(
-            user_memory,
+        context_messages = budget_chat_history(
             context_messages,
-            max_chars=(
-                VISION_REFERENCE_CONTEXT_CHAR_BUDGET
-                if has_image
-                else REFERENCE_CONTEXT_CHAR_BUDGET
-            )
-            - sum(
-                len(html.escape(profile, quote=False))
-                for _, profile in mentioned_memories
-            ),
+            VISION_REFERENCE_CONTEXT_CHAR_BUDGET
+            if has_image
+            else REFERENCE_CONTEXT_CHAR_BUDGET,
         )
         logger.info(
-            "Mention context prepared user_id=%s memory_enabled=%s memory_chars=%d "
-            "history_messages=%d history_chars=%d pending_observations=%d "
-            "mentioned_memories=%d",
+            "Mention context prepared user_id=%s history_messages=%d history_chars=%d",
             user_id,
-            memory_enabled,
-            len(user_memory),
             len(context_messages),
             sum(map(len, context_messages)),
-            len(memory_batch.observations) if memory_batch is not None else 0,
-            len(mentioned_memories),
         )
 
         replied_message = ""
@@ -1209,31 +780,10 @@ class LLMMentionFeature:
             reply_to=message,
             summon_only=summon_only,
             context_messages=context_messages,
-            user_memory=user_memory,
-            memory_enabled=memory_enabled,
-            memory_batch=memory_batch,
             image_attachments=image_attachments,
             replied_message=replied_message,
             bot_names=tuple(bot_names),
             assistant_profile=assistant_profile,
-            mentioned_memories=mentioned_memories,
-            prompt_version=(
-                SUMMON_PROMPT_VERSION
-                if summon_only
-                else (
-                    VISION_MEMORY_MENTION_PROMPT_VERSION
-                    if has_image and memory_enabled
-                    else (
-                        VISION_MENTION_PROMPT_VERSION
-                        if has_image
-                        else (
-                            MEMORY_MENTION_PROMPT_VERSION
-                            if memory_enabled
-                            else MENTION_PROMPT_VERSION
-                        )
-                    )
-                )
-            ),
         )
         admitted = await self._enqueue_job(job)
         if not admitted:

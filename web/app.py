@@ -67,11 +67,11 @@ def create_app(config: dict | None = None) -> Flask:
 
     from web.routes.administration import blueprint as administration
     from web.routes.flights import blueprint as flights
-    from web.routes.memory_llm import blueprint as memory_llm
+    from web.routes.llm import blueprint as llm
     from web.routes.wishlist import blueprint as wishlist
 
     app.register_blueprint(administration)
-    app.register_blueprint(memory_llm)
+    app.register_blueprint(llm)
     app.register_blueprint(wishlist)
     app.register_blueprint(flights)
     return app
