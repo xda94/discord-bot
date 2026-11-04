@@ -501,13 +501,17 @@ specifications and PNG generation live in `wishlist/charts.py`.
 - Replies have 7/30/90-day buttons plus a Custom days modal accepting any whole
   number in that range. Controls edit the original private graph attachment.
 - `/wishlist-graph-all` draws a two-column grid of mini charts, biggest drops
-  first, each with its own price scale. `percentage:true` and its comparison
+  first, each with its own price scale. Prices are printed at the line's corners;
+  today's price, the first price, and the biggest jumps claim space first, and a
+  label that would overlap another or cross the line is dropped. `percentage:true` and its comparison
   button switch to a ranked board: each row shows the period's price range and
   today's price relative to the median `(price / median - 1)`, plus the change
   since the first observation. Products with a nonpositive starting or median
   price are skipped and reported. The board works without exchange rates, using
-  each series' own observations. Both views show at most
-  `MAX_COMBINED_PRODUCTS` (12), and the reply says when products were left out.
+  each series' own observations. Both views fit `PRODUCTS_PER_IMAGE` (12) on one
+  image and continue the same ranking and scales on further images, labelled
+  "Page 1 of 2". Discord allows `MAX_IMAGES` (10) attachments per message, so
+  lists over 120 products show the top 120 and the reply says so.
 - Currency mode defaults to the single item's native currency or the majority
   currency for the combined graph; the user can override it. A single-product
   graph shades a green buy zone below its target when conversion is available.

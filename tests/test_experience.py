@@ -367,8 +367,8 @@ def test_romanian_graph_preserves_product_content_and_localizes_chart(tmp_db,mon
     specs = []
     monkeypatch.setattr(charts,'_png',lambda spec: specs.append(spec) or b'png')
     converter = SimpleNamespace(to_currency=lambda price,*_:price)
-    text,file = graphs.build_graph(1,url,'RON',30,False,converter,lambda cur,_:cur,language='ro')
-    file.close()
+    text,files = graphs.build_graph(1,url,'RON',30,False,converter,lambda cur,_:cur,language='ro')
+    files[0].close()
     assert '30' in text and 'zile' in text
     header = specs[0]['vconcat'][0]['layer']
     texts = [layer['encoding']['text']['value'] for layer in header]

@@ -17,7 +17,7 @@ import discord
 import db
 from i18n import language_for, t
 from analytics import record_for
-from wishlist.charts import MAX_COMBINED_PRODUCTS, render_multi_price_history_png, render_price_history_png
+from wishlist.charts import MAX_COMBINED_PRODUCTS, render_multi_price_history_pngs, render_price_history_png
 
 logger = logging.getLogger("discord_bot")
 
@@ -47,13 +47,13 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
     if url is not None:
         item = db.get_scraped_item(user_id, url)
         if item is None:
-            return t("graph_not_found", language), None
+            return t("graph_not_found", language), []
         items = [(item[2], item[3], item[4], item[5], item[6])]
     else:
         item = None
         items = db.get_user_scraped_items(user_id)
     if not items:
-        return t("empty_wishlist", language), None
+        return t("empty_wishlist", language), []
 
     series = []
     skipped = 0
@@ -76,7 +76,7 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
     mode = t("graph_percentage", language) if percentage else currency
     content = t("graph_period", language, days=days, mode=mode)
     if not series:
-        return content + t("graph_empty", language), None
+        return content + t("graph_empty", language), []
     if skipped:
         content += t("graph_skipped", language, count=skipped)
     render_options = {"language": language} if language != "en" else {}
@@ -89,17 +89,25 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
         png = render_price_history_png(
             [p[0] for p in points], [p[1] for p in points], label, currency, target, **render_options
         )
-        filename = "price_history.png"
+        return content, [discord.File(io.BytesIO(png), filename="price_history.png")]
+    pngs = render_multi_price_history_pngs(series, currency, percentage=percentage, **render_options)
+    if len(series) > MAX_COMBINED_PRODUCTS:
+        content += t("graph_showing_top", language, count=MAX_COMBINED_PRODUCTS, total=len(series), images=len(pngs))
+    elif len(pngs) > 1:
+        content += t("graph_showing_images", language, count=len(series), images=len(pngs))
     else:
-        png = render_multi_price_history_png(series, currency, percentage=percentage, **render_options)
-        filename = "price_history_all.png"
-        if len(series) > MAX_COMBINED_PRODUCTS:
-            content += t("graph_showing_top", language, count=MAX_COMBINED_PRODUCTS, total=len(series))
-        else:
-            content += t("graph_showing", language, count=len(series))
-        if percentage:
-            content += t("graph_baseline", language)
-    return content, discord.File(io.BytesIO(png), filename=filename)
+        content += t("graph_showing", language, count=len(series))
+    if percentage:
+        content += t("graph_baseline", language)
+    return content, [
+        discord.File(io.BytesIO(png), filename=f"price_history_all_{number}.png")
+        for number, png in enumerate(pngs, 1)
+    ]
+
+
+def _close_files(files):
+    for file in files:
+        file.close()
 
 
 class CustomDaysModal(discord.ui.Modal):
@@ -193,15 +201,15 @@ class WishlistGraphView(discord.ui.View):
             await interaction.response.defer()
             new_days = self.days if days is None else validate_days(days)
             new_percentage = not self.percentage if toggle else self.percentage
-            file = None
+            files = []
             try:
-                content, file = await asyncio.to_thread(self.build, new_days, new_percentage)
+                content, files = await asyncio.to_thread(self.build, new_days, new_percentage)
                 old_days, old_percentage = self.days, self.percentage
                 self.days, self.percentage = new_days, new_percentage
                 self._update_buttons()
                 try:
                     await interaction.edit_original_response(
-                        content=content, attachments=[file] if file else [], view=self,
+                        content=content, attachments=files, view=self,
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                 except Exception:
@@ -213,8 +221,7 @@ class WishlistGraphView(discord.ui.View):
                 await record_for("failure", analytics_activity, interaction)
                 await interaction.followup.send(t("graph_failed", self.language), ephemeral=True)
             finally:
-                if file:
-                    file.close()
+                _close_files(files)
 
 
 async def send_graph(interaction, *, url, currency, days, percentage, converter, effective_currency):
@@ -229,22 +236,21 @@ async def send_graph(interaction, *, url, currency, days, percentage, converter,
         build_graph, interaction.user.id, url, currency,
         converter=converter, effective_currency=effective_currency, language=language,
     )
-    file = None
+    files = []
     try:
-        content, file = await asyncio.to_thread(build, days, percentage)
+        content, files = await asyncio.to_thread(build, days, percentage)
         view = WishlistGraphView(
             interaction.user.id, build, days=days, percentage=percentage,
             allow_percentage=url is None, language=language,
         )
         kwargs = {"content": content, "view": view, "ephemeral": True,
                   "allowed_mentions": discord.AllowedMentions.none()}
-        if file:
-            kwargs["file"] = file
+        if files:
+            kwargs["files"] = files
         await interaction.followup.send(**kwargs)
     except Exception:
         logger.exception("Could not build wishlist graph for user %s", interaction.user.id)
         await interaction.followup.send(t("graph_failed", language), ephemeral=True)
     finally:
-        if file:
-            file.close()
+        _close_files(files)
 

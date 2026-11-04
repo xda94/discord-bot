@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 
 from features.wishlist_graphs import GRAPH_MAX_DAYS
-from wishlist.charts import MAX_COMBINED_PRODUCTS
+from wishlist.charts import PRODUCTS_PER_IMAGE
 
 logger = logging.getLogger("discord_bot")
 
@@ -105,7 +105,7 @@ HELP_TEXT = (
     "Use 7/30/90-day buttons or Custom days on the graph.\n\n"
     "**/wishlist-graph-all** `[currency]` `[days]` `[percentage]`\n"
     "Generate a grid of mini price charts for **all** your tracked items, biggest drops first "
-    f"(top {MAX_COMBINED_PRODUCTS} products). Omitted "
+    f"({PRODUCTS_PER_IMAGE} products per image, with more images for longer lists). Omitted "
     "currency uses your saved currency preference if set, then the majority currency in "
     "your list (so the largest number of items appear without "
     "conversion). Optional `currency` (RON, DKK, EUR, USD, GBP) overrides the default and "

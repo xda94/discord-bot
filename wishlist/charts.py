@@ -6,6 +6,8 @@ is drawn as a step line. Three views share one look:
 - single item: price history with the median and a target "buy zone"
 - all items, prices: a grid of mini charts, biggest drops first
 - all items, comparison: a ranked board of today's price against each median
+
+The all-items views span several images when a wishlist doesn't fit in one.
 """
 
 from __future__ import annotations
@@ -30,8 +32,16 @@ PRICE_UP = "#ec835a"
 
 WIDTH = 760
 GRID_CELL_WIDTH = 356
-BOARD_LABEL_WIDTH = 200
-MAX_COMBINED_PRODUCTS = 12
+GRID_PLOT_HEIGHT = 132
+GRID_PLOT_PADDING = 24 / 84  # Keeps a label's height free above and below the line.
+GRID_LABEL_SIZE = 14
+GRID_LABEL_HEIGHT = 16
+GRID_LABEL_GAP = 6
+BOARD_LABEL_WIDTH = 250
+BOARD_LABEL_CHARACTERS = 31
+PRODUCTS_PER_IMAGE = 12
+MAX_IMAGES = 10  # Discord's attachment limit for one message
+MAX_COMBINED_PRODUCTS = PRODUCTS_PER_IMAGE * MAX_IMAGES
 PERCENT_AXIS_LABEL = "datum.value === 0 ? '0%' : format(datum.value, '+.0%')"
 _FLAT_CHANGE_PERCENT = 0.05
 
@@ -60,12 +70,19 @@ def _direction_color(change: float) -> str:
 
 def _unique_labels(labels: list[str], length: int) -> list[str]:
     """Shorten titles while keeping identical or same-prefix products distinct."""
+    def shorten(label: str, room: int) -> str:
+        return f"{label[:room - 1]}…" if len(label) > room else label
+
     seen: dict[str, int] = {}
     unique = []
     for label in labels:
-        short = f"{label[:length - 1]}…" if len(label) > length else label
+        short = shorten(label, length)
         seen[short] = seen.get(short, 0) + 1
-        unique.append(short if seen[short] == 1 else f"{short} #{seen[short]}")
+        if seen[short] == 1:
+            unique.append(short)
+        else:
+            suffix = f" #{seen[short]}"
+            unique.append(shorten(label, length - len(suffix)) + suffix)
     return unique
 
 
@@ -244,10 +261,95 @@ def render_price_history_png(
     return _png(_document({"vconcat": [header, plot]}, language))
 
 
-def _products_note(shown: int, total: int, note: str, language: str) -> str:
-    if shown < total:
-        return f"{t('chart_products_of', language, count=shown, total=total)} · {note}"
+def _pages(items: list) -> list[list]:
+    shown = items[:MAX_COMBINED_PRODUCTS]
+    return [shown[index:index + PRODUCTS_PER_IMAGE] for index in range(0, len(shown), PRODUCTS_PER_IMAGE)]
+
+
+def _page_note(page: int, pages: int, note: str, language: str) -> str:
+    if pages > 1:
+        return f"{t('chart_page', language, page=page, pages=pages)} · {note}"
     return note
+
+
+def _label_width(text: str, size: int) -> float:
+    """Estimate rendered width; the renderer can't be asked before drawing."""
+    units = sum(0.556 if char.isdigit() else 0.278 if char in ",." else 0.6 for char in text)
+    return units * size
+
+
+def _boxes_overlap(first: tuple, second: tuple, gap: float = 0) -> bool:
+    return (first[0] < second[2] + gap and second[0] < first[2] + gap
+            and first[1] < second[3] + gap and second[1] < first[3] + gap)
+
+
+def _corner_labels(points: list[tuple[datetime, float]], time_domain: list[str],
+                   price_domain: list[float], language: str) -> list[dict]:
+    """Place a price at each corner of a step line, skipping any that wouldn't stay legible.
+
+    Today's price, the first price, and the biggest jumps claim space first. A label
+    sits on the open side of its corner and tries the other sides if blocked.
+    """
+    start = datetime.fromisoformat(time_domain[0])
+    span = (datetime.fromisoformat(time_domain[1]) - start).total_seconds()
+    low, high = price_domain
+
+    def x_at(timestamp: datetime) -> float:
+        return GRID_CELL_WIDTH * (timestamp - start).total_seconds() / span
+
+    def y_at(price: float) -> float:
+        return GRID_PLOT_HEIGHT * (high - price) / (high - low)
+
+    prices = [float(price) for _, price in points]
+    xs = [x_at(timestamp) for timestamp, _ in points]
+    ys = [y_at(price) for price in prices]
+    path = []
+    for index in range(len(points) - 1):
+        path.append((xs[index], ys[index], xs[index + 1], ys[index]))
+        path.append((xs[index + 1], min(ys[index], ys[index + 1]), xs[index + 1], max(ys[index], ys[index + 1])))
+
+    moves = [index for index in range(1, len(prices)) if prices[index] != prices[index - 1]]
+    rose_last = bool(moves) and prices[moves[-1]] > prices[moves[-1] - 1]
+    dropped_first = bool(moves) and prices[moves[0]] < prices[moves[0] - 1]
+    # (x, y, price, label above the line, preferred side of the corner)
+    corners = [(xs[-1], ys[-1], prices[-1], rose_last or not moves, "right")]
+    if len(points) > 1:
+        corners.append((xs[0], ys[0], prices[0], dropped_first or not moves, "left"))
+    for index in sorted(moves, key=lambda move: -abs(prices[move] - prices[move - 1])):
+        rose = prices[index] > prices[index - 1]
+        corners.append((xs[index], ys[index - 1], prices[index - 1], not rose, "right"))
+        corners.append((xs[index], ys[index], prices[index], rose, "left"))
+
+    placed: list[dict] = []
+    boxes: list[tuple] = []
+    shown_prices: list[tuple[str, float]] = []
+    for corner_x, corner_y, price, above, preferred in corners:
+        text = _money(price, language)
+        width = _label_width(text, GRID_LABEL_SIZE)
+        if any(shown == text and abs(shown_x - corner_x) < width * 2 for shown, shown_x in shown_prices):
+            continue
+        over = corner_y - GRID_LABEL_GAP - GRID_LABEL_HEIGHT
+        under = corner_y + GRID_LABEL_GAP
+        spots = [
+            (top, align)
+            for top in ((over, under) if above else (under, over))
+            for align in (preferred, "left" if preferred == "right" else "right")
+        ]
+        for top, align in spots:
+            left = corner_x - width if align == "right" else corner_x
+            left = min(max(left, 0), GRID_CELL_WIDTH - width)
+            box = (left, top, left + width, top + GRID_LABEL_HEIGHT)
+            if top < 0 or top + GRID_LABEL_HEIGHT > GRID_PLOT_HEIGHT:
+                continue
+            if any(_boxes_overlap(box, other, 4) for other in boxes):
+                continue
+            if any(_boxes_overlap(box, segment) for segment in path):
+                continue
+            boxes.append(box)
+            shown_prices.append((text, corner_x))
+            placed.append({"x": left, "y": top, "text": text})
+            break
+    return placed
 
 
 def _grid_cell(label: str, points: list[tuple[datetime, float]], currency: str,
@@ -255,9 +357,14 @@ def _grid_cell(label: str, points: list[tuple[datetime, float]], currency: str,
     current = float(points[-1][1])
     change = _change_percent(float(points[0][1]), current)
     color = _direction_color(change)
-    domain = _price_domain([float(price) for _, price in points], 0.18)
+    domain = _price_domain([float(price) for _, price in points], GRID_PLOT_PADDING)
     y = {"field": "price", "type": "quantitative", "scale": {"domain": domain, "nice": False}, "axis": None}
     x = _time_x(time_domain)
+    corner_labels = [
+        {"data": {"values": [{}]},
+         **_text(corner["x"], corner["y"], corner["text"], GRID_LABEL_SIZE, SECONDARY_TEXT, baseline="top")}
+        for corner in _corner_labels(points, time_domain, domain, language)
+    ]
     return {
         "vconcat": [
             {
@@ -269,7 +376,7 @@ def _grid_cell(label: str, points: list[tuple[datetime, float]], currency: str,
                 ],
             },
             {
-                "width": GRID_CELL_WIDTH, "height": 92,
+                "width": GRID_CELL_WIDTH, "height": GRID_PLOT_HEIGHT,
                 "data": {"values": [_row(*point) for point in points]},
                 "layer": [
                     {"mark": {"type": "area", "interpolate": "step-after", "color": color, "opacity": 0.13},
@@ -279,6 +386,7 @@ def _grid_cell(label: str, points: list[tuple[datetime, float]], currency: str,
                     {"data": {"values": [_row(*points[-1])]},
                      "mark": {"type": "point", "filled": True, "size": 70, "color": color, "opacity": 1},
                      "encoding": {"x": x, "y": y}},
+                    *corner_labels,
                 ],
             },
         ],
@@ -286,24 +394,27 @@ def _grid_cell(label: str, points: list[tuple[datetime, float]], currency: str,
     }
 
 
-def _render_grid(series, currency: str, language: str) -> bytes:
+def _render_grid(series, currency: str, language: str) -> list[bytes]:
     labels = _unique_labels([label for label, _ in series], 44)
     ranked = sorted(
         zip(labels, (points for _, points in series)),
         key=lambda item: _change_percent(float(item[1][0][1]), float(item[1][-1][1])),
     )
-    shown = ranked[:MAX_COMBINED_PRODUCTS]
-    time_domain = _time_domain([timestamp for _, points in shown for timestamp, _ in points])
-    cells = [_grid_cell(label, points, currency, time_domain, language) for label, points in shown]
-    rows = [{"hconcat": cells[index:index + 2], "spacing": 28} for index in range(0, len(cells), 2)]
-    note = _products_note(len(shown), len(series), t("chart_grid_note", language), language)
-    heading = _heading(t("chart_grid_title", language), note, width=GRID_CELL_WIDTH * 2 + 28)
-    return _png(_document({"vconcat": [heading, *rows], "spacing": 24}, language))
+    pages = _pages(ranked)
+    time_domain = _time_domain([timestamp for page in pages for _, points in page for timestamp, _ in points])
+    images = []
+    for number, page in enumerate(pages, 1):
+        cells = [_grid_cell(label, points, currency, time_domain, language) for label, points in page]
+        rows = [{"hconcat": cells[index:index + 2], "spacing": 28} for index in range(0, len(cells), 2)]
+        note = _page_note(number, len(pages), t("chart_grid_note", language), language)
+        heading = _heading(t("chart_grid_title", language), note, width=GRID_CELL_WIDTH * 2 + 28)
+        images.append(_png(_document({"vconcat": [heading, *rows], "spacing": 24}, language)))
+    return images
 
 
-def _render_board(series, language: str) -> bytes:
+def _render_board(series, language: str) -> list[bytes]:
     rows = []
-    for label, (_, points) in zip(_unique_labels([label for label, _ in series], 25), series):
+    for label, (_, points) in zip(_unique_labels([label for label, _ in series], BOARD_LABEL_CHARACTERS), series):
         prices = [float(price) for _, price in points]
         median = statistics.median(prices)
         if prices[0] <= 0 or median <= 0:
@@ -319,18 +430,25 @@ def _render_board(series, language: str) -> bytes:
             "color": _direction_color(versus * 100),
         })
     rows.sort(key=lambda row: row["today"])
-    total = len(rows)
-    rows = rows[:MAX_COMBINED_PRODUCTS]
     for rank, row in enumerate(rows):
         row["rank"] = rank
+    pages = _pages(rows)
+    # One scale across images, so a dot's position means the same on every page.
+    limit = max(max(abs(row["low"]), abs(row["high"])) for row in rows) * 1.08 or 0.05
+    return [
+        _board_image(page, limit, number, len(pages), language)
+        for number, page in enumerate(pages, 1)
+    ]
+
+
+def _board_image(rows: list[dict], limit: float, page: int, pages: int, language: str) -> bytes:
     height = len(rows) * 46
 
     y = {"field": "rank", "type": "ordinal", "axis": None,
          "scale": {"domain": [row["rank"] for row in rows]}}
-    limit = max(max(abs(row["low"]), abs(row["high"])) for row in rows) * 1.08 or 0.05
     x = {"type": "quantitative", "scale": {"domain": [-limit, limit], "nice": False},
-         "axis": {"title": None, "labelExpr": PERCENT_AXIS_LABEL, "tickCount": 5, "orient": "top"}}
-    range_width = 300
+         "axis": {"title": None, "labelExpr": PERCENT_AXIS_LABEL, "tickCount": 3, "orient": "top"}}
+    range_width = 250
 
     def column(field: str, header: str, width: int, weight: int, color: str, align: str = "right") -> dict:
         anchor = width if align == "right" else 0
@@ -358,7 +476,7 @@ def _render_board(series, language: str) -> bytes:
         ],
     }
     versus_width, since_width, spacing = 96, 104, 8
-    note = _products_note(len(rows), total, t("chart_board_note", language), language)
+    note = _page_note(page, pages, t("chart_board_note", language), language)
     heading = _heading(
         t("chart_board_title", language), note,
         width=BOARD_LABEL_WIDTH + range_width + versus_width + since_width + spacing * 3,
@@ -375,12 +493,12 @@ def _render_board(series, language: str) -> bytes:
     return _png(_document({"vconcat": [heading, board], "spacing": 20}, language))
 
 
-def render_multi_price_history_png(
+def render_multi_price_history_pngs(
     series: list[tuple[str, list[tuple[datetime, float]]]],
     currency: str,
     percentage: bool = False,
     *, language: str = "en",
-) -> bytes:
+) -> list[bytes]:
     if percentage:
         return _render_board(series, language)
     return _render_grid(series, currency, language)

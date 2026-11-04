@@ -44,10 +44,10 @@ def test_graph_filters_custom_period_and_ownership(tmp_db, monkeypatch):
         for item_id, price, age in [(own, 100, 50), (own, 80, 14), (own, 90, 1), (other, 600, 1)]:
             c.execute("INSERT INTO price_history (item_id, price, timestamp) VALUES (?, ?, ?)",
                       (item_id, price, now - age * 86400))
-    renderer = MagicMock(return_value=b"png")
-    monkeypatch.setattr(graphs, "render_multi_price_history_png", renderer)
+    renderer = MagicMock(return_value=[b"png"])
+    monkeypatch.setattr(graphs, "render_multi_price_history_pngs", renderer)
     converter = SimpleNamespace(to_currency=lambda price, *_: price)
-    content, file = graphs.build_graph(123, None, "RON", 14, True, converter, lambda cur, _: cur)
+    content, files = graphs.build_graph(123, None, "RON", 14, True, converter, lambda cur, _: cur)
     try:
         series = renderer.call_args.args[0]
         assert len(series) == 1
@@ -56,13 +56,12 @@ def test_graph_filters_custom_period_and_ownership(tmp_db, monkeypatch):
         assert "14 days" in content
         assert renderer.call_args.kwargs["percentage"] is True
     finally:
-        file.close()
+        graphs._close_files(files)
     renderer.reset_mock()
-    content, file = graphs.build_graph(123, url, "RON", 1, False, converter, lambda cur, _: cur)
-    if file:
-        file.close()
-    content, file = graphs.build_graph(999, url, "RON", 14, False, converter, lambda cur, _: cur)
-    assert file is None and "not in your tracking list" in content
+    content, files = graphs.build_graph(123, url, "RON", 1, False, converter, lambda cur, _: cur)
+    graphs._close_files(files)
+    content, files = graphs.build_graph(999, url, "RON", 14, False, converter, lambda cur, _: cur)
+    assert files == [] and "not in your tracking list" in content
 
 
 def test_percentage_skips_zero_baseline_but_does_not_need_exchange_rates(tmp_db, monkeypatch):
@@ -71,8 +70,8 @@ def test_percentage_skips_zero_baseline_but_does_not_need_exchange_rates(tmp_db,
     db.add_price_history(item_id, 0)
     db.add_price_history(item_id, 100)
     converter = MagicMock()
-    text, file = graphs.build_graph(123, None, "RON", 180, True, converter, lambda *_: None)
-    assert file is None and "positive starting and median" in text
+    text, files = graphs.build_graph(123, None, "RON", 180, True, converter, lambda *_: None)
+    assert files == [] and "positive starting and median" in text
     converter.to_currency.assert_not_called()
 
 
@@ -80,26 +79,69 @@ def test_comparison_skips_zero_median(tmp_db):
     item_id = db.add_scraped_item(123, "https://example.com/mostly-zero")
     for price in [5, 0, 0]:
         db.add_price_history(item_id, price)
-    text, file = graphs.build_graph(123, None, "RON", 180, True, MagicMock(), lambda *_: None)
-    assert file is None and "positive starting and median" in text
+    text, files = graphs.build_graph(123, None, "RON", 180, True, MagicMock(), lambda *_: None)
+    assert files == [] and "positive starting and median" in text
 
 
-def test_reply_says_when_combined_graph_leaves_products_out(tmp_db, monkeypatch):
-    monkeypatch.setattr(graphs, "render_multi_price_history_png", MagicMock(return_value=b"png"))
-    total = graphs.MAX_COMBINED_PRODUCTS + 1
-    for index in range(total):
+def _track_items(count):
+    for index in range(count):
         item_id = db.add_scraped_item(123, f"https://example.com/{index}", currency="RON")
         db.add_price_history(item_id, 100)
-    converter = SimpleNamespace(to_currency=lambda price, *_: price)
-    text, file = graphs.build_graph(123, None, "RON", 30, False, converter, lambda cur, _: cur)
-    file.close()
-    assert f"top {graphs.MAX_COMBINED_PRODUCTS} of {total} products" in text
+    return SimpleNamespace(to_currency=lambda price, *_: price)
+
+
+def test_long_wishlist_gets_one_attachment_per_image_and_the_reply_says_so(tmp_db, monkeypatch):
+    monkeypatch.setattr(graphs, "render_multi_price_history_pngs", MagicMock(return_value=[b"one", b"two"]))
+    converter = _track_items(21)
+    text, files = graphs.build_graph(123, None, "RON", 30, False, converter, lambda cur, _: cur)
+    assert [file.filename for file in files] == ["price_history_all_1.png", "price_history_all_2.png"]
+    assert files[1].fp.read() == b"two"
+    graphs._close_files(files)
+    assert "21 products across 2 images" in text
+
+
+def test_reply_says_when_products_exceed_what_one_message_can_hold(tmp_db, monkeypatch):
+    monkeypatch.setattr(graphs, "MAX_COMBINED_PRODUCTS", 2)
+    monkeypatch.setattr(graphs, "render_multi_price_history_pngs", MagicMock(return_value=[b"one"]))
+    converter = _track_items(3)
+    text, files = graphs.build_graph(123, None, "RON", 30, False, converter, lambda cur, _: cur)
+    graphs._close_files(files)
+    assert "top 2 of 3 products" in text
+
+
+def test_every_image_is_sent_then_replaced_and_closed(monkeypatch):
+    def attachments(count):
+        return [discord.File(io.BytesIO(b"png"), filename=f"{index}.png") for index in range(count)]
+
+    sent = attachments(2)
+    edited = attachments(3)
+    monkeypatch.setattr(graphs, "build_graph", MagicMock(side_effect=[("two", sent), ("three", edited)]))
+    closed = []
+    monkeypatch.setattr(discord.File, "close", lambda file: closed.append(file))
+
+    async def run():
+        interaction = _interaction()
+        interaction._language = "en"
+        await graphs.send_graph(
+            interaction, url=None, currency="RON", days=30, percentage=False,
+            converter=None, effective_currency=None,
+        )
+        kwargs = interaction.followup.send.await_args.kwargs
+        assert kwargs["files"] == sent
+        update = _interaction()
+        await kwargs["view"].update_graph(update, days=7)
+        assert update.edit_original_response.await_args.kwargs["attachments"] == edited
+        kwargs["view"].stop()
+
+    monkeypatch.setattr(graphs, "record_for", AsyncMock())
+    asyncio.run(run())
+    assert closed == sent + edited
 
 
 def test_graph_buttons_custom_days_and_percentage_replace_original_attachment():
     async def run():
         build = MagicMock(side_effect=lambda days, percentage: (
-            f"{days} days / {percentage}", discord.File(io.BytesIO(b"png"), filename="graph.png")
+            f"{days} days / {percentage}", [discord.File(io.BytesIO(b"png"), filename="graph.png")]
         ))
         view = graphs.WishlistGraphView(123, build, allow_percentage=True)
         interaction = _interaction()
@@ -114,7 +156,7 @@ def test_graph_buttons_custom_days_and_percentage_replace_original_attachment():
         await view.children[4].callback(interaction)
         assert build.call_args.args == (45, True)
         assert view.children[4].label == "Show prices"
-        build.return_value = ("No observations", None)
+        build.return_value = ("No observations", [])
         build.side_effect = None
         await view.update_graph(interaction, days=1)
         assert interaction.edit_original_response.await_args.kwargs["attachments"] == []

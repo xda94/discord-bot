@@ -18,7 +18,7 @@ from notifications import deliver_tracking, tracking_language
 import db
 from analytics import record
 from features.wishlist_graphs import GRAPH_MAX_DAYS, send_graph
-from wishlist.charts import render_multi_price_history_png, render_price_history_png
+from wishlist.charts import render_price_history_png
 from llm.responses import generate_price_change_message
 
 from wishlist.refresh import refresh_item
@@ -705,15 +705,6 @@ class WishlistFeature:
             timestamps, prices, title, item_currency, target_price
         )
         return discord.File(io.BytesIO(png), filename="price_history.png")
-
-    @staticmethod
-    def _render_multi_price_graph(
-        series: list[tuple[str, list[tuple[datetime, float]]]],
-        currency_label: str,
-    ) -> discord.File:
-        """Render an all-items Vega-Lite chart entirely in memory."""
-        png = render_multi_price_history_png(series, currency_label)
-        return discord.File(io.BytesIO(png), filename="price_history_all.png")
 
     SCRAPE_LOOP_GAP_SECONDS = 1.0
 

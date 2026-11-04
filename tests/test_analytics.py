@@ -369,7 +369,7 @@ def test_graph_control_counts_only_after_ownership_check(monkeypatch):
             self._lock = asyncio.Lock()
             self.days = 30
             self.percentage = False
-            self.build = lambda days, percentage: ("ok", None)
+            self.build = lambda days, percentage: ("ok", [])
 
         async def interaction_check(self, _interaction):
             return self.allowed

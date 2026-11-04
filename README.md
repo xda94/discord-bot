@@ -404,7 +404,7 @@ use a 0–1 probability.
 | `/wishlist-refresh [url]` | With a URL, fetch only that tracked item; omit it to refresh your entire wishlist. Reports source, freshness, stock, price, and target progress. Five-minute cooldown per item; cooling items are skipped during an all-item refresh. |
 | `/wishlist-show [currency]` | List your items. Default: saved profile currency when set, otherwise each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
 | `/wishlist-graph <url> [currency] [days]` | PNG price history for one URL. Omitted currency uses the saved profile currency, then the item's native currency. Any whole-number period up to `WISHLIST_HISTORY_DAYS`, which is also the default (180 unless configured). |
-| `/wishlist-graph-all [currency] [days] [percentage]` | Grid of mini price charts, biggest drops first; omitted currency uses the saved profile currency, then the majority across your list. Set `percentage:true` to rank products by how today's price compares with their median in the selected period. Both views show the top 12 products. |
+| `/wishlist-graph-all [currency] [days] [percentage]` | Grid of mini price charts with prices at each corner of the line, biggest drops first; omitted currency uses the saved profile currency, then the majority across your list. Set `percentage:true` to rank products by how today's price compares with their median in the selected period. Both views fit 12 products per image and send up to 10 images, so a list over 120 products shows the top 120. |
 
 Graph replies have **7 / 30 / 90 days** buttons and a **Custom days** dialog
 (1 to `WISHLIST_HISTORY_DAYS`). For example, `/wishlist-graph-all days:45 percentage:true` ranks

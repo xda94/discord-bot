@@ -98,7 +98,8 @@ CATALOG = {
  'graph_empty': (' No usable observations in this period. Try a longer range. Currency views need a known currency/rate; comparison views need positive starting and median prices.', ' Nu există observații utilizabile în această perioadă. Încearcă un interval mai lung. Prețurile necesită o monedă și un curs cunoscut; comparațiile necesită prețuri inițiale și mediane pozitive.'),
  'graph_skipped': (' Skipped {count} item(s): no observations, unavailable currency conversion, or nonpositive starting or median price.', ' {count} produse omise: lipsesc observațiile, conversia valutară sau prețuri inițiale și mediane pozitive.'),
  'graph_showing': (' Showing {count} product(s).', ' Sunt afișate {count} produse.'),
- 'graph_showing_top': (' Showing the top {count} of {total} products.', ' Sunt afișate primele {count} din {total} produse.'),
+ 'graph_showing_images': (' Showing {count} products across {images} images.', ' Sunt afișate {count} produse în {images} imagini.'),
+ 'graph_showing_top': (' Showing the top {count} of {total} products across {images} images.', ' Sunt afișate primele {count} din {total} produse în {images} imagini.'),
  'graph_baseline': (" Today's price is compared with each product's median in this period.", ' Prețul de azi este comparat cu mediana fiecărui produs din această perioadă.'),
  'graph_custom': ('Custom graph period', 'Interval personalizat'),
  'graph_days': ('{days} days', '{days} zile'),
@@ -125,7 +126,7 @@ CATALOG = {
  'chart_board_note': ('Bar: price range · Dot: today · Centre line: median', 'Bară: interval de preț · Punct: azi · Linia centrală: mediană'),
  'chart_median_column': ('vs median', 'față de mediană'),
  'chart_start_column': ('since start', 'de la început'),
- 'chart_products_of': ('{count} of {total} products', '{count} din {total} produse'),
+ 'chart_page': ('Page {page} of {pages}', 'Pagina {page} din {pages}'),
 }
 
 
