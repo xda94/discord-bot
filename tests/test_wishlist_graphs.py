@@ -20,6 +20,20 @@ def _interaction(user_id=123):
     )
 
 
+def test_history_days_default_and_env_override(monkeypatch):
+    monkeypatch.delenv("WISHLIST_HISTORY_DAYS", raising=False)
+    assert graphs._configured_history_days() == 180
+    monkeypatch.setenv("WISHLIST_HISTORY_DAYS", "365")
+    assert graphs._configured_history_days() == 365
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "1.5"])
+def test_history_days_rejects_values_that_could_wipe_history(monkeypatch, value):
+    monkeypatch.setenv("WISHLIST_HISTORY_DAYS", value)
+    with pytest.raises(ValueError):
+        graphs._configured_history_days()
+
+
 def test_graph_filters_custom_period_and_ownership(tmp_db, monkeypatch):
     now = 1_800_000_000
     monkeypatch.setattr(graphs.time, "time", lambda: now)
@@ -58,8 +72,28 @@ def test_percentage_skips_zero_baseline_but_does_not_need_exchange_rates(tmp_db,
     db.add_price_history(item_id, 100)
     converter = MagicMock()
     text, file = graphs.build_graph(123, None, "RON", 180, True, converter, lambda *_: None)
-    assert file is None and "positive starting price" in text
+    assert file is None and "positive starting and median" in text
     converter.to_currency.assert_not_called()
+
+
+def test_comparison_skips_zero_median(tmp_db):
+    item_id = db.add_scraped_item(123, "https://example.com/mostly-zero")
+    for price in [5, 0, 0]:
+        db.add_price_history(item_id, price)
+    text, file = graphs.build_graph(123, None, "RON", 180, True, MagicMock(), lambda *_: None)
+    assert file is None and "positive starting and median" in text
+
+
+def test_reply_says_when_combined_graph_leaves_products_out(tmp_db, monkeypatch):
+    monkeypatch.setattr(graphs, "render_multi_price_history_png", MagicMock(return_value=b"png"))
+    total = graphs.MAX_COMBINED_PRODUCTS + 1
+    for index in range(total):
+        item_id = db.add_scraped_item(123, f"https://example.com/{index}", currency="RON")
+        db.add_price_history(item_id, 100)
+    converter = SimpleNamespace(to_currency=lambda price, *_: price)
+    text, file = graphs.build_graph(123, None, "RON", 30, False, converter, lambda cur, _: cur)
+    file.close()
+    assert f"top {graphs.MAX_COMBINED_PRODUCTS} of {total} products" in text
 
 
 def test_graph_buttons_custom_days_and_percentage_replace_original_attachment():

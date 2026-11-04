@@ -6,6 +6,8 @@ import asyncio
 import io
 import logging
 import math
+import os
+import statistics
 import time
 from datetime import datetime, timezone
 from functools import partial
@@ -15,10 +17,20 @@ import discord
 import db
 from i18n import language_for, t
 from analytics import record_for
-from wishlist.charts import render_multi_price_history_png, render_price_history_png
+from wishlist.charts import MAX_COMBINED_PRODUCTS, render_multi_price_history_png, render_price_history_png
 
 logger = logging.getLogger("discord_bot")
-GRAPH_MAX_DAYS = 180
+
+
+def _configured_history_days() -> int:
+    """Read the retention window, refusing values that would wipe saved history."""
+    days = int(os.getenv("WISHLIST_HISTORY_DAYS", "180"))
+    if days < 1:
+        raise ValueError("WISHLIST_HISTORY_DAYS must be a whole number of at least 1.")
+    return days
+
+
+GRAPH_MAX_DAYS = _configured_history_days()
 
 
 def validate_days(days: int) -> int:
@@ -54,7 +66,9 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
             value = float(price) if percentage else converter.to_currency(price, source, currency)
             if value is not None and math.isfinite(value):
                 points.append((datetime.fromtimestamp(ts, timezone.utc), value))
-        if not points or (percentage and points[0][1] <= 0):
+        if not points or (percentage and (
+            points[0][1] <= 0 or statistics.median(p[1] for p in points) <= 0
+        )):
             skipped += 1
             continue
         series.append((title or item_url, points))
@@ -79,7 +93,10 @@ def build_graph(user_id, url, currency, days, percentage, converter, effective_c
     else:
         png = render_multi_price_history_png(series, currency, percentage=percentage, **render_options)
         filename = "price_history_all.png"
-        content += t("graph_showing", language, count=len(series))
+        if len(series) > MAX_COMBINED_PRODUCTS:
+            content += t("graph_showing_top", language, count=MAX_COMBINED_PRODUCTS, total=len(series))
+        else:
+            content += t("graph_showing", language, count=len(series))
         if percentage:
             content += t("graph_baseline", language)
     return content, discord.File(io.BytesIO(png), filename=filename)
@@ -91,7 +108,7 @@ class CustomDaysModal(discord.ui.Modal):
         self.graph_view = graph_view
         self.days_input = discord.ui.TextInput(
             label=t("graph_days_label", graph_view.language, maximum=GRAPH_MAX_DAYS),
-            default=str(graph_view.days), min_length=1, max_length=3,
+            default=str(graph_view.days), min_length=1, max_length=len(str(GRAPH_MAX_DAYS)),
         )
         self.add_item(self.days_input)
 

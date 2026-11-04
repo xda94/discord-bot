@@ -370,9 +370,11 @@ def test_romanian_graph_preserves_product_content_and_localizes_chart(tmp_db,mon
     text,file = graphs.build_graph(1,url,'RON',30,False,converter,lambda cur,_:cur,language='ro')
     file.close()
     assert '30' in text and 'zile' in text
-    assert specs[0]['title']['text'] == 'Price: My English Title'
-    assert 'Acum' in specs[0]['title']['subtitle'][1]
-    assert specs[0]['layer'][0]['encoding']['y']['axis']['title'] == 'Preț (RON)'
+    header = specs[0]['vconcat'][0]['layer']
+    texts = [layer['encoding']['text']['value'] for layer in header]
+    assert 'Price: My English Title' in texts
+    assert '90 RON' in texts
+    assert any('față de mediană' in text for text in texts)
     async def controls():
         view = graphs.WishlistGraphView(1,lambda *_:None,language='ro')
         assert view.children[0].label == '7 zile'

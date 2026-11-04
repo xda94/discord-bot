@@ -457,7 +457,7 @@ The wishlist scraper runs every 12 hours. For each item it:
    target-price crossing (unless the item is restock-only).
 6. Updates the stored item snapshot, alert state, and check freshness/status.
 
-Items are processed sequentially with a politeness delay. Price history older than 180 days is deleted after a pass.
+Items are processed sequentially with a politeness delay. Price history older than `WISHLIST_HISTORY_DAYS` (default 180) is deleted after a pass.
 Target prices are stored with their requested currency and fire only once per
 below-target period; they re-arm after the price rises above the target.
 Restock-only items continue collecting snapshots and price history but only DM
@@ -496,30 +496,34 @@ A second loop refreshes EUR-based exchange rates every 24 hours for RON, DKK, EU
 The graph UI and data selection live in `features/wishlist_graphs.py`; renderer
 specifications and PNG generation live in `wishlist/charts.py`.
 
-- Both graph commands accept `days` from 1–180, default 180. Saved timestamps
-  are filtered to the rolling selected period before conversion or comparison.
+- Both graph commands accept `days` from 1 to `WISHLIST_HISTORY_DAYS`, which is
+  also the default (180 unless configured). Saved timestamps are filtered to the rolling selected period before conversion or comparison.
 - Replies have 7/30/90-day buttons plus a Custom days modal accepting any whole
   number in that range. Controls edit the original private graph attachment.
-- `/wishlist-graph-all percentage:true` and its comparison button switch to
-  relative changes. Each product starts at 0% at its first observation within
-  the selected period; subsequent values are `(price / starting_price - 1)`.
-  Products with a nonpositive baseline are skipped and reported. Percentage
-  mode works without exchange rates, using each series' own observations.
+- `/wishlist-graph-all` draws a two-column grid of mini charts, biggest drops
+  first, each with its own price scale. `percentage:true` and its comparison
+  button switch to a ranked board: each row shows the period's price range and
+  today's price relative to the median `(price / median - 1)`, plus the change
+  since the first observation. Products with a nonpositive starting or median
+  price are skipped and reported. The board works without exchange rates, using
+  each series' own observations. Both views show at most
+  `MAX_COMBINED_PRODUCTS` (12), and the reply says when products were left out.
 - Currency mode defaults to the single item's native currency or the majority
   currency for the combined graph; the user can override it. A single-product
-  graph also displays its target line when conversion is available.
-- Numbered series labels keep products separate even with identical or
-  truncated titles. Lines connect observed points directly, without smoothing.
+  graph shades a green buy zone below its target when conversion is available.
+- Identical or truncated titles get a ` #n` suffix so products stay separate.
+  Lines are drawn as steps, without smoothing, because a price holds until a
+  shop changes it.
 - Time axes use UTC; labels include hours/minutes for short spans and years
-  when a range crosses a year. Latest points and current/lowest/change summaries
-  make single-item charts easier to read.
+  when a range crosses a year. Single-item charts lead with the current price,
+  its distance from the median, and the change since the first observation.
 - Data reads and rendering execute in a worker thread. Buttons read saved
   history; they do not refresh product pages. Missing history keeps controls
   available so the requester can choose another period.
 - Controls are requester-only, expire after ten minutes idle, and do not
   survive a bot restart. A per-view lock prevents overlapping redraws; rendering
   errors retain the prior view and allow retry. They cannot restore observations
-  deleted by the 180-day history retention policy.
+  deleted by the `WISHLIST_HISTORY_DAYS` retention policy.
 
 ### `wishlist/scraper.py`
 
@@ -1084,7 +1088,7 @@ ordering, and nullable/available host metrics including temperature.
 `tests/test_wishlist_graphs.py` covers custom periods, requester scoping,
 button/modal updates, missing data, invalid baselines, error recovery, and
 slash-option registration. `tests/test_chart_renderer.py` covers real PNG
-rendering, duplicate titles, percentage calculations, and time-axis formatting.
+rendering, duplicate titles, median comparison, product caps, and time-axis formatting.
 Mention tests cover explicit requester tags and one-ping multipart replies;
 command-naming tests cover the hyphen convention.
 

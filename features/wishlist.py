@@ -302,7 +302,7 @@ class WishlistFeature:
         @app_commands.describe(
             url="The URL of the item",
             currency="Display currency (default: the item's own currency)",
-            days="Days of saved history, 1–180 (default 180)",
+            days=f"Days of saved history, 1–{GRAPH_MAX_DAYS} (default {GRAPH_MAX_DAYS})",
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph(
@@ -327,8 +327,8 @@ class WishlistFeature:
         )
         @app_commands.describe(
             currency="Display currency (default: majority currency across your items)",
-            days="Days of saved history, 1–180 (default 180)",
-            percentage="Compare percentage changes instead of prices (default false)",
+            days=f"Days of saved history, 1–{GRAPH_MAX_DAYS} (default {GRAPH_MAX_DAYS})",
+            percentage="Rank products by today's price against their median (default false)",
         )
         @app_commands.choices(currency=CURRENCY_CHOICES)
         async def scrape_graph_all(
@@ -700,7 +700,7 @@ class WishlistFeature:
     def _render_price_graph(
         timestamps, prices, title, item_currency, target_price=None
     ) -> discord.File:
-        """Render a modern single-item Vega-Lite chart entirely in memory."""
+        """Render a single-item Vega-Lite chart entirely in memory."""
         png = render_price_history_png(
             timestamps, prices, title, item_currency, target_price
         )

@@ -97,6 +97,7 @@ LLM_MENTION_MAX_TOKENS=384
 | `SERPAPI_HL` | No | Google Flights response language. Default: `en`. |
 | `FLIGHT_CHECK_INTERVAL_HOURS` | No | Hours between flight tracker passes. Default: `5`; raise this if the account approaches its monthly quota. Minimum: `1`. |
 | `FLIGHT_CHECK_GAP_SECONDS` | No | Delay between users' flight trackers in one pass. Default: `1`. |
+| `WISHLIST_HISTORY_DAYS` | No (bot) | Days of wishlist price history to keep, and the longest period the graph commands accept. Default: `180`; minimum: `1`. Lowering it permanently deletes older observations on the next scrape pass. |
 
 Start llama.cpp before the bot. The alias must match
 `LLAMA_CPP_DEFAULT_MODEL`:
@@ -297,7 +298,7 @@ tracking notifications for the selected user.
 
 | Feature | Interval | What it does |
 |---|---|---|
-| Wishlist scrape | 12 h | Fetches each tracked URL, updates price/stock, appends history, trims entries older than 180 days, DMs on change / back-in-stock / buy-wait alerts |
+| Wishlist scrape | 12 h | Fetches each tracked URL, updates price/stock, appends history, trims entries older than `WISHLIST_HISTORY_DAYS` (default 180 days), DMs on change / back-in-stock / buy-wait alerts |
 | Flight tracker | 5 h (configurable) | Checks the least-recently searched fixed-date tracker for each user, stores price history, and DMs on the first result or a lower price |
 | Exchange rates | 24 h | Refreshes EUR-based rates for RON, DKK, EUR, USD, GBP |
 | Daily joke | 30 s check | Per subscribed guild: posts one joke in the configured window once per day |
@@ -402,22 +403,25 @@ use a 0–1 probability.
 | `/wishlist-restock-only <url> <enabled>` | Suppress price/target DMs for this item while continuing to track it; only back-in-stock changes notify. |
 | `/wishlist-refresh [url]` | With a URL, fetch only that tracked item; omit it to refresh your entire wishlist. Reports source, freshness, stock, price, and target progress. Five-minute cooldown per item; cooling items are skipped during an all-item refresh. |
 | `/wishlist-show [currency]` | List your items. Default: saved profile currency when set, otherwise each item’s native currency. Optional: `RON`, `DKK`, `EUR`, `USD`, `GBP`. |
-| `/wishlist-graph <url> [currency] [days]` | PNG price history for one URL. Omitted currency uses the saved profile currency, then the item's native currency. Any whole-number period from 1–180 days; default 180. |
-| `/wishlist-graph-all [currency] [days] [percentage]` | Combined graph; omitted currency uses the saved profile currency, then the majority across your list. Set `percentage:true` to compare changes from each product's first observation in the selected period. |
+| `/wishlist-graph <url> [currency] [days]` | PNG price history for one URL. Omitted currency uses the saved profile currency, then the item's native currency. Any whole-number period up to `WISHLIST_HISTORY_DAYS`, which is also the default (180 unless configured). |
+| `/wishlist-graph-all [currency] [days] [percentage]` | Grid of mini price charts, biggest drops first; omitted currency uses the saved profile currency, then the majority across your list. Set `percentage:true` to rank products by how today's price compares with their median in the selected period. Both views show the top 12 products. |
 
 Graph replies have **7 / 30 / 90 days** buttons and a **Custom days** dialog
-(1–180). For example, `/wishlist-graph-all days:45 percentage:true` compares
-45 days of relative price changes. The combined graph also has a button to
-switch between prices and percentage changes. Percentage mode starts each
-product at 0%; products with a zero or negative starting price are skipped.
-It uses each product's native observations and needs no exchange rates.
+(1 to `WISHLIST_HISTORY_DAYS`). For example, `/wishlist-graph-all days:45 percentage:true` ranks
+products against their 45-day medians. The combined graph also has a button to
+switch between the price grid and that comparison. Each comparison row shows
+the period's price range, today's price against the median, and the change
+since the first check; products with a zero or negative starting or median
+price are skipped. It uses each product's native observations and needs no
+exchange rates.
 
 Controls belong to the requester and expire after ten minutes of inactivity
 or a bot restart. They redraw saved data without fetching product pages.
 An empty period keeps the controls available to select a longer range.
-Charts use straight lines between observations, unique numbered product labels,
-and date/time labels in UTC that adapt to the history span. Custom periods
-cannot recover history already removed by the 180-day retention policy.
+Charts draw prices as steps, since a price holds until a shop changes it. A
+single-item chart marks the median, the lowest price, and a green buy zone below
+your target. Date labels are in UTC and adapt to the history span. Custom periods
+cannot recover history already removed by the `WISHLIST_HISTORY_DAYS` retention policy.
 
 **Currency** — read from the page when possible; TLD fallback (e.g. `.ro` → RON, `.dk` → DKK).
 
@@ -803,7 +807,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `jokes.py` | `JokesFeature` | Joke pool + per-guild schedule commands and loop |
 | `sponsors.py` | `SponsorsFeature` | Sponsor state, `/sponsor-set`, `/sponsor-set-tiers`, plan display, and expiry |
 | `wishlist.py` | `WishlistFeature` | `/wishlist-*` commands, scrape loop, and Discord notifications |
-| `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and percentage comparison |
+| `wishlist_graphs.py` | `WishlistGraphView`, `CustomDaysModal` | Saved-history filtering, graph buttons, custom periods, and median comparison |
 | `flights.py` | `FlightTrackerFeature` | `/flight-tracker-*` login and tracker commands, immediate searches, five-hour checks, lower-price DMs |
 | `stats.py` | `StatsFeature` | `/stats` |
 | `llm_mention.py` | `LLMMentionFeature`, `ContextReactionFeature` | Prioritized @bot replies and contextual reactions through llama.cpp |

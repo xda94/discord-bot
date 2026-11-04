@@ -3,6 +3,9 @@ import logging
 import discord
 from discord import app_commands
 
+from features.wishlist_graphs import GRAPH_MAX_DAYS
+from wishlist.charts import MAX_COMBINED_PRODUCTS
+
 logger = logging.getLogger("discord_bot")
 
 DISCORD_MESSAGE_LIMIT = 1900
@@ -98,16 +101,17 @@ HELP_TEXT = (
     "Generate a price-evolution chart for a single tracked URL. Omitted currency uses your "
     "saved currency preference if set, then the item's own currency. Optional `currency` "
     "(RON, DKK, EUR, USD, GBP) converts "
-    "the Y-axis into that unit instead. Set days to any whole number from 1–180 (default 180). "
+    f"the Y-axis into that unit instead. Set days to any whole number from 1–{GRAPH_MAX_DAYS} (default {GRAPH_MAX_DAYS}). "
     "Use 7/30/90-day buttons or Custom days on the graph.\n\n"
     "**/wishlist-graph-all** `[currency]` `[days]` `[percentage]`\n"
-    "Generate a combined price-evolution chart across **all** your tracked items. Omitted "
+    "Generate a grid of mini price charts for **all** your tracked items, biggest drops first "
+    f"(top {MAX_COMBINED_PRODUCTS} products). Omitted "
     "currency uses your saved currency preference if set, then the majority currency in "
     "your list (so the largest number of items appear without "
     "conversion). Optional `currency` (RON, DKK, EUR, USD, GBP) overrides the default and "
-    "converts prices to that currency. Set days to 1–180 (default 180). "
-    "Use percentage:true or the comparison button for relative changes, starting at 0% "
-    "for each product's first observation in the period. Controls are requester-only "
+    f"converts prices to that currency. Set days to 1–{GRAPH_MAX_DAYS} (default {GRAPH_MAX_DAYS}). "
+    "Use percentage:true or the comparison button to rank products by how today's price "
+    "compares with their median in the period. Controls are requester-only "
     "and expire after ten idle minutes. Dates are in UTC.\n\n"
     "**/flight-tracker-add** `<origin>` `<destination>` `<start-date>` `<end-date>` "
     "`[adults]` `[currency]`\n"
