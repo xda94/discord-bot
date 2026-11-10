@@ -510,6 +510,7 @@
     clearInterval(state.statsTimer); state.statsTimer = null;
     loaders[page]();
     if (page === "overview") state.statsTimer = setInterval(loadStats, 15000);
+    if (page === "analytics") state.statsTimer = setInterval(() => { if (!document.hidden) loadAnalytics(); }, 30000);
   }
 
   function bindDynamicForms() {
