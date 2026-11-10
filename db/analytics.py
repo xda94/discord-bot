@@ -18,6 +18,11 @@ _ANALYTICS_CATEGORIES = {
     "failure",
 }
 
+# Writes run in a worker thread, so waiting briefly for another writer never
+# delays a Discord reply; 0.25s dropped events whenever a background loop held
+# the write lock.
+_WRITE_TIMEOUT = 2.0
+
 
 def record_analytics_activity(
     category: str,
@@ -29,8 +34,8 @@ def record_analytics_activity(
 ) -> None:
     """Atomically increment one UTC daily counter.
 
-    This deliberately uses a short SQLite timeout: analytics must never hold up
-    a Discord response when the shared database is busy.
+    Callers run this off the event loop, so a short wait for the write lock
+    never holds up a Discord response.
     """
     if category not in _ANALYTICS_CATEGORIES:
         raise ValueError(f"Unsupported analytics category: {category}")
@@ -45,7 +50,7 @@ def record_analytics_activity(
     stored_guild_id = int(guild_id) if guild_id is not None else 0
     timestamp = time.time() if occurred_at is None else float(occurred_at)
     day = datetime.fromtimestamp(timestamp, timezone.utc).date().isoformat()
-    conn = sqlite3.connect(connection.DB_FILE, timeout=0.25)
+    conn = sqlite3.connect(connection.DB_FILE, timeout=_WRITE_TIMEOUT)
     try:
         conn.execute(
             """
@@ -67,7 +72,7 @@ def refresh_analytics_command_catalog(names, *, observed_at: float | None = None
     """Mark the current command set active while retaining removed commands."""
     timestamp = time.time() if observed_at is None else float(observed_at)
     cleaned = sorted({str(name).strip().lstrip("/") for name in names if str(name).strip()})
-    conn = sqlite3.connect(connection.DB_FILE, timeout=0.25)
+    conn = sqlite3.connect(connection.DB_FILE, timeout=_WRITE_TIMEOUT)
     try:
         conn.execute("UPDATE analytics_commands SET active = 0")
         for name in cleaned:
@@ -222,7 +227,7 @@ def record_feature_interaction(
     scope_type = "guild" if guild_id is not None else "dm"
     stored_guild_id = int(guild_id) if guild_id is not None else 0
     timestamp = time.time() if occurred_at is None else float(occurred_at)
-    conn = sqlite3.connect(connection.DB_FILE, timeout=0.25)
+    conn = sqlite3.connect(connection.DB_FILE, timeout=_WRITE_TIMEOUT)
     try:
         conn.execute(
             """

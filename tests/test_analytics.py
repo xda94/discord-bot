@@ -442,3 +442,21 @@ def test_dashboard_contains_analytics_page_and_filters(analytics_client, monkeyp
     assert b'id="analytics-failures"' in page
     assert b'/analytics/summary?' in script
     assert b'page === "analytics"' in script
+
+
+def test_record_waits_for_a_briefly_held_write_lock(tmp_db):
+    import threading
+
+    blocker = sqlite3.connect(str(tmp_db), check_same_thread=False)
+    blocker.execute("BEGIN IMMEDIATE")
+    releaser = threading.Timer(0.5, blocker.commit)
+    releaser.start()
+    try:
+        started = time.monotonic()
+        db.record_analytics_activity("command", "help", guild_id=1)
+        assert time.monotonic() - started >= 0.4
+    finally:
+        releaser.join()
+        blocker.close()
+    summary = db.get_analytics_summary("7d")
+    assert summary["category_totals"]["command"] == 1
