@@ -68,7 +68,7 @@ def api_add_scrape():
     """
     data = request.get_json()
     if not data or "user_id" not in data or "url" not in data:
-        logger.warning(f"BadRequest: Missing fields in /wishlist/add. IP: {request.remote_addr}")
+        logger.warning("BadRequest: Missing fields in /wishlist/add. IP: %s", request.remote_addr)
         return jsonify({"error": "Missing user_id or url"}), 400
 
     try:
@@ -78,7 +78,7 @@ def api_add_scrape():
     url = data["url"]
 
     if not _is_valid_http_url(url):
-        logger.warning(f"BadRequest: Invalid URL in /wishlist/add: {url!r}")
+        logger.warning("BadRequest: Invalid URL in /wishlist/add: %r", url)
         return jsonify({"error": "Invalid URL"}), 400
 
     result = _price_scraper.fetch(url)
@@ -89,7 +89,7 @@ def api_add_scrape():
             "detail": "Price/stock extraction is temporarily busy. Please try again shortly.",
         }), 503
     if result.failure == FAILURE_BLOCKED:
-        logger.warning(f"/wishlist/add rejected (blocked) for {url}")
+        logger.warning("/wishlist/add rejected (blocked) for %s", url)
         return jsonify({
             "error": "blocked",
             "detail": (
@@ -98,7 +98,7 @@ def api_add_scrape():
             ),
         }), 502
     if result.failure == FAILURE_UNSUPPORTED and not result.has_data:
-        logger.warning(f"/wishlist/add rejected (unsupported) for {url}")
+        logger.warning("/wishlist/add rejected (unsupported) for %s", url)
         return jsonify({
             "error": "unsupported",
             "detail": (
@@ -120,8 +120,9 @@ def api_add_scrape():
         return jsonify({"error": "Failed to save wishlist item"}), 500
 
     logger.info(
-        f"Scrape item added via API for User {user_id}: {url} "
-        f"(price={result.price} {result.currency}, in_stock={result.in_stock})"
+        "Scrape item added via API for User %s: %s "
+        "(price=%s %s, in_stock=%s)",
+        user_id, url, result.price, result.currency, result.in_stock,
     )
     return jsonify({
         "status": "ok",
@@ -145,7 +146,7 @@ def api_remove_scrape():
         return jsonify({"error": str(exc)}), 400
     success = delete_scraped_item(user_id, data["url"])
     if success:
-        logger.info(f"Scrape item removed via API for User {user_id}")
+        logger.info("Scrape item removed via API for User %s", user_id)
         return jsonify({"status": "removed"})
     else:
         return jsonify({"error": "Item not found"}), 404

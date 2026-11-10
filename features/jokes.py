@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -55,7 +56,7 @@ class JokesFeature:
         if self._migrated:
             return
 
-        legacy_channel = db.get_setting("joke_channel_id")
+        legacy_channel = await asyncio.to_thread(db.get_setting, "joke_channel_id")
         if not legacy_channel:
             self._migrated = True
             return
@@ -64,56 +65,62 @@ class JokesFeature:
             channel = await self.client.fetch_channel(int(legacy_channel))
         except (discord.NotFound, discord.Forbidden) as exc:
             logger.warning(
-                f"Legacy joke channel {legacy_channel} unreachable ({type(exc).__name__}); "
-                f"clearing the legacy config. Re-run /joke-activation in the "
-                f"target guild to opt back in."
+                "Legacy joke channel %s unreachable (%s); "
+                "clearing the legacy config. Re-run /joke-activation in the "
+                "target guild to opt back in.",
+                legacy_channel,
+                type(exc).__name__,
             )
             for key in self.LEGACY_SETTING_KEYS:
-                db.set_setting(key, "")
+                await asyncio.to_thread(db.set_setting, key, "")
             self._migrated = True
             return
         except Exception:
             logger.exception(
-                f"Failed to fetch legacy joke channel {legacy_channel}; will "
-                f"retry on next bot start."
+                "Failed to fetch legacy joke channel %s; will "
+                "retry on next bot start.",
+                legacy_channel,
             )
             return
 
         guild_id = getattr(channel, "guild", None) and channel.guild.id
         if guild_id is None:
             logger.warning(
-                f"Legacy joke channel {legacy_channel} has no guild "
-                f"(probably a DM); clearing the legacy config."
+                "Legacy joke channel %s has no guild "
+                "(probably a DM); clearing the legacy config.",
+                legacy_channel,
             )
             for key in self.LEGACY_SETTING_KEYS:
-                db.set_setting(key, "")
+                await asyncio.to_thread(db.set_setting, key, "")
             self._migrated = True
             return
 
-        send_time = db.get_setting("joke_send_time") or "12:00"
-        last_sent = db.get_setting("joke_last_sent_date") or None
+        send_time = await asyncio.to_thread(db.get_setting, "joke_send_time") or "12:00"
+        last_sent = await asyncio.to_thread(db.get_setting, "joke_last_sent_date") or None
 
-        db.set_guild_joke_config(guild_id, channel.id, send_time)
+        await asyncio.to_thread(db.set_guild_joke_config, guild_id, channel.id, send_time)
         if last_sent:
-            db.set_guild_joke_last_sent(guild_id, last_sent)
+            await asyncio.to_thread(db.set_guild_joke_last_sent, guild_id, last_sent)
 
         for key in self.LEGACY_SETTING_KEYS:
-            db.set_setting(key, "")
+            await asyncio.to_thread(db.set_setting, key, "")
 
         logger.info(
-            f"Migrated legacy joke config to guild {guild_id} "
-            f"(channel={channel.id}, time={send_time}, last_sent={last_sent})"
+            "Migrated legacy joke config to guild %s "
+            "(channel=%s, time=%s, last_sent=%s)",
+            guild_id,
+            channel.id,
+            send_time,
+            last_sent,
         )
         self._migrated = True
 
     def _register_commands(self) -> None:
-        feature = self
-
         @self.tree.command(name="joke-add", description="Add a joke/text to the daily joke list")
         @app_commands.describe(text="The joke or text to add")
         async def joke_add(interaction: discord.Interaction, text: str):
-            logger.info(f"Command /joke-add called by {interaction.user}")
-            db.add_joke(text)
+            logger.info("Command /joke-add called by %s", interaction.user)
+            await asyncio.to_thread(db.add_joke, text)
             await interaction.response.send_message("Joke added!")
 
         @self.tree.command(
@@ -123,8 +130,11 @@ class JokesFeature:
         @app_commands.describe(time="The time to send the daily joke (e.g. 14:00)")
         async def joke_activation(interaction: discord.Interaction, time: str):
             logger.info(
-                f"Command /joke-activation called by {interaction.user} "
-                f"in guild {interaction.guild_id} with time {time}"
+                "Command /joke-activation called by %s "
+                "in guild %s with time %s",
+                interaction.user,
+                interaction.guild_id,
+                time,
             )
             if interaction.guild_id is None:
                 await interaction.response.send_message(
@@ -140,8 +150,8 @@ class JokesFeature:
                 )
                 return
 
-            db.set_guild_joke_config(
-                interaction.guild_id, interaction.channel_id, time
+            await asyncio.to_thread(
+                db.set_guild_joke_config, interaction.guild_id, interaction.channel_id, time
             )
             await interaction.response.send_message(
                 f"Daily joke activated in this channel at **{time}** every day."
@@ -153,8 +163,10 @@ class JokesFeature:
         )
         async def joke_deactivation(interaction: discord.Interaction):
             logger.info(
-                f"Command /joke-deactivation called by {interaction.user} "
-                f"in guild {interaction.guild_id}"
+                "Command /joke-deactivation called by %s "
+                "in guild %s",
+                interaction.user,
+                interaction.guild_id,
             )
             if interaction.guild_id is None:
                 await interaction.response.send_message(
@@ -163,7 +175,7 @@ class JokesFeature:
                 )
                 return
 
-            removed = db.clear_guild_joke_config(interaction.guild_id)
+            removed = await asyncio.to_thread(db.clear_guild_joke_config, interaction.guild_id)
             if removed:
                 await interaction.response.send_message(
                     "Daily joke deactivated for this server. "
@@ -181,8 +193,10 @@ class JokesFeature:
         )
         async def joke_status(interaction: discord.Interaction):
             logger.info(
-                f"Command /joke-status called by {interaction.user} "
-                f"in guild {interaction.guild_id}"
+                "Command /joke-status called by %s "
+                "in guild %s",
+                interaction.user,
+                interaction.guild_id,
             )
             if interaction.guild_id is None:
                 await interaction.response.send_message(
@@ -191,7 +205,7 @@ class JokesFeature:
                 )
                 return
 
-            cfg = db.get_guild_joke_config(interaction.guild_id)
+            cfg = await asyncio.to_thread(db.get_guild_joke_config, interaction.guild_id)
             if cfg is None:
                 await interaction.response.send_message(
                     "Daily joke is **not activated** for this server. "
@@ -216,7 +230,7 @@ class JokesFeature:
             today = now.date()
             today_iso = today.isoformat()
 
-            for cfg in db.get_all_guild_joke_configs():
+            for cfg in await asyncio.to_thread(db.get_all_guild_joke_configs):
                 guild_id = cfg["guild_id"]
                 try:
                     target = datetime.strptime(cfg["send_time"], "%H:%M").replace(
@@ -224,8 +238,10 @@ class JokesFeature:
                     )
                 except ValueError:
                     logger.warning(
-                        f"Guild {guild_id} has invalid send_time "
-                        f"{cfg['send_time']!r}; skipping."
+                        "Guild %s has invalid send_time "
+                        "%r; skipping.",
+                        guild_id,
+                        cfg["send_time"],
                     )
                     continue
 
@@ -245,13 +261,14 @@ class JokesFeature:
         sent state. Isolated per-guild so a failure in one guild's send
         doesn't break the iteration in `_check` (caller wraps in
         try/except for the whole loop, but per-guild safety is cheap)."""
-        result = db.get_unsent_joke_for_guild(guild_id)
+        result = await asyncio.to_thread(db.get_unsent_joke_for_guild, guild_id)
         if result is None:
-            db.reset_guild_joke_sent(guild_id)
-            result = db.get_unsent_joke_for_guild(guild_id)
+            await asyncio.to_thread(db.reset_guild_joke_sent, guild_id)
+            result = await asyncio.to_thread(db.get_unsent_joke_for_guild, guild_id)
             if result is None:
                 logger.info(
-                    f"No jokes in database. Skipping daily joke for guild {guild_id}."
+                    "No jokes in database. Skipping daily joke for guild %s.",
+                    guild_id,
                 )
                 return
 
@@ -259,8 +276,10 @@ class JokesFeature:
         channel = self.client.get_channel(channel_id)
         if not channel:
             logger.warning(
-                f"Joke channel {channel_id} (guild {guild_id}) not accessible — "
-                f"check that the bot is still in the guild and has read access."
+                "Joke channel %s (guild %s) not accessible — "
+                "check that the bot is still in the guild and has read access.",
+                channel_id,
+                guild_id,
             )
             await record("failure", "daily-joke", guild_id=guild_id)
             return
@@ -269,14 +288,16 @@ class JokesFeature:
             await channel.send(f"**Joke of the day:**\n{text}", suppress_embeds=True)
         except discord.Forbidden:
             logger.warning(
-                f"Missing permissions to post in channel {channel_id} "
-                f"(guild {guild_id}); skipping joke."
+                "Missing permissions to post in channel %s "
+                "(guild %s); skipping joke.",
+                channel_id,
+                guild_id,
             )
             await record("failure", "daily-joke", guild_id=guild_id)
             return
 
         await record("scheduled", "daily-joke", guild_id=guild_id)
 
-        db.mark_guild_joke_sent(guild_id, joke_id)
-        db.set_guild_joke_last_sent(guild_id, today_iso)
-        logger.info(f"Daily joke {joke_id} sent in guild {guild_id}")
+        await asyncio.to_thread(db.mark_guild_joke_sent, guild_id, joke_id)
+        await asyncio.to_thread(db.set_guild_joke_last_sent, guild_id, today_iso)
+        logger.info("Daily joke %s sent in guild %s", joke_id, guild_id)

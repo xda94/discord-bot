@@ -20,6 +20,8 @@ INACTIVITY_HISTORY_LOOKBACK = 50
 
 INACTIVITY_THRESHOLD = 86400
 
+ACTIVITY_PERSIST_INTERVAL = 60
+
 
 def pick_chatter(messages: list[discord.Message]) -> discord.abc.User | None:
     """Pick a random non-bot author from `messages`, or None if there are none.
@@ -38,11 +40,15 @@ class InactivityFeature:
         self.client = client
         self.tree = tree
         self._state: dict[int, dict] = {
-            guild_id: {"last_time": last_time, "channel_id": channel_id}
+            guild_id: {
+                "last_time": last_time,
+                "channel_id": channel_id,
+                "persisted_time": last_time,
+            }
             for guild_id, last_time, channel_id in db.get_all_guild_activity()
         }
         if self._state:
-            logger.info(f"Restored activity timestamps for {len(self._state)} guild(s)")
+            logger.info("Restored activity timestamps for %d guild(s)", len(self._state))
         self._register_commands()
 
     def _register_commands(self) -> None:
@@ -63,8 +69,11 @@ class InactivityFeature:
             action: str,
         ):
             logger.info(
-                f"Command /llm-inactivity called by {interaction.user} "
-                f"in guild {interaction.guild_id} with action {action}"
+                "Command /llm-inactivity called by %s "
+                "in guild %s with action %s",
+                interaction.user,
+                interaction.guild_id,
+                action,
             )
             if interaction.guild_id is None:
                 await interaction.response.send_message(
@@ -85,7 +94,9 @@ class InactivityFeature:
                 return
 
             enabled = action == "activate"
-            db.set_guild_inactivity_enabled(interaction.guild_id, enabled)
+            await asyncio.to_thread(
+                db.set_guild_inactivity_enabled, interaction.guild_id, enabled
+            )
             state = "activated" if enabled else "deactivated"
             await interaction.response.send_message(
                 f"LLM inactivity nudges are now **{state}** for this server.",
@@ -95,11 +106,23 @@ class InactivityFeature:
     async def handle_message(self, message: discord.Message) -> bool:
         if message.guild:
             now = time.time()
-            self._state[message.guild.id] = {
+            guild_id = message.guild.id
+            channel_id = message.channel.id
+            previous = self._state.get(guild_id)
+            persisted_time = previous.get("persisted_time") if previous else None
+            should_persist = (
+                previous is None
+                or previous.get("channel_id") != channel_id
+                or persisted_time is None
+                or now - persisted_time >= ACTIVITY_PERSIST_INTERVAL
+            )
+            self._state[guild_id] = {
                 "last_time": now,
-                "channel_id": message.channel.id,
+                "channel_id": channel_id,
+                "persisted_time": now if should_persist else persisted_time,
             }
-            await asyncio.to_thread(db.set_guild_activity,message.guild.id, now, message.channel.id)
+            if should_persist:
+                await asyncio.to_thread(db.set_guild_activity, guild_id, now, channel_id)
         return False
 
     async def start_tasks(self) -> None:
@@ -122,8 +145,9 @@ class InactivityFeature:
                     continue
                 await record("scheduled", "inactivity-nudge", guild_id=guild_id)
                 guild_state["last_time"] = now
+                guild_state["persisted_time"] = now
                 await asyncio.to_thread(db.set_guild_activity,guild_id, now, guild_state["channel_id"])
-                logger.info(f"Inactivity nudge sent in #{channel} (guild {guild_id})")
+                logger.info("Inactivity nudge sent in #%s (guild %s)", channel, guild_id)
         except Exception:
             logger.exception("Error in check_inactivity loop")
 

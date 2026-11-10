@@ -28,7 +28,7 @@ from wishlist.scraper import (
     FAILURE_DATABASE,
     FAILURE_UNSUPPORTED,
     PriceScraper,
-    ScrapeResult,
+    ScrapeResult,  # noqa: F401
     _domain,
     _is_valid_http_url,
 )
@@ -40,8 +40,8 @@ MANUAL_REFRESH_COOLDOWN_SECONDS = 300
 
 
 from wishlist.alerts import (
-    ALERT_LOW_REALERT_DROP_PCT,
-    ALERT_MIN_DATA_POINTS,
+    ALERT_LOW_REALERT_DROP_PCT,  # noqa: F401
+    ALERT_MIN_DATA_POINTS,  # noqa: F401
     AlertDecision,
     classify_price as _classify_price,
 )
@@ -98,7 +98,7 @@ class WishlistFeature:
         @app_commands.describe(url="The URL of the item to track")
         async def scrape_item(interaction: discord.Interaction, url: str):
             interaction = localized_interaction(interaction)
-            logger.info(f"Command /wishlist-item called by {interaction.user} for {url}")
+            logger.info("Command /wishlist-item called by %s for %s", interaction.user, url)
             await interaction.response.defer(ephemeral=True)
 
             result = await feature.add_item_for_user(interaction.user.id, url, language=interaction._language)
@@ -160,7 +160,7 @@ class WishlistFeature:
         @app_commands.describe(url="The URL to remove")
         async def scrape_item_delete(interaction: discord.Interaction, url: str):
             interaction = localized_interaction(interaction)
-            logger.info(f"Command /wishlist-item-delete called by {interaction.user} for {url}")
+            logger.info("Command /wishlist-item-delete called by %s for %s", interaction.user, url)
             if await asyncio.to_thread(feature.delete_item_for_user, interaction.user.id, url):
                 await interaction.response.send_message("Link removed and data cleared.", ephemeral=True)
             else:
@@ -284,8 +284,10 @@ class WishlistFeature:
         ):
             interaction = localized_interaction(interaction)
             logger.info(
-                f"Command /wishlist-show called by {interaction.user} "
-                f"(currency={currency.value if currency else 'native'})"
+                "Command /wishlist-show called by %s "
+                "(currency=%s)",
+                interaction.user,
+                currency.value if currency else "native",
             )
             await interaction.response.defer(ephemeral=True)
             chunks = await asyncio.to_thread(feature.format_items_for_user,
@@ -766,9 +768,6 @@ class WishlistFeature:
         )
         target_alert = target_reached is True and not target_alerted
 
-        if result.price is not None:
-            await asyncio.to_thread(db.add_price_history, item_id, result.price)
-
         should_notify = (
             back_in_stock
             if restock_only
@@ -813,7 +812,8 @@ class WishlistFeature:
                             msg += f"🤖 *{llm_msg}*\n"
                     except Exception:
                         logger.exception(
-                            f"Unexpected LLM price-message failure for {url}"
+                            "Unexpected LLM price-message failure for %s",
+                            url,
                         )
                 if decision.alert_kind:
                     alert_text = self._format_alert_section(decision, new_src)
@@ -843,30 +843,40 @@ class WishlistFeature:
                 event_kind = "+".join(k for k,active in (("target",target_alert),("restock",back_in_stock),("price",price_changed),("signal",bool(decision.alert_kind))) if active)
                 await deliver_tracking(self.client,user_id,"wishlist",item_id,event_kind,msg, protected=(disp_name, url))
                 logger.info(
-                    f"Scrape notification queued to user {user_id} for {url} "
-                    f"(price_changed={price_changed}, back_in_stock={back_in_stock}, "
-                    f"alert={decision.alert_kind}, target_alert={target_alert}, "
-                    f"restock_only={restock_only})"
+                    "Scrape notification queued to user %s for %s "
+                    "(price_changed=%s, back_in_stock=%s, "
+                    "alert=%s, target_alert=%s, "
+                    "restock_only=%s)",
+                    user_id,
+                    url,
+                    price_changed,
+                    back_in_stock,
+                    decision.alert_kind,
+                    target_alert,
+                    restock_only,
                 )
             except Exception as e:
-                logger.error(f"Could not send DM to user {user_id}: {e}")
+                logger.error("Could not send DM to user %s: %s", user_id, e)
                 await record("failure", "wishlist-notification", scope_type="dm")
+                if result.price is not None:
+                    await asyncio.to_thread(db.add_price_history, item_id, result.price)
                 return
 
-        if target_reached is not None and target_reached != target_alerted:
-            await asyncio.to_thread(db.update_scraped_item_target_state, item_id, target_reached)
-
-        await asyncio.to_thread(db.update_scraped_item_status,
-            item_id, result.price, result.in_stock, result.title, result.currency,
-        )
-
-        if (
+        alert_changed = (
             decision.new_state != old_alert_kind
             or decision.new_state_price != old_alert_price
-        ):
-            await asyncio.to_thread(db.update_item_alert_state,
-                item_id, decision.new_state, decision.new_state_price,
-            )
+        )
+        await asyncio.to_thread(
+            db.persist_scrape_pass,
+            item_id,
+            price=result.price,
+            in_stock=result.in_stock,
+            title=result.title,
+            currency=result.currency,
+            target_alerted=target_reached if target_reached is not None and target_reached != target_alerted else ...,
+            alert_kind=decision.new_state if alert_changed else ...,
+            alert_price=decision.new_state_price if alert_changed else ...,
+        )
     def _money(self, value, currency, profile_currency, short=False):
         target = profile_currency or (currency if short else None)
         return self.converter.format_in_currency(value, currency, target) if target else self.converter.format_with_conversions(value, currency)
@@ -921,14 +931,15 @@ class WishlistFeature:
                 await self._process_scrape_item(item)
             except Exception:
                 url = item[2] if len(item) > 2 else "<unknown>"
-                logger.exception(f"Unexpected error scraping {url}; skipping")
+                logger.exception("Unexpected error scraping %s; skipping", url)
                 await record("failure", "wishlist-check", scope_type="global")
             await asyncio.sleep(self.SCRAPE_LOOP_GAP_SECONDS)
 
         await asyncio.to_thread(db.clean_old_price_history, days=PRICE_HISTORY_RETENTION_DAYS)
         logger.info(
-            f"Finished price scrape task and cleaned history "
-            f"(retention: {PRICE_HISTORY_RETENTION_DAYS} days)."
+            "Finished price scrape task and cleaned history "
+            "(retention: %s days).",
+            PRICE_HISTORY_RETENTION_DAYS,
         )
 
     @tasks.loop(hours=24)

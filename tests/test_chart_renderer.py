@@ -238,7 +238,7 @@ def test_list_that_fits_one_image_has_no_page_label(monkeypatch):
 
 @pytest.mark.parametrize("percentage", [False, True])
 def test_products_beyond_the_attachment_limit_are_left_out(monkeypatch, percentage):
-    specs = _capture(monkeypatch)
+    _capture(monkeypatch)
     images = render_multi_price_history_pngs(
         _falling_series(MAX_COMBINED_PRODUCTS + 1), "RON", percentage=percentage,
     )

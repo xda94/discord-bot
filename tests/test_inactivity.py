@@ -157,3 +157,51 @@ def test_llm_inactivity_command_updates_current_guild(tmp_db, monkeypatch):
         ephemeral=True,
     )
     asyncio.run(client.close())
+
+
+def _activity_message(guild_id, channel_id):
+    message = MagicMock()
+    message.guild.id = guild_id
+    message.channel.id = channel_id
+    return message
+
+
+def test_activity_writes_are_debounced(monkeypatch):
+    feature = object.__new__(InactivityFeature)
+    feature._state = {}
+    save_activity = MagicMock()
+    now = [1000.0]
+    monkeypatch.setattr("features.inactivity.time.time", lambda: now[0])
+    monkeypatch.setattr("features.inactivity.db.set_guild_activity", save_activity)
+
+    for _ in range(10):
+        asyncio.run(feature.handle_message(_activity_message(7, 99)))
+        now[0] += 5
+
+    save_activity.assert_called_once_with(7, 1000.0, 99)
+    assert feature._state[7]["last_time"] == 1045.0
+    assert feature._state[7]["channel_id"] == 99
+
+
+def test_activity_persists_on_channel_change_and_after_interval(monkeypatch):
+    feature = object.__new__(InactivityFeature)
+    feature._state = {7: {"last_time": 900.0, "channel_id": 99, "persisted_time": 990.0}}
+    save_activity = MagicMock()
+    now = [1000.0]
+    monkeypatch.setattr("features.inactivity.time.time", lambda: now[0])
+    monkeypatch.setattr("features.inactivity.db.set_guild_activity", save_activity)
+
+    asyncio.run(feature.handle_message(_activity_message(7, 99)))
+    save_activity.assert_not_called()
+
+    asyncio.run(feature.handle_message(_activity_message(7, 55)))
+    save_activity.assert_called_once_with(7, 1000.0, 55)
+
+    now[0] = 1059.0
+    asyncio.run(feature.handle_message(_activity_message(7, 55)))
+    assert save_activity.call_count == 1
+
+    now[0] = 1060.0
+    asyncio.run(feature.handle_message(_activity_message(7, 55)))
+    assert save_activity.call_count == 2
+    save_activity.assert_called_with(7, 1060.0, 55)

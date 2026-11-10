@@ -42,6 +42,7 @@ def _open(path):
 @contextmanager
 def _admission(directory, deadline, *, wait=True):
     fd = None
+    delay = 0.02
     try:
         directory.mkdir(parents=True, exist_ok=True)
         fd = _open(directory / "admission")
@@ -55,7 +56,8 @@ def _admission(directory, deadline, *, wait=True):
                     return
                 if time.monotonic() >= deadline:
                     raise CapacityTimeout("LLM admission timed out.")
-                time.sleep(0.01)
+                time.sleep(delay)
+                delay = min(delay * 2, 0.1)
         yield True
     except OSError as exc:
         raise CapacityError("LLM capacity storage is unavailable.") from exc
@@ -158,9 +160,11 @@ class Reservation:
                 return True
 
     def activate(self):
+        delay = 0.02
         try:
             while not self.try_activate():
-                time.sleep(0.01)
+                time.sleep(delay)
+                delay = min(delay * 2, 0.1)
         except BaseException:
             self.release()
             raise
@@ -227,9 +231,11 @@ async def async_action_context(reservation=None, *, policy="interactive", queue_
     if reservation is None:
         reservation = reserve(policy=policy, queue_timeout=queue_timeout)
     token = None
+    delay = 0.02
     try:
         while not await asyncio.to_thread(reservation.try_activate):
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 0.25)
         token = _current_action.set(reservation)
         yield reservation
     finally:

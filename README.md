@@ -25,7 +25,7 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 
 ### Prerequisites
 
-- Python 3.x and pip
+- Python 3.9 or newer and pip (Docker and CI use 3.13)
 - SQLite3 (usually bundled with Python)
 - Node.js + npm (for PM2)
 - `llama-server` with a compatible GGUF instruct/chat model
@@ -35,10 +35,10 @@ A Python Discord bot with keyword auto-responses, mood-based teases, reminders, 
 
 ```bash
 npm install pm2 -g && pm2 update
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 ```
 
-With a venv, use `./venv/bin/pip` instead of `pip`.
+`requirements.lock` pins every runtime dependency with hashes and is what Docker and CI install. `pip install -r requirements.txt` also works but resolves the version ranges fresh. With a venv, use `./venv/bin/pip` instead of `pip`.
 
 Wishlist graphs use the self-contained Vega-Lite renderer from `vl-convert-python`; PNG generation does not require Chrome or an external chart service.
 
@@ -50,7 +50,7 @@ python3 -c "from curl_cffi import requests; print('OK')"
 
 ### Configuration
 
-Create `.env` in the project root:
+Copy `.env.example` to `.env` in the project root and fill in the required values. `.env.example` lists every variable the code reads, with its default. A minimal `.env`:
 
 ```env
 DISCORD_TOKEN=YOUR_DISCORD_TOKEN_HERE
@@ -73,6 +73,7 @@ LLM_MENTION_MAX_TOKENS=384
 | `SPONSOR_PASSWORD` | No (bot) | Password required by the `/sponsor-set` and `/sponsor-set-tiers` Discord modals. Dashboard tier writes use `API_TOKEN` instead. |
 | `DB_FILE` | No | Full path to the SQLite file (filename included), e.g. `/var/lib/discord-bot/responses.db`. Default: `responses.db` in the working directory. Parent dirs are created automatically. |
 | `LOG_LEVEL` | No | Logging verbosity for console and rotating files. Default: `INFO`. |
+| `LOG_DIR` | No | Directory for the rotating log files. Created if missing. Default: the working directory. Docker sets `/data/logs`. |
 | `LLAMA_CPP_BASE_URL` | No (bot) | `llama-server` base URL. Default: `http://127.0.0.1:8080`. Docker defaults to `http://host.docker.internal:8080`. A URL ending in `/v1` is also accepted. |
 | `LLAMA_CPP_DEFAULT_MODEL` | Yes (bot) | Default model alias passed to `llama-server`. Must be listed in `LLAMA_CPP_ALLOWED_MODELS`. Match the alias supplied to `llama-server --alias`. |
 | `MENTION_LLAMA_CPP_MODEL` | No (bot) | Model alias for @bot mentions. Defaults to `LLAMA_CPP_DEFAULT_MODEL` and must be allowed. |
@@ -97,6 +98,7 @@ LLM_MENTION_MAX_TOKENS=384
 | `SERPAPI_HL` | No | Google Flights response language. Default: `en`. |
 | `FLIGHT_CHECK_INTERVAL_HOURS` | No | Hours between flight tracker passes. Default: `5`; raise this if the account approaches its monthly quota. Minimum: `1`. |
 | `FLIGHT_CHECK_GAP_SECONDS` | No | Delay between users' flight trackers in one pass. Default: `1`. |
+| `FLIGHT_CREDENTIALS_KEY` | No | Fernet key that encrypts stored SerpApi keys. When unset, keys stay in plain text. Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. |
 | `WISHLIST_HISTORY_DAYS` | No (bot) | Days of wishlist price history to keep, and the longest period the graph commands accept. Default: `180`; minimum: `1`. Lowering it permanently deletes older observations on the next scrape pass. |
 
 Start llama.cpp before the bot. The alias must match
@@ -307,7 +309,7 @@ tracking notifications for the selected user.
 | Tracking notifications | 30 s | Drains the durable outbox, respecting opt-in quiet hours and daily digests |
 | Inactivity nudge | 30 min | Nudges quiet guild channels where `/llm-inactivity` is activated |
 | Sponsors | 1 h | Expiry warning and cleanup |
-| Teases | On message | Random mood lines rewritten via llama.cpp |
+| Teases | On message | Random mood lines rewritten via llama.cpp; mood and the daily tease count are tracked per server |
 
 ---
 
@@ -319,7 +321,7 @@ tracking notifications for the selected user.
 |---|---|
 | `/keyword-add <keyword> <response>` | Add a keyword → response pair **for this server only** (random pick when multiple). |
 | `/top-keywords [user]` | Most triggered keywords in the server. |
-| `/mood <mood>` | Set tease mood; random teases are rewritten via llama.cpp in that style and in the triggering message's language. |
+| `/mood <mood>` | Set this server's tease mood; random teases are rewritten via llama.cpp in that style and in the triggering message's language. Each server keeps its own mood, and the command is not available in DMs. |
 | `/help` | Localized categories and examples, with a complete command reference button. |
 | `/start` | Guided private language → optional timezone picker → ready flow, with feature navigation. |
 
@@ -489,7 +491,7 @@ Exact example: `/flight-tracker-add origin:OTP destination:BKK start-date:2026-1
 
 Only fixed departure and return dates are supported. Flexible date windows were intentionally removed because each date pair would consume a separate SerpApi search and quickly exhaust the free quota.
 
-Each Discord user supplies one **SerpApi API Key**. If no login exists when `/flight-tracker-add` is used, the bot opens a modal, validates the key through SerpApi's Account API, saves it, and then creates the tracker. Later adds reuse that same user's key and quota. Keys are stored in the local SQLite database and are never shown by commands or written to logs. Because SQLite storage is not encrypted, filesystem/database access must be restricted to the bot operator; use `/flight-tracker-logout` to remove a user's key.
+Each Discord user supplies one **SerpApi API Key**. If no login exists when `/flight-tracker-add` is used, the bot opens a modal, validates the key through SerpApi's Account API, saves it, and then creates the tracker. Later adds reuse that same user's key and quota. Keys are never shown by commands or written to logs. When `FLIGHT_CREDENTIALS_KEY` is set (a Fernet key; see Configuration), keys are stored encrypted in the local SQLite database with an `enc:v1:` prefix, and keys saved earlier in plain text are encrypted the first time they are read. Back that key up: without it the stored keys cannot be decrypted and users must log in again. When the variable is unset, the bot logs one warning and keeps storing keys in plain text, so filesystem/database access must then be restricted to the bot operator. A malformed key makes the login and tracker commands report that credential storage is misconfigured, and the API return `503`. Use `/flight-tracker-logout` to remove a user's key.
 
 The free SerpApi plan currently includes 250 searches per month. To stay below that, each five-hour scheduled pass checks at most one tracker per user/API key, selecting the least-recently checked active tracker. Departed and retired flexible trackers are excluded before selection. This caps scheduled usage at about 144 successful searches per user in a 30-day month regardless of how many trackers are saved; multiple trackers rotate and are therefore checked less often individually. Immediate searches performed by `/flight-tracker-add` use additional credits from the remaining headroom. See the [SerpApi Google Flights documentation](https://serpapi.com/google-flights-api) and [pricing](https://serpapi.com/pricing).
 
@@ -753,22 +755,23 @@ Product HTTP fetches have a 15-second timeout; LLM fallback may additionally wai
 ## Tests
 
 ```bash
+pip install --require-hashes -r requirements.lock
 pip install -r requirements-dev.txt
+ruff check .
 python -m pytest
 ```
 
-**CI** — GitHub Actions runs `pytest` on every push/PR (`.github/workflows/test.yml`) and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`).
+`ruff check .` reports undefined names, unused imports and syntax errors only (`ruff.toml`); it does not format code.
+
+`requirements.lock` pins every runtime dependency with hashes; Docker and CI install from it. After changing `requirements.txt`, regenerate it under Python 3.9 (so the pins also install on 3.13) with pip-tools:
+
+```bash
+pip-compile --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url --output-file=requirements.lock requirements.txt
+```
+
+**CI** — GitHub Actions runs `ruff check .` and `pytest` on pushes to `main` and on pull requests (`.github/workflows/test.yml`), and builds the Docker image plus validates `docker-compose.yml` (`.github/workflows/docker.yml`). CI and Docker use Python 3.13; the code also supports Python 3.9.
 
 Coverage highlights: the `db` package (CRUD, migrations, cascades, flights, and analytics), `flight_provider.py` (SerpApi key validation and Google Flights response parsing), `wishlist` parsing/currency/alert services, registered feature commands, contextual reactions, and mention vision validation/single-slot admission/multimodal payloads.
-
-Reliability checks use the repository `.venv` (Python 3.9.6) and cover shared
-capacity across processes, cancellation, background skips, usable scraper
-evidence, SQLite initialization retry/rollback, and truthful write failures.
-The existing urllib3/LibreSSL compatibility warning remains.
-Tests use isolated databases; no live Discord messages or production services
-were used.
-
-On 2026-10-09, the integrated targeted run passed 601 tests and the full suite passed all 1,323 tests. New regressions cover public-only bounded scraping, transactional writes, auth/health/redaction, reminder recovery, durable flight alerts, quota selection, and isolated startup. Diff and Python syntax checks passed. Docker validation was unavailable locally because Docker is not installed.
 
 Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db` is never touched.
 
@@ -786,6 +789,7 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `sponsor_tiers.py` | Shared sponsor-tier validation, versioned catalog codec, decimal/percent formatting |
 | `wishlist/` | Scraping, refresh persistence, currency conversion, alerts, and chart rendering |
 | `flight_provider.py` | SerpApi Account/Google Flights client and IATA/date validation — **no** Discord imports |
+| `flight_credentials.py` | Fernet encryption of stored SerpApi keys (`FLIGHT_CREDENTIALS_KEY`) — **no** Discord imports |
 | `assistant_profiles.py` | Discord-free assistant profile validation, defaults, and prompt guidance |
 | `db/` | SQLite connection, schema/migrations, and domain query modules |
 | `db/sponsors.py` | Atomic sponsor-tier catalog reads/writes using the global settings table |
@@ -793,13 +797,15 @@ Tests use an isolated DB per case (`tests/conftest.py`); your live `responses.db
 | `web/` | Flask application factory, authentication/helpers, and four route blueprints |
 | `logger.py` | Rotating logs (5 MB × 2); optional `LOG_DIR` location and `LOG_LEVEL` verbosity |
 | `Dockerfile`, `docker-compose.yml` | Docker image and bot + API services |
+| `requirements.txt`, `requirements.lock`, `requirements-dev.txt` | Dependency ranges, hashed lock file used by Docker and CI, and test/lint tools |
+| `ruff.toml`, `.env.example` | Lint configuration (undefined names, unused imports, syntax errors) and a template listing every environment variable |
 | `responses.db` | Runtime DB (gitignored); path overridable via `DB_FILE` |
 
 ### `features/`
 
 | Module | Class | Role |
 |---|---|---|
-| `response_gate.py` | `ResponseGate` | Cooldown between keyword replies and teases |
+| `response_gate.py` | `ResponseGate` | Per-server cooldown between keyword replies |
 | `keywords.py` | `KeywordsFeature` | Per-guild keyword match, `/keyword-add`, `/top-keywords` |
 | `teases.py` | `TeasesFeature` | Mood teases (LLM-enhanced), `/mood` |
 | `inactivity.py` | `InactivityFeature` | Guild activity tracking, inactivity nudges |

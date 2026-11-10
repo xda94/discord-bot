@@ -18,6 +18,7 @@ from notifications import drain, prepare_tracking
 from db.flights import persist_flight_offer, set_flight_budget
 import db
 from analytics import record, record_for
+from flight_credentials import FlightCredentialsError
 from flight_provider import (
     FlightOffer,
     FlightProviderError,
@@ -208,7 +209,12 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
             )
             return
 
-        if not db.set_flight_api_credentials(interaction.user.id, api_key):
+        try:
+            saved = await asyncio.to_thread(db.set_flight_api_credentials, interaction.user.id, api_key)
+        except FlightCredentialsError:
+            logger.error("Flight credential encryption is misconfigured")
+            saved = False
+        if not saved:
             await record_for("failure", "flight-login-modal-submit", interaction)
             await interaction.followup.send(
                 "The credentials were valid, but the database could not save them.",
@@ -220,7 +226,8 @@ class _FlightCredentialsModal(discord.ui.Modal, title="Flight Tracker Login"):
             interaction.user.id, api_key, provider
         )
         logger.info(
-            f"SerpApi key validated and stored for user {interaction.user.id}"
+            "SerpApi key validated and stored for user %s",
+            interaction.user.id,
         )
         await record_for("control", "flight-login-modal-submit", interaction)
         if self._pending_tracker is not None:
@@ -282,7 +289,7 @@ class FlightTrackerFeature:
         ):
             interaction = localized_interaction(interaction)
             currency_value = currency.value if currency else (
-                _profile_currency(interaction.user.id) or "EUR"
+                await asyncio.to_thread(_profile_currency, interaction.user.id) or "EUR"
             )
             try:
                 from airports import resolve_airport
@@ -304,7 +311,16 @@ class FlightTrackerFeature:
                     await interaction.response.send_message("Budget must be positive and finite.",ephemeral=True)
                     return
                 values["budget"]=budget
-            if db.get_flight_api_credentials(interaction.user.id) is None:
+            try:
+                credentials = await asyncio.to_thread(db.get_flight_api_credentials, interaction.user.id)
+            except FlightCredentialsError:
+                logger.error("Flight credential encryption is misconfigured")
+                await interaction.response.send_message(
+                    "Flight tracking is unavailable because the server's credential storage is misconfigured.",
+                    ephemeral=True,
+                )
+                return
+            if credentials is None:
                 await interaction.response.send_modal(
                     _FlightCredentialsModal(feature, pending_tracker=values)
                 )
@@ -323,9 +339,9 @@ class FlightTrackerFeature:
         @app_commands.rename(tracker_id="tracker-id")
         async def flight_budget(interaction: discord.Interaction, tracker_id:int, budget:Optional[float]=None):
             interaction = localized_interaction(interaction)
-            lang=language_for(profile=db.get_assistant_profile(interaction.user.id))
+            lang=language_for(profile=await asyncio.to_thread(db.get_assistant_profile,interaction.user.id))
             try:
-                ok=set_flight_budget(tracker_id,interaction.user.id,budget)
+                ok=await asyncio.to_thread(set_flight_budget,tracker_id,interaction.user.id,budget)
             except ValueError:
                 ok=False
             await interaction.response.send_message(localize('Saved.' if ok else 'Invalid budget or tracker.',lang),ephemeral=True)
@@ -335,7 +351,7 @@ class FlightTrackerFeature:
         )
         async def flight_show(interaction: discord.Interaction):
             interaction = localized_interaction(interaction)
-            chunks = format_user_flight_trackers(interaction.user.id)
+            chunks = await asyncio.to_thread(format_user_flight_trackers, interaction.user.id)
             await interaction.response.send_message(chunks[0], ephemeral=True)
             for chunk in chunks[1:]:
                 await interaction.followup.send(chunk, ephemeral=True)
@@ -347,10 +363,12 @@ class FlightTrackerFeature:
         @app_commands.rename(tracker_id="tracker-id")
         async def flight_delete(interaction: discord.Interaction, tracker_id: int):
             interaction = localized_interaction(interaction)
-            if db.delete_flight_tracker(interaction.user.id, tracker_id):
+            if await asyncio.to_thread(db.delete_flight_tracker, interaction.user.id, tracker_id):
                 logger.info(
-                    f"Command /flight-tracker-delete by user {interaction.user.id}: "
-                    f"tracker {tracker_id}"
+                    "Command /flight-tracker-delete by user %s: "
+                    "tracker %s",
+                    interaction.user.id,
+                    tracker_id,
                 )
                 await interaction.response.send_message(
                     f"Flight tracker **#{tracker_id}** and its price history were deleted.",
@@ -375,7 +393,7 @@ class FlightTrackerFeature:
         )
         async def flight_logout(interaction: discord.Interaction):
             interaction = localized_interaction(interaction)
-            removed = db.delete_flight_api_credentials(interaction.user.id)
+            removed = await asyncio.to_thread(db.delete_flight_api_credentials, interaction.user.id)
             feature._forget_provider(interaction.user.id)
             message = (
                 "Your SerpApi login was removed. Existing trackers are paused until you "
@@ -421,8 +439,12 @@ class FlightTrackerFeature:
 
         tracker = await asyncio.to_thread(db.get_flight_tracker,tracker_id, interaction.user.id)
         logger.info(
-            f"Command /flight-tracker-add by user {interaction.user.id}: "
-            f"tracker {tracker_id} {values['origin']}-{values['destination']}"
+            "Command /flight-tracker-add by user %s: "
+            "tracker %s %s-%s",
+            interaction.user.id,
+            tracker_id,
+            values["origin"],
+            values["destination"],
         )
         try:
             offer = await self._search_and_persist(tracker,persist=False)
@@ -501,11 +523,11 @@ class FlightTrackerFeature:
         try:
             offer = await self._search_and_persist(tracker,persist=False)
         except NoFlightOffers as exc:
-            logger.info(f"No offer for flight tracker {tracker['id']}: {exc}")
+            logger.info("No offer for flight tracker %s: %s", tracker["id"], exc)
             await record("failure", "flight-check", scope_type="global")
             return
         except FlightProviderError as exc:
-            logger.warning(f"Flight tracker {tracker['id']} check failed: {exc}")
+            logger.warning("Flight tracker %s check failed: %s", tracker["id"], exc)
             await record("failure", "flight-check", scope_type="global")
             return
         finally:
@@ -546,14 +568,16 @@ class FlightTrackerFeature:
         all_trackers = await asyncio.to_thread(db.get_all_flight_trackers)
         trackers = _select_trackers_for_pass(all_trackers)
         logger.info(
-            f"Starting scheduled flight check for {len(trackers)} tracker(s) "
-            f"selected from {len(all_trackers)} total (maximum one per user)"
+            "Starting scheduled flight check for %d tracker(s) "
+            "selected from %d total (maximum one per user)",
+            len(trackers),
+            len(all_trackers),
         )
         for tracker in trackers:
             try:
                 await self._process_tracker(tracker)
             except Exception:
-                logger.exception(f"Unexpected error checking flight tracker {tracker['id']}")
+                logger.exception("Unexpected error checking flight tracker %s", tracker["id"])
                 await record("failure", "flight-check", scope_type="global")
             if FLIGHT_CHECK_GAP_SECONDS:
                 await asyncio.sleep(FLIGHT_CHECK_GAP_SECONDS)

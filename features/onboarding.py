@@ -4,7 +4,6 @@ import asyncio
 import math
 import zoneinfo
 import discord
-from discord import app_commands
 import db
 from i18n import language_for,t,localize
 from assistant_profiles import validate_timezone
@@ -240,7 +239,7 @@ class OnboardingView(discord.ui.View):
 
     async def _show(self,interaction,screen):
         try:
-            profile=db.get_assistant_profile(self.user_id) or {}
+            profile=await asyncio.to_thread(db.get_assistant_profile,self.user_id) or {}
         except Exception:
             await self._failed(interaction)
             return
@@ -260,7 +259,7 @@ class OnboardingView(discord.ui.View):
     async def _save(self,interaction,**update):
         self._pending_update=update
         try:
-            saved=db.set_assistant_profile(self.user_id,**update)
+            saved=await asyncio.to_thread(db.set_assistant_profile,self.user_id,**update)
         except Exception:
             saved=None
         if not saved:
@@ -334,7 +333,7 @@ class OnboardingFeature:
         self.tree=tree
         @tree.command(name='start',description='Privately set up language, timezone, and explore features')
         async def start(interaction:discord.Interaction):
-            profile=db.get_assistant_profile(interaction.user.id)
+            profile=await asyncio.to_thread(db.get_assistant_profile,interaction.user.id)
             lang=display_language(interaction,profile)
             view=OnboardingView(interaction.user.id,lang,tree,profile=profile)
             await interaction.response.send_message(view.content(),view=view,ephemeral=True)

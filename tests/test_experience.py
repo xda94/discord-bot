@@ -1,9 +1,8 @@
 """Behavioral coverage for bilingual actions and durable delivery."""
 import asyncio
 import json
-import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from string import Formatter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 import db
 from db import reminders, notifications
-from assistant_profiles import effective_profile, AssistantProfile
+from assistant_profiles import AssistantProfile
 from command_time import duration, calendar_time, reminder_time, next_occurrence, number
 from i18n import CATALOG, language_for
 from features.reminders import RemindersFeature, ReminderControls

@@ -225,10 +225,10 @@ class WishlistGraphView(discord.ui.View):
 
 
 async def send_graph(interaction, *, url, currency, days, percentage, converter, effective_currency):
-    language = getattr(interaction, "_language", None) or language_for(profile=db.get_assistant_profile(interaction.user.id))
+    language = getattr(interaction, "_language", None) or language_for(profile=await asyncio.to_thread(db.get_assistant_profile, interaction.user.id))
     try:
         validate_days(days)
-    except ValueError as exc:
+    except ValueError:
         await interaction.response.send_message(t("graph_days_error", language, maximum=GRAPH_MAX_DAYS), ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)

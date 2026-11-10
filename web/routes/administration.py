@@ -2,6 +2,7 @@
 
 import logging
 import math
+import os
 import platform
 import sqlite3
 import time
@@ -12,10 +13,9 @@ import psutil
 from flask import Blueprint, jsonify, render_template, request
 
 from db import (
-    add_joke, add_reminder, add_response, clear_guild_joke_config,
+    add_joke, add_response, clear_guild_joke_config,
     delete_birthday, delete_joke, delete_reminder, get_all_birthdays,
-    get_all_guild_joke_configs, get_all_jokes, get_all_reminders,
-    get_all_responses, get_analytics_summary,
+    get_all_guild_joke_configs, get_all_jokes, get_all_responses, get_analytics_summary,
     get_guild_joke_config, get_joke_by_id, get_setting, get_top_keywords,
     get_sponsor_tiers, get_top_keywords_by_user, is_guild_inactivity_enabled, remove_response,
     reset_all_guild_joke_sent, set_guild_inactivity_enabled,
@@ -98,72 +98,13 @@ def api_analytics_summary():
         return jsonify({"error": str(exc)}), 400
 
 
-def _serialize_scraped_item(item):
-    if item is None:
-        return None
-    return {
-        "id": item[0],
-        "user_id": item[1],
-        "url": item[2],
-        "last_price": item[3],
-        "in_stock": bool(item[4]) if item[4] is not None else None,
-        "title": item[5],
-        "currency": item[6],
-        "last_alert_kind": item[7],
-        "last_alert_price": item[8],
-        "target_price": item[9],
-        "target_currency": item[10],
-        "target_alerted": bool(item[11]),
-        "restock_only": bool(item[12]),
-        "last_checked_at": item[13],
-        "last_check_status": item[14],
-    }
-
-
-def _validate_flight_tracker_payload(data):
-    """Pure validation shared by the HTTP flight configuration routes."""
-    required = ("user_id", "origin", "destination", "start_date", "end_date")
-    if not data or any(name not in data for name in required):
-        raise ValueError("Missing user_id, origin, destination, start_date, or end_date")
-    user_id = _discord_id(data["user_id"], "user_id")
-
-    origin = normalize_iata(data["origin"])
-    destination = normalize_iata(data["destination"])
-    if origin == destination:
-        raise ValueError("Origin and destination must be different")
-    start = parse_iso_date(data["start_date"])
-    end = parse_iso_date(data["end_date"])
-    if start < date.today():
-        raise ValueError("The start date cannot be in the past")
-    if end <= start:
-        raise ValueError("The end date must be after the start date")
-    adults = data.get("adults", 1)
-    if not _is_int(adults) or not 1 <= adults <= 9:
-        raise ValueError("adults must be an integer between 1 and 9")
-    currency = str(data.get("currency", "EUR")).upper()
-    if currency not in SUPPORTED_CURRENCIES:
-        raise ValueError(
-            f"currency must be one of: {', '.join(SUPPORTED_CURRENCIES)}"
-        )
-    return {
-        "user_id": user_id,
-        "origin": origin,
-        "destination": destination,
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        "adults": adults,
-        "currency": currency,
-    }
-
-
-
 @blueprint.route("/keywords/add", methods=["POST"])
 @require_token
 def api_keywords_add():
     data = request.get_json()
     if not data or "keyword" not in data or "response" not in data or "guild_id" not in data:
         logger.warning(
-            f"BadRequest: Missing fields in POST /keywords/add. IP: {request.remote_addr}"
+            "BadRequest: Missing fields in POST /keywords/add. IP: %s", request.remote_addr
         )
         return jsonify({"error": "Missing keyword, response, or guild_id"}), 400
 
@@ -175,8 +116,8 @@ def api_keywords_add():
     if not add_response(data["keyword"], data["response"], guild_id):
         return jsonify({"error": "Failed to save keyword"}), 500
     logger.info(
-        f"Keyword added via API: '{data['keyword']}' for guild {guild_id} "
-        f"from {request.remote_addr}"
+        "Keyword added via API: '%s' for guild %s from %s",
+        data['keyword'], guild_id, request.remote_addr,
     )
     return jsonify({"status": "ok"})
 
@@ -198,11 +139,11 @@ def api_keywords_delete():
 
     success = remove_response(keyword, guild_id, response)
     if success:
-        logger.info(f"Keyword removed via API: '{keyword}' in guild {guild_id}")
+        logger.info("Keyword removed via API: '%s' in guild %s", keyword, guild_id)
         return jsonify({"status": "deleted"})
     else:
         logger.warning(
-            f"DELETE /keywords/delete: '{keyword}' not found in guild {guild_id}."
+            "DELETE /keywords/delete: '%s' not found in guild %s.", keyword, guild_id
         )
         return jsonify({"error": "Keyword or response not found"}), 404
 
@@ -214,7 +155,7 @@ def api_keywords_get():
     if guild_id is None:
         return jsonify({"error": "Missing guild_id query parameter"}), 400
     logger.info(
-        f"Fetching keywords for guild {guild_id}. Requested by {request.remote_addr}"
+        "Fetching keywords for guild %s. Requested by %s", guild_id, request.remote_addr
     )
     responses = get_all_responses(guild_id)
     return jsonify(responses)
@@ -285,7 +226,7 @@ def api_add_reminder():
 @require_token
 def api_delete_reminder(reminder_id):
     delete_reminder(reminder_id)
-    logger.info(f"Reminder {reminder_id} deleted via API")
+    logger.info("Reminder %s deleted via API", reminder_id)
     return jsonify({"status": "deleted", "id": reminder_id})
 
 @blueprint.route("/reminders/all", methods=["GET"])
@@ -376,7 +317,7 @@ def api_get_all_jokes():
     try:
         jokes = get_all_jokes()
         result = [{"id": j[0], "text": j[1], "sent": bool(j[2])} for j in jokes]
-        logger.info(f"All jokes fetched. Count: {len(result)}")
+        logger.info("All jokes fetched. Count: %d", len(result))
         return jsonify(result)
     except Exception:
         logger.exception("Error in GET /jokes")
@@ -395,11 +336,11 @@ def api_get_joke(joke_id):
 def api_add_joke():
     data = request.get_json()
     if not data or "text" not in data:
-        logger.warning(f"BadRequest: Missing 'text' in POST /jokes. IP: {request.remote_addr}")
+        logger.warning("BadRequest: Missing 'text' in POST /jokes. IP: %s", request.remote_addr)
         return jsonify({"error": "Missing 'text' field"}), 400
 
     add_joke(data["text"])
-    logger.info(f"Joke added via API from {request.remote_addr}")
+    logger.info("Joke added via API from %s", request.remote_addr)
     return jsonify({"status": "ok"}), 201
 
 @blueprint.route("/jokes/<int:joke_id>", methods=["PUT"])
@@ -411,7 +352,7 @@ def api_update_joke(joke_id):
 
     success = update_joke(joke_id, data["text"])
     if success:
-        logger.info(f"Joke {joke_id} updated via API")
+        logger.info("Joke %s updated via API", joke_id)
         return jsonify({"status": "updated", "id": joke_id})
     else:
         return jsonify({"error": "Joke not found"}), 404
@@ -421,7 +362,7 @@ def api_update_joke(joke_id):
 def api_delete_joke(joke_id):
     success = delete_joke(joke_id)
     if success:
-        logger.info(f"Joke {joke_id} deleted via API")
+        logger.info("Joke %s deleted via API", joke_id)
         return jsonify({"status": "deleted", "id": joke_id})
     else:
         return jsonify({"error": "Joke not found"}), 404
@@ -457,7 +398,7 @@ def api_get_all_guild_joke_configs():
     try:
         configs = get_all_guild_joke_configs()
         result = [_serialize_guild_joke_config(c) for c in configs]
-        logger.info(f"Per-guild joke configs fetched. Count: {len(result)}")
+        logger.info("Per-guild joke configs fetched. Count: %d", len(result))
         return jsonify(result)
     except Exception:
         logger.exception("Error in GET /jokes/guilds")
@@ -486,8 +427,9 @@ def api_put_guild_joke_config(guild_id):
     data = request.get_json()
     if not data or "channel_id" not in data or "send_time" not in data:
         logger.warning(
-            f"BadRequest: PUT /jokes/guilds/{guild_id} missing channel_id "
-            f"or send_time. IP: {request.remote_addr}"
+            "BadRequest: PUT /jokes/guilds/%s missing channel_id "
+            "or send_time. IP: %s",
+            guild_id, request.remote_addr,
         )
         return jsonify({"error": "Missing channel_id or send_time"}), 400
 
@@ -504,7 +446,8 @@ def api_put_guild_joke_config(guild_id):
 
     set_guild_joke_config(guild_id, channel_id, send_time)
     logger.info(
-        f"Guild {guild_id} joke config set via API: channel={channel_id} time={send_time}"
+        "Guild %s joke config set via API: channel=%s time=%s",
+        guild_id, channel_id, send_time,
     )
     return jsonify({
         "status": "ok",
@@ -520,7 +463,7 @@ def api_delete_guild_joke_config(guild_id):
     removed = clear_guild_joke_config(guild_id)
     if not removed:
         return jsonify({"error": "Guild not configured"}), 404
-    logger.info(f"Guild {guild_id} joke config cleared via API")
+    logger.info("Guild %s joke config cleared via API", guild_id)
     return jsonify({"status": "deleted", "guild_id": guild_id})
 
 
@@ -660,7 +603,7 @@ def api_set_setting(key):
     except (TypeError, ValueError, OverflowError):
         return jsonify({"error": f"Invalid value for {key}"}), 400
     set_setting(key, value)
-    logger.info(f"Setting '{key}' updated via API from {request.remote_addr}")
+    logger.info("Setting '%s' updated via API from %s", key, request.remote_addr)
     return jsonify({"status": "updated", "key": key, "value": data["value"]})
 
 

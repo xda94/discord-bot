@@ -36,7 +36,7 @@ def add_scraped_item(user_id, url, title=None, price=None, stock=1, currency=Non
                 return item_id
         return None
     except Exception:
-        logger.exception(f"Failed to add scrape item: {url}")
+        logger.exception("Failed to add scrape item: %s", url)
         return False
 
 def delete_scraped_item(user_id, url):
@@ -51,7 +51,7 @@ def delete_scraped_item(user_id, url):
                 return True
         return False
     except Exception:
-        logger.exception(f"Failed to delete scrape item: {url}")
+        logger.exception("Failed to delete scrape item: %s", url)
         return False
 
 def get_all_scraped_items():
@@ -95,7 +95,7 @@ def get_user_scraped_items_for_refresh(user_id):
             )
             return c.fetchall()
     except Exception:
-        logger.exception(f"Failed to fetch refreshable scraped items for user {user_id}")
+        logger.exception("Failed to fetch refreshable scraped items for user %s", user_id)
         return []
 
 
@@ -106,7 +106,7 @@ def get_user_scraped_items(user_id):
             c.execute("SELECT url, last_price, last_stock_status, title, currency FROM scraped_items WHERE user_id = ?", (user_id,))
             return c.fetchall()
     except Exception:
-        logger.exception(f"Failed to fetch scraped items for user {user_id}")
+        logger.exception("Failed to fetch scraped items for user %s", user_id)
         return []
 
 
@@ -128,7 +128,7 @@ def get_user_scraped_items_with_settings(user_id):
             )
             return c.fetchall()
     except Exception:
-        logger.exception(f"Failed to fetch detailed scraped items for user {user_id}")
+        logger.exception("Failed to fetch detailed scraped items for user %s", user_id)
         return []
 
 
@@ -145,7 +145,7 @@ def get_scraped_item(user_id, url):
             )
             return c.fetchone()
     except Exception:
-        logger.exception(f"Failed to fetch scraped item for {url}")
+        logger.exception("Failed to fetch scraped item for %s", url)
         return None
 
 
@@ -194,7 +194,7 @@ def update_scraped_item_preferences(user_id, url, *, target_price=..., target_cu
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to set wishlist preferences for {url}")
+        logger.exception("Failed to set wishlist preferences for %s", url)
         return False
 
 
@@ -204,7 +204,7 @@ def toggle_scraped_item_restock_only(user_id, url):
             c.execute("UPDATE scraped_items SET restock_only = CASE WHEN restock_only THEN 0 ELSE 1 END WHERE user_id = ? AND url = ?", (user_id, url))
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to toggle restock-only mode for {url}")
+        logger.exception("Failed to toggle restock-only mode for %s", url)
         return False
 
 
@@ -229,7 +229,7 @@ def persist_scraped_item_refresh(item_id, price, in_stock, title, currency, stat
             )
         return True
     except Exception:
-        logger.exception(f"Failed to persist refresh for item {item_id}")
+        logger.exception("Failed to persist refresh for item %s", item_id)
         return False
 
 
@@ -244,7 +244,7 @@ def update_scraped_item_check_status(item_id, status):
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to update scrape check status for ID {item_id}")
+        logger.exception("Failed to update scrape check status for ID %s", item_id)
         return False
 
 
@@ -256,7 +256,7 @@ def update_scraped_item_target_state(item_id, alerted):
                 (1 if alerted else 0, item_id),
             )
     except Exception:
-        logger.exception(f"Failed to update target alert state for ID {item_id}")
+        logger.exception("Failed to update target alert state for ID %s", item_id)
 
 def update_scraped_item_status(item_id, price, in_stock, title=None, currency=None):
     """Update a tracked item's latest snapshot. Every field is COALESCEd, so
@@ -283,7 +283,7 @@ def update_scraped_item_status(item_id, price, in_stock, title=None, currency=No
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to update scraped item status for ID {item_id}")
+        logger.exception("Failed to update scraped item status for ID %s", item_id)
         return False
 
 def update_item_alert_state(item_id, kind, price):
@@ -304,7 +304,50 @@ def update_item_alert_state(item_id, kind, price):
                 (kind, price, item_id),
             )
     except Exception:
-        logger.exception(f"Failed to update alert state for item {item_id}")
+        logger.exception("Failed to update alert state for item %s", item_id)
+
+def persist_scrape_pass(item_id, *, price, in_stock, title, currency, target_alerted=..., alert_kind=..., alert_price=...):
+    try:
+        snapshot = price is None or _valid_number(price)
+        fields = []
+        values = []
+        if snapshot:
+            fields.extend((
+                "last_price = COALESCE(?, last_price)",
+                "last_stock_status = COALESCE(?, last_stock_status)",
+                "title = COALESCE(?, title)",
+                "currency = COALESCE(?, currency)",
+            ))
+            values.extend((price, None if in_stock is None else (1 if in_stock else 0), title, currency))
+        if target_alerted is not ...:
+            fields.append("target_alerted = ?")
+            values.append(1 if target_alerted else 0)
+        if alert_kind is not ...:
+            fields.append("last_alert_kind = ?")
+            values.append(alert_kind)
+        if alert_price is not ...:
+            fields.append("last_alert_price = ?")
+            values.append(alert_price)
+        with _connect(commit=True) as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("SELECT 1 FROM scraped_items WHERE id = ?", (item_id,))
+            if c.fetchone() is None:
+                return False
+            if snapshot and price is not None:
+                c.execute(
+                    "INSERT INTO price_history (item_id, price, timestamp) VALUES (?, ?, ?)",
+                    (item_id, price, time.time()),
+                )
+            if fields:
+                c.execute(
+                    "UPDATE scraped_items SET " + ", ".join(fields) + " WHERE id = ?",
+                    (*values, item_id),
+                )
+        return snapshot
+    except Exception:
+        logger.exception("Failed to persist scrape pass for item %s", item_id)
+        return False
+
 
 def add_price_history(item_id, price):
     try:
@@ -317,7 +360,7 @@ def add_price_history(item_id, price):
             )
         return True
     except Exception:
-        logger.exception(f"Failed to add price history for item {item_id}")
+        logger.exception("Failed to add price history for item %s", item_id)
         return False
 
 def clean_old_price_history(days=180):
@@ -390,7 +433,7 @@ def get_exchange_rate(currency):
             row = c.fetchone()
             return row[0] if row else None
     except Exception:
-        logger.exception(f"Failed to get exchange rate for {currency}")
+        logger.exception("Failed to get exchange rate for %s", currency)
         return None
 
 def get_price_history(user_id, url):
@@ -405,5 +448,5 @@ def get_price_history(user_id, url):
             """, (user_id, url))
             return c.fetchall()
     except Exception:
-        logger.exception(f"Failed to fetch price history for {url}")
+        logger.exception("Failed to fetch price history for %s", url)
         return []

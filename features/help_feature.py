@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -174,11 +175,11 @@ class HelpFeature:
             name="help", description="Show all available commands and how to use them"
         )
         async def help_cmd(interaction: discord.Interaction):
-            logger.info(f"Command /help called by {interaction.user}")
+            logger.info("Command /help called by %s", interaction.user)
             import db
             from i18n import t
             from features.onboarding import HelpView, display_language
-            lang = display_language(interaction, db.get_assistant_profile(interaction.user.id))
+            lang = display_language(interaction, await asyncio.to_thread(db.get_assistant_profile, interaction.user.id))
             await interaction.response.send_message(
                 t('help', lang),
                 view=HelpView(interaction.user.id, lang, self.tree),

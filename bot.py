@@ -124,7 +124,7 @@ async def on_ready():
             await feature.start_tasks()
         except Exception:
             logger.exception("Could not start background feature %s",type(feature).__name__)
-    logger.info(f"Bot is ready! Logged in as {client.user} (ID: {client.user.id})")
+    logger.info("Bot is ready! Logged in as %s (ID: %s)", client.user, client.user.id)
 
 
 @client.event

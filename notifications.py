@@ -1,10 +1,11 @@
 """Scheduling and delivery shared by price and flight tracking."""
+
 from __future__ import annotations
 import time
 import asyncio
 import logging
 import json
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import discord
 from discord.ext import tasks
@@ -12,120 +13,189 @@ import db
 from db import notifications as store
 from assistant_profiles import effective_profile
 from command_time import valid_local
-from i18n import t,language_for,localize
+from i18n import t, language_for, localize
 from analytics import record
 
 
-logger=logging.getLogger("discord_bot")
+logger = logging.getLogger("discord_bot")
 
 
-def delivery_at(profile,now=None):
-    now=time.time() if now is None else now
+def delivery_at(profile, now=None):
+    now = time.time() if now is None else now
     if not profile.timezone_configured:
         return now
-    zone=ZoneInfo(profile.timezone)
-    local=datetime.fromtimestamp(now,zone)
-    result=local
-    if profile.delivery_mode=='daily':
-        h,m=map(int,profile.digest_time.split(':'))
-        result=local.replace(hour=h,minute=m,second=0,microsecond=0)
-        if result.timestamp()<=now:
-            result+=timedelta(days=1)
+    zone = ZoneInfo(profile.timezone)
+    local = datetime.fromtimestamp(now, zone)
+    result = local
+    if profile.delivery_mode == "daily":
+        h, m = map(int, profile.digest_time.split(":"))
+        result = local.replace(hour=h, minute=m, second=0, microsecond=0)
+        if result.timestamp() <= now:
+            result += timedelta(days=1)
     if profile.quiet_start and profile.quiet_end:
-        current=result.strftime('%H:%M')
-        start=profile.quiet_start
-        end=profile.quiet_end
-        quiet=(start<=current<end) if start<end else (current>=start or current<end)
+        current = result.strftime("%H:%M")
+        start = profile.quiet_start
+        end = profile.quiet_end
+        quiet = (
+            (start <= current < end)
+            if start < end
+            else (current >= start or current < end)
+        )
         if quiet:
-            h,m=map(int,end.split(':'))
-            if start>end and current>=start:
-                result+=timedelta(days=1)
-            result=result.replace(hour=h,minute=m,second=0,microsecond=0)
-    naive=result.replace(tzinfo=None)
+            h, m = map(int, end.split(":"))
+            if start > end and current >= start:
+                result += timedelta(days=1)
+            result = result.replace(hour=h, minute=m, second=0, microsecond=0)
+    naive = result.replace(tzinfo=None)
     for _ in range(181):
-        candidates=valid_local(naive,zone)
+        candidates = valid_local(naive, zone)
         if candidates:
-            return max(now,candidates[0].timestamp())
-        naive+=timedelta(minutes=1)
-    return now+3600
+            return max(now, candidates[0].timestamp())
+        naive += timedelta(minutes=1)
+    return now + 3600
 
 
 def tracking_language(user_id, source, item_key):
     from db.connection import _connect
-    table = {'wishlist':'scraped_items','flight':'flight_trackers'}.get(source)
-    captured = 'en'
+
+    table = {"wishlist": "scraped_items", "flight": "flight_trackers"}.get(source)
+    captured = "en"
     if table:
         with _connect() as c:
-            row = c.execute(f'SELECT language FROM {table} WHERE user_id=? AND id=?', (user_id,item_key)).fetchone()
+            row = c.execute(
+                f"SELECT language FROM {table} WHERE user_id=? AND id=?",
+                (user_id, item_key),
+            ).fetchone()
             if row:
                 captured = row[0]
-    return language_for(profile=db.get_assistant_profile(user_id),fallback=captured)
+    return language_for(profile=db.get_assistant_profile(user_id), fallback=captured)
 
 
 def prepare_tracking(user_id, source, item_key, event_kind, body, *, protected=()):
     profile = effective_profile(db.get_assistant_profile(user_id))
-    lang = tracking_language(user_id,source,item_key)
-    return dict(user_id=user_id,source=source,item_key=item_key,event_kind=event_kind,
-                body=body,language=lang,due_at=delivery_at(profile),protected=protected)
+    lang = tracking_language(user_id, source, item_key)
+    return dict(
+        user_id=user_id,
+        source=source,
+        item_key=item_key,
+        event_kind=event_kind,
+        body=body,
+        language=lang,
+        due_at=delivery_at(profile),
+        protected=protected,
+    )
 
 
-async def deliver_tracking(client, user_id, source, item_key, event_kind, body, *, protected=()):
-    notification=await asyncio.to_thread(prepare_tracking,user_id,source,item_key,event_kind,body,protected=protected)
-    await asyncio.to_thread(store.enqueue,**notification)
+async def deliver_tracking(
+    client, user_id, source, item_key, event_kind, body, *, protected=()
+):
+    notification = await asyncio.to_thread(
+        prepare_tracking,
+        user_id,
+        source,
+        item_key,
+        event_kind,
+        body,
+        protected=protected,
+    )
+    await asyncio.to_thread(store.enqueue, **notification)
     await drain(client, user_id=user_id)
 
 
 async def drain(client, user_id=None):
     groups = {}
-    for row in await asyncio.to_thread(store.claim,user_id=user_id):
-        groups.setdefault(row['user_id'], []).append(row)
+    for row in await asyncio.to_thread(store.claim, user_id=user_id):
+        groups.setdefault(row["user_id"], []).append(row)
     for recipient, events in groups.items():
         remaining = list(events)
         try:
-            profile = effective_profile(await asyncio.to_thread(db.get_assistant_profile,recipient))
-            lang = language_for(profile=profile, fallback=events[0]['language'])
-            if profile.quiet_start and profile.delivery_mode == 'immediate':
+            profile = effective_profile(
+                await asyncio.to_thread(db.get_assistant_profile, recipient)
+            )
+            lang = language_for(profile=profile, fallback=events[0]["language"])
+            if profile.quiet_start and profile.delivery_mode == "immediate":
                 due = delivery_at(profile)
                 if due > time.time() + 1:
-                    await asyncio.to_thread(store.defer,events,due)
+                    await asyncio.to_thread(store.defer, events, due)
                     continue
             user = await client.fetch_user(recipient)
             if user is None:
-                raise RuntimeError('User unavailable')
+                raise RuntimeError("User unavailable")
             for event in events:
-                lang = language_for(profile=profile, fallback=event['language'])
-                observed = datetime.fromtimestamp(event['observed_at'], ZoneInfo(profile.timezone)).strftime('%d.%m.%Y %H:%M %Z')
-                header = t('digest', lang) + '\n\n' if profile.delivery_mode == 'daily' else ''
-                body = header + localize(event['body'], lang, protected=json.loads(event['protected_json'])) + '\n' + t('observed', lang, time=observed)
-                body = await asyncio.to_thread(store.freeze_body,event['id'], body)
-                parts = [body[offset:offset + 1900] for offset in range(0, len(body), 1900)]
-                for index in range(event['sent_parts'], len(parts)):
-                    sent = await user.send(parts[index], suppress_embeds=True, allowed_mentions=discord.AllowedMentions.none())
-                    message_id = getattr(sent, 'id', None)
-                    await asyncio.to_thread(store.save_part,event['id'], index + 1, message_id if isinstance(message_id, int) else None)
-                await asyncio.to_thread(store.finish,[event])
+                lang = language_for(profile=profile, fallback=event["language"])
+                observed = datetime.fromtimestamp(
+                    event["observed_at"], ZoneInfo(profile.timezone)
+                ).strftime("%d.%m.%Y %H:%M %Z")
+                header = (
+                    t("digest", lang) + "\n\n"
+                    if profile.delivery_mode == "daily"
+                    else ""
+                )
+                body = (
+                    header
+                    + localize(
+                        event["body"],
+                        lang,
+                        protected=json.loads(event["protected_json"]),
+                    )
+                    + "\n"
+                    + t("observed", lang, time=observed)
+                )
+                body = await asyncio.to_thread(store.freeze_body, event["id"], body)
+                parts = [
+                    body[offset : offset + 1900] for offset in range(0, len(body), 1900)
+                ]
+                for index in range(event["sent_parts"], len(parts)):
+                    sent = await user.send(
+                        parts[index],
+                        suppress_embeds=True,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    message_id = getattr(sent, "id", None)
+                    await asyncio.to_thread(
+                        store.save_part,
+                        event["id"],
+                        index + 1,
+                        message_id if isinstance(message_id, int) else None,
+                    )
+                await asyncio.to_thread(store.finish, [event])
                 remaining.remove(event)
-                await record('scheduled', event['source'] + '-notification', scope_type='dm')
+                await record(
+                    "scheduled", event["source"] + "-notification", scope_type="dm"
+                )
         except (discord.Forbidden, discord.NotFound) as exc:
-            await asyncio.to_thread(store.finish,remaining, type(exc).__name__, permanent=True)
+            await asyncio.to_thread(
+                store.finish, remaining, type(exc).__name__, permanent=True
+            )
             for event in remaining:
-                await record('failure', event['source'] + '-notification', scope_type='dm')
+                await record(
+                    "failure", event["source"] + "-notification", scope_type="dm"
+                )
         except Exception as exc:
             uncertain = isinstance(exc, (TimeoutError, ConnectionError))
-            await asyncio.to_thread(store.finish,remaining, 'uncertain-delivery' if uncertain else type(exc).__name__, permanent=uncertain)
+            await asyncio.to_thread(
+                store.finish,
+                remaining,
+                "uncertain-delivery" if uncertain else type(exc).__name__,
+                permanent=uncertain,
+            )
             for event in remaining:
-                await record('failure', event['source'] + '-notification', scope_type='dm')
+                await record(
+                    "failure", event["source"] + "-notification", scope_type="dm"
+                )
 
 
 class NotificationsFeature:
-    def __init__(self,client):
-        self.client=client
+    def __init__(self, client):
+        self.client = client
+
     async def start_tasks(self):
         if not self._check.is_running():
             self._check.start()
+
     @tasks.loop(seconds=30)
     async def _check(self):
         try:
             await drain(self.client)
         except Exception:
-            logger.exception('Notification delivery loop failed')
+            logger.exception("Notification delivery loop failed")

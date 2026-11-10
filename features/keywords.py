@@ -44,23 +44,47 @@ class KeywordsFeature:
         self.gate = gate
         self.sponsors = sponsors
         self._last_used: dict[str, str] = {}
+        self._matchers: dict[int, tuple[dict, re.Pattern | None]] = {}
         self._register_commands()
+
+    def _matcher_for(self, guild_id: int, responses_data: dict) -> re.Pattern | None:
+        cached = self._matchers.get(guild_id)
+        if cached is not None and cached[0] is responses_data:
+            return cached[1]
+        keywords = sorted(
+            (keyword for keyword, options in responses_data.items() if options),
+            key=len,
+            reverse=True,
+        )
+        pattern = None
+        if keywords:
+            pattern = re.compile(
+                r"(?<!\w)(?:" + "|".join(re.escape(k) for k in keywords) + r")(?!\w)"
+            )
+        self._matchers[guild_id] = (responses_data, pattern)
+        return pattern
 
     async def handle_message(self, message: discord.Message) -> bool:
         """Return True if a keyword reply was sent (so the caller can stop
         dispatching to other features)."""
-        if not self.gate.can_respond():
-            return False
-
         if not message.guild:
             return False
 
         guild_id = message.guild.id
+        if not self.gate.can_respond(guild_id):
+            return False
+
         content = message.content.lower()
         try:
-            responses_data = await asyncio.to_thread(db.get_all_responses,guild_id)
+            responses_data = db.get_cached_responses(guild_id)
+            if responses_data is None:
+                responses_data = await asyncio.to_thread(db.get_all_responses, guild_id)
         except Exception:
             logger.exception("Error fetching responses for keyword match")
+            return False
+
+        matcher = self._matcher_for(guild_id, responses_data)
+        if matcher is None or not matcher.search(content):
             return False
 
         for keyword, options in responses_data.items():
@@ -73,24 +97,27 @@ class KeywordsFeature:
             new_response = _pick_response(options, self._last_used.get(last_key))
             self._last_used[last_key] = new_response
 
-            suffix = self.sponsors.maybe_get_sponsor_suffix()
+            suffix = await asyncio.to_thread(self.sponsors.maybe_get_sponsor_suffix)
             if suffix:
                 new_response += suffix
 
             try:
                 await message.reply(new_response, mention_author=False, suppress_embeds=False)
             except Exception:
-                logger.exception(f"Failed to send keyword reply for '{keyword}'")
+                logger.exception("Failed to send keyword reply for '%s'", keyword)
                 await record("failure", "keyword-reply", guild_id=guild_id)
                 return False
 
-            self.gate.mark_responded()
+            self.gate.mark_responded(guild_id)
             await asyncio.to_thread(db.log_keyword_usage,keyword, message.author.id, guild_id)
             await record("automatic", "keyword-reply", guild_id=guild_id)
             if suffix:
                 await record("automatic", "sponsor-tagged-reply", guild_id=guild_id)
             logger.info(
-                f"Triggered response for '{keyword}' in guild {guild_id} #{message.channel}"
+                "Triggered response for '%s' in guild %s #%s",
+                keyword,
+                guild_id,
+                message.channel,
             )
             return True
 
@@ -100,7 +127,7 @@ class KeywordsFeature:
         @self.tree.command(name="keyword-add", description="Add a new keyword and response")
         @app_commands.describe(keyword="The keyword", response="The response")
         async def keyword_add(interaction: discord.Interaction, keyword: str, response: str):
-            logger.info(f"Command /keyword-add called by {interaction.user} for '{keyword}'")
+            logger.info("Command /keyword-add called by %s for '%s'", interaction.user, keyword)
             if not interaction.guild:
                 await interaction.response.send_message(
                     "This command must be run inside a server, not in DMs.",
@@ -121,8 +148,9 @@ class KeywordsFeature:
         @app_commands.describe(user="Optional: see a specific user's top keywords")
         async def topkeywords(interaction: discord.Interaction, user: discord.Member | None = None):
             logger.info(
-                f"Command /top-keywords called by {interaction.user}"
-                + (f" for {user.display_name}" if user else "")
+                "Command /top-keywords called by %s%s",
+                interaction.user,
+                f" for {user.display_name}" if user else "",
             )
             if not interaction.guild:
                 await interaction.response.send_message(

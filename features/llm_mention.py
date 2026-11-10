@@ -624,7 +624,7 @@ class LLMMentionFeature:
             2,
             ReactionJob(
                 message=message,
-                model=get_selected_model(),
+                model=await asyncio.to_thread(get_selected_model),
                 channel_id=channel_id,
             ),
         )
@@ -716,7 +716,7 @@ class LLMMentionFeature:
         user_id = message.author.id
         blocked = self._begin_job_checks(user_id)
         if blocked:
-            profile=db.get_assistant_profile(user_id)
+            profile=await asyncio.to_thread(db.get_assistant_profile,user_id)
             lang=language_for(text,profile)
             key="wait" if "wait" in blocked.lower() else "pending" if "already" in blocked.lower() else "busy"
             import re
@@ -735,8 +735,8 @@ class LLMMentionFeature:
             len(text),
         )
 
-        model = get_selected_model()
-        assistant_profile = effective_profile(db.get_assistant_profile(user_id))
+        model = await asyncio.to_thread(get_selected_model)
+        assistant_profile = effective_profile(await asyncio.to_thread(db.get_assistant_profile, user_id))
 
         bot_names = self._bot_names(message.guild)
         bot_name = bot_names[0] if bot_names else ""
@@ -818,7 +818,7 @@ class LLMMentionFeature:
             interaction: discord.Interaction,
             model: str,
         ):
-            logger.info(f"Command /llm-set called by {interaction.user} (model={model})")
+            logger.info("Command /llm-set called by %s (model=%s)", interaction.user, model)
             try:
                 allowed = get_allowed_models()
                 if model not in allowed:
@@ -827,7 +827,7 @@ class LLMMentionFeature:
                     )
                     return
                     
-                db.set_setting("mention_model", model)
+                await asyncio.to_thread(db.set_setting, "mention_model", model)
                 await interaction.response.send_message(
                     f"Mention model successfully set to **{model}**.", ephemeral=True
                 )

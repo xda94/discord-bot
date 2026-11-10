@@ -93,7 +93,7 @@ class BirthdaysFeature:
             user_id = interaction.user.id
             if date is None:
                 try:
-                    deleted = db.delete_birthday(user_id)
+                    deleted = await asyncio.to_thread(db.delete_birthday, user_id)
                 except sqlite3.Error:
                     logger.exception(
                         "Could not delete birthday registration for user=%s",
@@ -132,7 +132,7 @@ class BirthdaysFeature:
             month, day = parsed
             guild_id = interaction.guild_id
             try:
-                db.set_birthday(user_id, channel_id, guild_id, month, day)
+                await asyncio.to_thread(db.set_birthday, user_id, channel_id, guild_id, month, day)
             except sqlite3.Error:
                 logger.exception(
                     "Could not save birthday registration for user=%s", user_id
@@ -163,7 +163,7 @@ class BirthdaysFeature:
     async def _check(self):
         today = date_class.today()
         try:
-            due = db.get_due_birthdays(today)
+            due = await asyncio.to_thread(db.get_due_birthdays, today)
         except Exception:
             logger.exception("Could not list due birthdays")
             await record("failure", "birthday-check", scope_type="global")
@@ -261,7 +261,7 @@ class BirthdaysFeature:
 
         try:
             user_id, _channel_id, saved_guild_id, _month, _day, revision, _last_sent = birthday
-            current = db.get_birthday(user_id)
+            current = await asyncio.to_thread(db.get_birthday, user_id)
             if not self._is_current_registration(
                 current, user_id=user_id, revision=revision, today=today
             ):
@@ -284,7 +284,7 @@ class BirthdaysFeature:
                 await self._record_delivery_failure(saved_guild_id)
                 return
 
-            current = db.get_birthday(user_id)
+            current = await asyncio.to_thread(db.get_birthday, user_id)
             if not self._is_current_registration(
                 current, user_id=user_id, revision=revision, today=today
             ):
@@ -310,7 +310,7 @@ class BirthdaysFeature:
             return
 
         try:
-            marked = db.mark_birthday_sent(user_id, revision, today.year)
+            marked = await asyncio.to_thread(db.mark_birthday_sent, user_id, revision, today.year)
         except Exception:
             logger.exception("Could not mark birthday sent for user=%s", user_id)
             await record(

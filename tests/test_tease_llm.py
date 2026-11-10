@@ -711,3 +711,98 @@ def test_saved_language_is_only_a_fallback_for_the_current_message():
     assert "- Reply in the language of <current_message> (if it is too short to tell, English)" in prompt
     assert "Always use English" not in prompt
     assert prompt.endswith("Reply in the language of <current_message>.")
+
+
+def _teases_feature():
+    from unittest.mock import Mock
+
+    from features.teases import TeasesFeature
+
+    commands = {}
+    tree = Mock()
+    tree.command.side_effect = lambda **options: lambda callback: commands.setdefault(
+        options["name"], callback
+    )
+    return TeasesFeature(MagicMock(), tree), commands
+
+
+def _tease_message(guild_id):
+    from unittest.mock import AsyncMock
+
+    message = MagicMock()
+    message.guild = None if guild_id is None else MagicMock(id=guild_id)
+    message.author.display_name = "Alice"
+    message.content = "hello"
+    message.reply = AsyncMock()
+    return message
+
+
+def _mood_interaction(guild_id):
+    from unittest.mock import AsyncMock
+
+    interaction = MagicMock()
+    interaction.guild_id = guild_id
+    interaction.response.send_message = AsyncMock()
+    return interaction
+
+
+def test_mood_command_changes_only_calling_guild():
+    import asyncio
+    from discord import app_commands
+
+    feature, commands = _teases_feature()
+    feature._state_for(1)["mood"] = "good"
+    feature._state_for(2)["mood"] = "good"
+
+    asyncio.run(commands["mood"](_mood_interaction(1), app_commands.Choice(name="dad", value="dad")))
+
+    assert feature._state_for(1)["mood"] == "dad"
+    assert feature._state_for(2)["mood"] == "good"
+
+
+def test_mood_command_rejects_dms():
+    import asyncio
+    from discord import app_commands
+
+    feature, commands = _teases_feature()
+    interaction = _mood_interaction(None)
+
+    asyncio.run(commands["mood"](interaction, app_commands.Choice(name="dad", value="dad")))
+
+    interaction.response.send_message.assert_awaited_once_with(
+        "This command must be run inside a server, not in DMs.", ephemeral=True
+    )
+    assert feature._guild_state == {}
+
+
+def test_tease_skips_dms_without_llm_call(monkeypatch):
+    import asyncio
+
+    enhance = MagicMock(side_effect=AssertionError("no LLM call for DMs"))
+    monkeypatch.setattr("features.teases.enhance_tease", enhance)
+    monkeypatch.setattr("features.teases.random.random", lambda: 0.0)
+    feature, _ = _teases_feature()
+
+    assert asyncio.run(feature.handle_message(_tease_message(None))) is False
+    enhance.assert_not_called()
+
+
+def test_tease_mood_and_counter_are_per_guild(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    enhance = MagicMock(return_value="tease")
+    monkeypatch.setattr("features.teases.enhance_tease", enhance)
+    monkeypatch.setattr("features.teases.random.random", lambda: 0.0)
+    monkeypatch.setattr("features.teases.record_for", AsyncMock())
+    feature, _ = _teases_feature()
+    feature._state_for(1)["mood"] = "dad"
+    feature._state_for(2)["mood"] = "anime"
+
+    asyncio.run(feature.handle_message(_tease_message(1)))
+    asyncio.run(feature.handle_message(_tease_message(1)))
+    asyncio.run(feature.handle_message(_tease_message(2)))
+
+    assert [c.args[0] for c in enhance.call_args_list] == ["dad", "dad", "anime"]
+    assert feature._state_for(1)["teases_today"] == 2
+    assert feature._state_for(2)["teases_today"] == 1

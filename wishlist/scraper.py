@@ -215,11 +215,11 @@ class PriceScraper:
         try:
             response = self._http_get(url)
         except Exception as e:
-            logger.error(f"Scraping transport error for {url}: {e}")
+            logger.error("Scraping transport error for %s: %s", url, e)
             return ScrapeResult(failure=FAILURE_BLOCKED)
 
         if response.status_code != 200:
-            logger.warning(f"Scraping HTTP {response.status_code} for {url}")
+            logger.warning("Scraping HTTP %s for %s", response.status_code, url)
             return ScrapeResult(failure=FAILURE_BLOCKED)
 
         try:
@@ -270,7 +270,7 @@ class PriceScraper:
         except CapacityError:
             return ScrapeResult(failure=FAILURE_BUSY)
         except Exception as e:
-            logger.error(f"Scraping parse error for {url}: {e}")
+            logger.error("Scraping parse error for %s: %s", url, e)
             return ScrapeResult(failure=FAILURE_UNSUPPORTED)
 
     def _http_get(self, url: str):
@@ -410,7 +410,7 @@ class PriceScraper:
         tld = host.rsplit(".", 1)[-1].lower()
         guess = cls.TLD_CURRENCY_FALLBACKS.get(tld)
         if guess:
-            logger.debug(f"TLD fallback currency {guess} for {host}")
+            logger.debug("TLD fallback currency %s for %s", guess, host)
         return guess
 
     @staticmethod
@@ -469,5 +469,5 @@ class PriceScraper:
         except CapacityError:
             raise
         except Exception as e:
-            logger.warning(f"LLM fallback extraction failed: {e}")
+            logger.warning("LLM fallback extraction failed: %s", e)
             return None, None, None, None

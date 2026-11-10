@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 import time
 
+import flight_credentials
 from db.connection import _connect
 
 logger = logging.getLogger("database")
 
 def set_flight_api_credentials(user_id, api_key):
     """Create or replace one Discord user's SerpApi key."""
+    stored_key = flight_credentials.encrypt(api_key)
     try:
         with _connect(commit=True) as c:
             c.execute(
@@ -19,11 +21,11 @@ def set_flight_api_credentials(user_id, api_key):
                 "ON CONFLICT(user_id) DO UPDATE SET "
                 "api_key = excluded.api_key, "
                 "updated_at = excluded.updated_at",
-                (user_id, api_key, time.time()),
+                (user_id, stored_key, time.time()),
             )
         return True
     except Exception:
-        logger.exception(f"Failed to store flight API credentials for user {user_id}")
+        logger.exception("Failed to store flight API credentials for user %s", user_id)
         return False
 
 
@@ -39,13 +41,29 @@ def get_flight_api_credentials(user_id):
             row = c.fetchone()
             if row is None:
                 return None
-            return {
-                "api_key": row[0],
-                "updated_at": row[1],
-            }
     except Exception:
-        logger.exception(f"Failed to fetch flight API credentials for user {user_id}")
+        logger.exception("Failed to fetch flight API credentials for user %s", user_id)
         return None
+    stored_key = row[0]
+    api_key = flight_credentials.decrypt(stored_key)
+    if not flight_credentials.is_encrypted(stored_key) and flight_credentials.is_configured():
+        _encrypt_legacy_flight_api_key(user_id, stored_key)
+    return {
+        "api_key": api_key,
+        "updated_at": row[1],
+    }
+
+
+def _encrypt_legacy_flight_api_key(user_id, plaintext):
+    try:
+        with _connect(commit=True) as c:
+            c.execute(
+                "UPDATE flight_api_credentials SET api_key = ? "
+                "WHERE user_id = ? AND api_key = ?",
+                (flight_credentials.encrypt(plaintext), user_id, plaintext),
+            )
+    except Exception:
+        logger.exception("Failed to encrypt stored flight API credentials for user %s", user_id)
 
 
 def delete_flight_api_credentials(user_id):
@@ -56,7 +74,7 @@ def delete_flight_api_credentials(user_id):
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to delete flight API credentials for user {user_id}")
+        logger.exception("Failed to delete flight API credentials for user %s", user_id)
         return False
 
 _FLIGHT_TRACKER_COLUMNS = (
@@ -105,8 +123,11 @@ def add_flight_tracker(
             return c.lastrowid if c.rowcount > 0 else None
     except Exception:
         logger.exception(
-            f"Failed to add flight tracker for user {user_id}: "
-            f"{origin}-{destination}"
+            "Failed to add flight tracker for user %s: "
+            "%s-%s",
+            user_id,
+            origin,
+            destination,
         )
         return None
 
@@ -122,7 +143,7 @@ def get_flight_tracker(tracker_id, user_id=None):
             c.execute(query, params)
             return _flight_tracker_dict(c.fetchone())
     except Exception:
-        logger.exception(f"Failed to fetch flight tracker {tracker_id}")
+        logger.exception("Failed to fetch flight tracker %s", tracker_id)
         return None
 
 
@@ -136,7 +157,7 @@ def get_user_flight_trackers(user_id):
             )
             return [_flight_tracker_dict(row) for row in c.fetchall()]
     except Exception:
-        logger.exception(f"Failed to fetch flight trackers for user {user_id}")
+        logger.exception("Failed to fetch flight trackers for user %s", user_id)
         return []
 
 
@@ -159,7 +180,7 @@ def delete_flight_tracker(user_id, tracker_id):
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to delete flight tracker {tracker_id} for user {user_id}")
+        logger.exception("Failed to delete flight tracker %s for user %s", tracker_id, user_id)
         return False
 
 
@@ -185,7 +206,7 @@ def update_flight_tracker_result(
             )
             return c.rowcount > 0
     except Exception:
-        logger.exception(f"Failed to update flight tracker {tracker_id}")
+        logger.exception("Failed to update flight tracker %s", tracker_id)
         return False
 
 
@@ -204,7 +225,7 @@ def add_flight_price_history(
                 ),
             )
     except Exception:
-        logger.exception(f"Failed to add price history for flight tracker {tracker_id}")
+        logger.exception("Failed to add price history for flight tracker %s", tracker_id)
 
 
 def get_flight_price_history(tracker_id, user_id=None):
@@ -223,7 +244,7 @@ def get_flight_price_history(tracker_id, user_id=None):
             c.execute(query, params)
             return c.fetchall()
     except Exception:
-        logger.exception(f"Failed to fetch flight price history for tracker {tracker_id}")
+        logger.exception("Failed to fetch flight price history for tracker %s", tracker_id)
         return []
 
 

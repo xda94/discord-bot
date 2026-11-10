@@ -26,25 +26,38 @@ class TeasesFeature:
     def __init__(self, client: discord.Client, tree: app_commands.CommandTree):
         self.client = client
         self.tree = tree
-        self.current_mood = random.choice(TEASE_MOODS)
-        logger.info(f"Tease mood initialised to '{self.current_mood}'")
-        self.teases_today = 0
-        self.tease_reset_date: date | None = None
+        self._guild_state: dict[int, dict] = {}
         self._register_commands()
 
-    async def handle_message(self, message: discord.Message) -> bool:
-        today = date.today()
-        if self.tease_reset_date != today:
-            self.teases_today = 0
-            self.tease_reset_date = today
+    def _state_for(self, guild_id: int) -> dict:
+        state = self._guild_state.get(guild_id)
+        if state is None:
+            state = {
+                "mood": random.choice(TEASE_MOODS),
+                "teases_today": 0,
+                "reset_date": None,
+            }
+            self._guild_state[guild_id] = state
+            logger.info("Tease mood initialised to '%s' for guild %s", state["mood"], guild_id)
+        return state
 
-        chance = TEASE_BASE_CHANCE / (1 + self.teases_today)
+    async def handle_message(self, message: discord.Message) -> bool:
+        if not message.guild:
+            return False
+
+        state = self._state_for(message.guild.id)
+        today = date.today()
+        if state["reset_date"] != today:
+            state["teases_today"] = 0
+            state["reset_date"] = today
+
+        chance = TEASE_BASE_CHANCE / (1 + state["teases_today"])
         if random.random() >= chance:
             return False
 
         tease = await asyncio.to_thread(
             enhance_tease,
-            self.current_mood,
+            state["mood"],
             message.author.display_name,
             message.content,
         )
@@ -58,10 +71,13 @@ class TeasesFeature:
             await record_for("failure", "tease-reply", message)
             return False
 
-        self.teases_today += 1
+        state["teases_today"] += 1
         await record_for("automatic", "tease-reply", message)
         logger.info(
-            f"Tease #{self.teases_today} triggered on {message.author} in #{message.channel}"
+            "Tease #%s triggered on %s in #%s",
+            state["teases_today"],
+            message.author,
+            message.channel,
         )
         return False
 
@@ -72,12 +88,21 @@ class TeasesFeature:
         @app_commands.describe(mood="The mood to set")
         @app_commands.choices(mood=MOOD_CHOICES)
         async def mood(interaction: discord.Interaction, mood: app_commands.Choice[str]):
+            if interaction.guild_id is None:
+                await interaction.response.send_message(
+                    "This command must be run inside a server, not in DMs.",
+                    ephemeral=True,
+                )
+                return
             chosen = mood.value
             if chosen == "random":
                 chosen = random.choice(TEASE_MOODS)
             logger.info(
-                f"Command /mood called by {interaction.user} — setting mood to {chosen}"
+                "Command /mood called by %s — setting mood to %s",
+                interaction.user,
+                chosen,
             )
-            feature.current_mood = chosen
-            feature.teases_today = 0
+            state = feature._state_for(interaction.guild_id)
+            state["mood"] = chosen
+            state["teases_today"] = 0
             await interaction.response.send_message(f"Mood set to **{mood.value}**.")

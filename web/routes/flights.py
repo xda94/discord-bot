@@ -1,7 +1,7 @@
 """Flight credential and tracker administration routes."""
 
 import logging
-from datetime import date, datetime
+from datetime import date
 
 from flask import Blueprint, jsonify, request
 
@@ -10,6 +10,7 @@ from db import (
     get_flight_api_credentials, get_flight_price_history, get_flight_tracker,
     get_user_flight_trackers, set_flight_api_credentials,
 )
+from flight_credentials import FlightCredentialsError
 from flight_provider import (
     SUPPORTED_CURRENCIES, FlightProviderError, SerpApiFlightProvider,
     normalize_iata, parse_iso_date,
@@ -19,6 +20,12 @@ from web.helpers import discord_id as _discord_id, is_int as _is_int
 
 logger = logging.getLogger("flask_api")
 blueprint = Blueprint("flights", __name__)
+
+
+@blueprint.errorhandler(FlightCredentialsError)
+def _credentials_misconfigured(_exc):
+    logger.error("Flight credential encryption is misconfigured")
+    return jsonify({"error": "Flight credential storage is misconfigured"}), 503
 
 
 def _validate_flight_tracker_payload(data):

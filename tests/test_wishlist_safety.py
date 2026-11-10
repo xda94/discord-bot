@@ -162,7 +162,7 @@ def test_curl_download_limit_stops_before_accumulating_large_body(monkeypatch):
 
 def test_refresh_write_failure_rolls_back_history_and_reports_failure(tmp_db):
     url = "https://shop.example/item"
-    item_id = db.add_scraped_item(7, url, title="Old", price=100, currency="RON")
+    db.add_scraped_item(7, url, title="Old", price=100, currency="RON")
     item = db.get_scraped_item(7, url)
     with _connect(commit=True) as c:
         c.execute("CREATE TRIGGER fail_snapshot BEFORE UPDATE ON scraped_items BEGIN SELECT RAISE(ABORT, 'failed'); END")

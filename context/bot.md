@@ -3,8 +3,10 @@
 This living document summarizes the repository structure, runtime behavior,
 data model, external integrations, testing status, and notable implementation
 details. It was created from a codebase review on 2026-09-14 and updated through
-2026-10-12, including vision retries, diagnostics, and the reported Gemma 4
-deployment.
+2026-11-10, including vision retries, diagnostics, the reported Gemma 4
+deployment, and the November performance/hardening pass (event-loop database
+calls, per-guild response state, encrypted SerpApi keys, lint and a hashed
+dependency lock). The pass is described in `docs/improvement-plan.md`.
 
 ## Project overview
 
@@ -93,8 +95,11 @@ The reported production hardware is an Intel N150 with 16 GB RAM. It is not a
 Pi Zero W. The llama.cpp service currently has a 10 GB systemd memory limit and
 a 32,768-token context.
 Docker uses Python 3.13, `vl-convert-python`, and DejaVu fonts. Wishlist PNGs
-render locally without Chrome, Altair, or Matplotlib. Install changed Python
-requirements and rebuild the image when deploying renderer changes.
+render locally without Chrome, Altair, or Matplotlib. The image installs from
+`requirements.lock` (`pip install --require-hashes`); after changing
+`requirements.txt`, regenerate the lock under Python 3.9 with `pip-compile
+--generate-hashes` so the same pins also install on 3.13, then rebuild the image.
+`.env.example` lists every environment variable the code reads.
 
 ## Discord event flow
 
@@ -110,14 +115,14 @@ InactivityFeature
 
 The semantics are:
 
-- `InactivityFeature` records guild activity and always allows dispatch to continue.
+- `InactivityFeature` records guild activity (in memory on every message, in SQLite at most once a minute per guild) and always allows dispatch to continue.
 - `LLMMentionFeature` returns `True` for a bot mention, including cooldown replies, so keyword and tease handling stop.
 - `KeywordsFeature` returns `True` after sending a keyword response, so teasing stops for that message.
 - `ContextReactionFeature` occasionally queues a contextual emoji for ordinary
   messages while the model worker is idle; a selected message skips teasing.
 - `TeasesFeature` is last and always returns `False` after its optional response.
 
-Direct messages are eligible for LLM mention handling and random teases.
+Direct messages are eligible for LLM mention handling. Random teases require a guild.
 Buttons and modals identify their action without a mention. Keyword matching
 requires a guild.
 
@@ -158,19 +163,21 @@ Provides:
 
 Keyword maps and statistics are scoped by Discord guild. Matching is case-insensitive and uses word-boundary-style regular expressions, so a keyword does not normally match inside a larger word.
 
+A guild's keyword map is read from the in-process cache without a thread hop (`db.get_cached_responses`); only a cache miss falls back to `asyncio.to_thread(db.get_all_responses, ...)`. One compiled alternation per guild, rebuilt whenever the cached dict object is replaced, serves as a "no keyword present" pre-check, and the original per-keyword loop then picks the first matching keyword in dict order. The sponsor suffix lookup reads the tier catalog from SQLite, so it runs through `asyncio.to_thread`.
+
 Multiple responses can exist for one keyword. The feature prefers a response different from the last one used for that guild/keyword pair, without looping indefinitely when duplicate response strings exist.
 
 After a successful response it:
 
 - Optionally appends a sponsor suffix.
-- Updates the response cooldown.
+- Updates that guild's response cooldown.
 - Records keyword usage in SQLite.
 
 ### `features/response_gate.py`
 
-Contains a small in-memory time gate with a default ten-second cooldown.
+Contains a small in-memory time gate with a default ten-second cooldown, tracked per key. `KeywordsFeature` passes the guild ID, so a keyword reply in one server never delays replies in another; `ResponseGate()` without a key still behaves as a single global gate.
 
-Although comments in `bot.py` and the class documentation describe it as shared by keywords and teases, only `KeywordsFeature` currently receives and checks the gate. `TeasesFeature` does not use it.
+Only `KeywordsFeature` receives and checks the gate. `TeasesFeature` does not use it.
 
 ### `features/sponsors.py`
 
@@ -259,7 +266,7 @@ depending on model output.
 The bot may react to the original human message.
 
 Inference capacity is shared across bot/API processes using the same lock
-directory. The selected model is global rather than guild- or user-specific.
+directory. Waiters back off while polling for admission (0.02 s doubling to 0.25 s for async waiters, 0.1 s for synchronous ones) instead of polling every 10 ms, so a queued job can notice its deadline up to one back-off interval late. The selected model is global rather than guild- or user-specific.
 
 Ordinary chat has a default 10% chance of being considered for a reaction, with
 a shared 60-second per-channel cooldown. Keyword responses retain priority, and
@@ -315,9 +322,9 @@ structured bot prompt using a generated red circle, without Discord traffic.
 
 ### `features/teases.py`
 
-Provides `/mood` and optional random replies to ordinary messages.
+Provides `/mood` and optional random replies to ordinary messages in servers; messages without a guild are ignored and never reach the LLM.
 
-The base probability is 10%, divided by `1 + teases_today`, so teasing becomes progressively less likely during the day. Its counter resets on the local calendar date. Tease templates can be rewritten through llama.cpp, with fallback behavior implemented in `llm/responses.py`.
+The base probability is 10%, divided by `1 + teases_today`, so teasing becomes progressively less likely during the day. Mood, the daily counter and its reset date are kept per guild (`_guild_state`); a guild gets a random mood the first time it is seen. The counter resets on the local calendar date. `/mood` changes only the calling server's mood and counter and is rejected in DMs. Tease templates can be rewritten through llama.cpp, with fallback behavior implemented in `llm/responses.py`.
 
 Mood and daily tease state are in memory and reset when the process restarts.
 
@@ -327,7 +334,7 @@ Tracks the latest guild message in memory and in the `guild_activity` table. Eve
 
 When nudging a channel, it tries to select a random human from the latest 50 messages. Every nudge is generated by llama.cpp without a fixed topic or message pool. If generation fails, nothing is posted and the overdue guild is retried during the next scheduled check.
 
-Every guild message writes an activity UPSERT through `asyncio.to_thread`, keeping SQLite lock waits off the Discord event loop.
+Every guild message updates the in-memory state, but the activity UPSERT (through `asyncio.to_thread`, keeping SQLite lock waits off the Discord event loop) runs only for a guild's first message, a change of channel, or when 60 seconds have passed since the last persisted write. The 24-hour threshold makes up to a minute of restart drift irrelevant. The `/llm-inactivity` setting is also written through a worker thread.
 
 ### `features/reminders.py`
 
@@ -352,7 +359,10 @@ daily digests. Reminder lists and delivered messages expose only the controls
 valid for their lifecycle state.
 
 The reminder loop runs every ten seconds, sends to the original channel, and
-keeps the durable record after delivery or failure. Success reactions and
+keeps the durable record after delivery or failure. Each pass reads only the
+failed-with-`uncertain-delivery` rows it needs to reconcile (`list_uncertain`)
+rather than every reminder, and terminal-row cleanup runs at most once an hour.
+Reconciliation attempts are rate-limited to one per reminder per hour in memory. Success reactions and
 private list results remain reaction-only/private as described above.
 
 Recovered recurring reminders return to pending with `finished_at` cleared. Cleanup deletes only terminal reminders, retaining pending legacy rows even if they carry a stale terminal timestamp.
@@ -591,7 +601,7 @@ Legacy Amadeus credentials are removed during database migration. Old flexible-d
 
 ### `flight_provider.py`
 
-Provider errors redact API keys, including encoded keys and request URLs, before being stored or returned; logging also redacts credential-shaped fields and configured secrets. Keys remain plaintext in SQLite.
+Provider errors redact API keys, including encoded keys and request URLs, before being stored or returned; logging also redacts credential-shaped fields and configured secrets. Stored keys are encrypted when `FLIGHT_CREDENTIALS_KEY` is configured (see Persistence model).
 
 Wraps SerpApi's account-validation and Google Flights endpoints. It normalizes and validates IATA codes, classifies provider/quota errors, parses the returned flight groups, and chooses the cheapest offer.
 
@@ -660,7 +670,7 @@ reference renders slash-command descriptions and parameters.
 
 | Task | Default frequency | Purpose |
 |---|---:|---|
-| Reminder delivery | 10 seconds | Deliver and delete due reminders |
+| Reminder delivery | 10 seconds | Deliver due reminders; cleanup of old terminal rows runs hourly |
 | Daily joke check | 30 seconds | Send one scheduled joke per configured guild/day |
 | Birthday check | Daily at 00:01, then 30-minute failure retries | Send due per-user birthday greetings once successfully delivered |
 | Inactivity check | 30 minutes | Nudge enabled guild channels quiet for 24 hours |
@@ -703,7 +713,7 @@ Main tables:
 | Table | Scope and purpose |
 |---|---|
 | `responses` | Guild-specific keyword/response pairs |
-| `keyword_usage` | Guild- and user-specific keyword statistics |
+| `keyword_usage` | Guild- and user-specific keyword statistics, indexed on `(guild_id, keyword)` and `(guild_id, user_id)` |
 | `reminders` | Reminder ownership, lifecycle, timezone, recurrence, retry, and delivery state |
 | `reminder_occurrences` | Claimed occurrence identity and Discord delivery reconciliation |
 | `birthdays` | One recurring birthday registration per Discord user, including destination and delivery marker |
@@ -714,9 +724,9 @@ Main tables:
 | `assistant_profiles` | One global preference row per Discord user |
 | `action_executions` | Idempotency claims for Discord messages, buttons, modals, and slash interactions |
 | `scraped_items` | Per-user wishlist entries, alert preferences/state, and latest check status |
-| `price_history` | Wishlist price observations |
+| `price_history` | Wishlist price observations, indexed on `(item_id, timestamp)` |
 | `exchange_rates` | EUR-relative cached rates |
-| `flight_api_credentials` | Per-user SerpApi key |
+| `flight_api_credentials` | Per-user SerpApi key, encrypted when `FLIGHT_CREDENTIALS_KEY` is set |
 | `flight_trackers` | Per-user fixed-date watches and latest result |
 | `flight_price_history` | Historical flight observations |
 | `notification_outbox` | Durable wishlist/flight delivery queue, coalescing, retries, and accepted DM parts |
@@ -731,7 +741,9 @@ Foreign-key cascades remove wishlist and flight histories when their owning item
 
 Keyword response maps use a 30-second, per-guild, in-process cache. Mutations in the same process invalidate it immediately. Changes made by the Flask process can remain invisible to the bot until the bot cache expires.
 
-SerpApi keys are stored as plaintext in SQLite. Filesystem and backup access therefore need to be restricted.
+SerpApi keys are encrypted with Fernet (`flight_credentials.py`, key from `FLIGHT_CREDENTIALS_KEY`) and stored with an `enc:v1:` prefix; legacy plaintext rows are encrypted when first read. If the variable is unset the bot logs one warning and keeps plaintext, so filesystem and backup access then need to be restricted. A malformed key, a missing `cryptography` package, or an undecryptable value raises `FlightCredentialsError` (messages never contain the key or ciphertext); the Discord flight commands report that credential storage is misconfigured and the flight API routes return 503. Losing the key makes stored keys unreadable and users must log in again.
+
+One wishlist scrape pass persists an item's snapshot, price-history row, target-alert state and alert state in a single `BEGIN IMMEDIATE` transaction (`persist_scrape_pass`), after the notification has been queued; if the notification fails, only the price-history row is still written.
 
 ## Flask API surface
 
@@ -1083,7 +1095,9 @@ SQLite initialization retry/rollback, and truthful write failures. The existing
 urllib3/LibreSSL compatibility warning remains. Tests use isolated databases; no live Discord messages
 or production services were used.
 
-Verification on 2026-10-09: the integrated targeted run passed 601 tests; the full suite ran once after implementation and passed all 1,323 tests in 24.80 seconds. `git diff --check` and syntax parsing of all 36 changed Python files passed. The existing urllib3/LibreSSL warning is unchanged. Docker build/Compose validation was unavailable because the local environment has no Docker CLI. No dependencies were changed, and no live Discord or provider requests were made. New tests cover SSRF/DNS/redirect/download limits, transactional wishlist writes, credential redaction, fail-closed auth, public health, recurring recovery/cleanup, flight enqueue rollback, tracker quota selection, notification loop recovery, and isolated startup.
+Verification on 2026-11-10: after the performance/hardening pass the full suite passed all 1,011 tests in about 21 seconds under the local Python 3.9.6 `.venv`, and `ruff check .` (undefined names, unused imports, syntax errors; `ruff.toml`) was clean. The existing urllib3/LibreSSL warning is unchanged. The Docker image, which now installs from the hashed `requirements.lock`, was not built locally because there is no Docker CLI. No live Discord or provider requests were made. Newer tests cover the reminder loop's targeted query and hourly cleanup, keyword cache and matcher behavior, debounced activity writes, per-guild cooldown and tease state, atomic scrape persistence and the new indexes, admission back-off, and encrypted SerpApi key storage (round trip, legacy migration, missing and wrong key, API 503).
+
+Earlier verification (2026-10-09, 1,323 tests at the time) covered SSRF/DNS/redirect/download limits, transactional wishlist writes, credential redaction, fail-closed auth, public health, recurring recovery/cleanup, flight enqueue rollback, tracker quota selection, notification loop recovery, and isolated startup; those tests remain in the suite.
 
 `tests/test_api.py` covers API configuration and summary routes.
 `tests/test_dashboard.py` covers dashboard asset delivery, bearer protection on
@@ -1096,17 +1110,16 @@ rendering, duplicate titles, median comparison, product caps, and time-axis form
 Mention tests cover explicit requester tags and one-ping multipart replies;
 command-naming tests cover the hyphen convention.
 
-CI has both a Python 3.13 pytest workflow and a Docker build/Compose-validation
-workflow. Neither workflow starts a live Discord bot.
+CI has both a Python 3.13 workflow (`ruff check .` then pytest, installed from `requirements.lock`) and a Docker build/Compose-validation workflow; both run on pushes to `main` and on pull requests. Neither workflow starts a live Discord bot.
 ## Notable implementation risks and inconsistencies
 
 ### Python version compatibility
 
 Most postponed PEP 604 annotations import under Python 3.9, but discord.py evaluates slash-command callback annotations at registration time. Such callbacks use Python-3.9-compatible typing constructs such as `Optional[...]`.
 
-### Response gate mismatch
+### Response gate scope
 
-Comments say the keyword and tease systems share a cooldown, but only keyword replies check and update `ResponseGate`. A random tease can therefore occur without observing the advertised shared cooldown.
+`ResponseGate` is per guild and only keyword replies check and update it. A random tease can still occur without observing the keyword cooldown; teases are limited by their own probability and per-guild daily counter.
 
 ### SQLite concurrency
 
@@ -1131,11 +1144,11 @@ Most mutating slash commands do not enforce Discord administrator or role permis
 
 ### Secret storage
 
-Per-user SerpApi keys are stored unencrypted in SQLite. Logs avoid printing the keys, but database files and backups remain sensitive.
+Per-user SerpApi keys are encrypted only when `FLIGHT_CREDENTIALS_KEY` is set; without it they stay plaintext in SQLite. The encryption key lives in `.env` next to the database access, so it protects database files and backups but not a host compromise. Logs avoid printing keys and ciphertext.
 
 ### Synchronous database calls in async paths
 
-Inactivity activity writes, keyword lookups/usage writes, action admission, and frequent tracking/delivery operations now use worker threads. Some less frequent handlers and helper reads remain synchronous; SQLite still serializes writes and a thread can wait up to five seconds under contention.
+Command handlers, button and modal callbacks, and the joke, birthday, reminder, flight, onboarding, help, sponsor and mention features now call the database through `asyncio.to_thread`, as do activity writes, keyword lookups/usage writes, action admission, and tracking/delivery operations. Remaining synchronous calls live in startup code (`InactivityFeature.__init__`, `SponsorsFeature.__init__`) or in helpers that are only invoked from worker threads. SQLite still serializes writes and a thread can wait up to five seconds under contention.
 
 ### Reminder delivery semantics
 
@@ -1156,7 +1169,9 @@ When extending the project:
 - Keep provider/parsing logic outside feature modules when the API or tests should reuse it without Discord imports.
 - Put all persistence operations and migrations in the `db` package.
 - Preserve guild/user scoping explicitly; the `settings` table is global.
-- Use `asyncio.to_thread` for synchronous HTTP, LLM, heavy graph, or other blocking work invoked from Discord handlers.
+- Use `asyncio.to_thread` for synchronous HTTP, LLM, heavy graph, SQLite, or other blocking work invoked from Discord handlers; keep per-guild state (cooldowns, moods) keyed by guild ID.
+- Log with lazy arguments (`logger.info("... %s", value)`), not f-strings, and run `ruff check .` before committing.
+- Add new environment variables to `.env.example` and the README table; after changing `requirements.txt`, regenerate `requirements.lock`.
 - Make scheduled loops resilient per item so one bad record does not stop a whole pass.
 - Add tests next to the corresponding existing test module and run them with the
   repository `.venv` when available; slash callbacks must still register under

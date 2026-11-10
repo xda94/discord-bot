@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
@@ -147,7 +148,7 @@ class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
             await interaction.response.send_message(password_error, ephemeral=True)
             return
 
-        catalog = self._feature._get_catalog()
+        catalog = await asyncio.to_thread(self._feature._get_catalog)
         if self._sponsor_name and self._tier not in catalog:
             await record_for("failure", "sponsor-modal-submit", interaction)
             await interaction.response.send_message(
@@ -163,7 +164,7 @@ class _SponsorModal(discord.ui.Modal, title="Set Sponsor"):
             self._tier,
         )
         custom = self.custom_message.value if self._tier == "ultra" else None
-        self._feature.apply(self._sponsor_name, self._tier, custom)
+        await asyncio.to_thread(self._feature.apply, self._sponsor_name, self._tier, custom)
 
         if self._sponsor_name:
             tier_info = catalog.get(self._tier, catalog["standard"])
@@ -208,10 +209,11 @@ class _SponsorTierModal(discord.ui.Modal, title="Edit Sponsor Tier"):
             return
 
         try:
-            catalog = self._feature._get_catalog()
+            catalog = await asyncio.to_thread(self._feature._get_catalog)
             if self._tier_id is not None and self._tier_id not in catalog:
                 raise UnknownTierError("That tier no longer exists; reopen the editor.")
-            saved = db.save_sponsor_tier(
+            saved = await asyncio.to_thread(
+                db.save_sponsor_tier,
                 self._tier_id,
                 self.tier_name.value,
                 self.annual_price.value,
@@ -269,7 +271,8 @@ class SponsorsFeature:
     ) -> list[app_commands.Choice[str]]:
         query = (current or "").casefold()
         results = []
-        for tier_id, tier in self._get_catalog().items():
+        catalog = await asyncio.to_thread(self._get_catalog)
+        for tier_id, tier in catalog.items():
             if query and query not in tier_id.casefold() and query not in tier["name"].casefold():
                 continue
             label = f"{tier['name']} ({tier_id})"
@@ -329,7 +332,7 @@ class SponsorsFeature:
         ):
             sponsor_name = user.display_name if user else None
             tier = plan or "standard"
-            if sponsor_name and tier not in feature._get_catalog():
+            if sponsor_name and tier not in await asyncio.to_thread(feature._get_catalog):
                 await record_for("failure", "sponsor-modal-submit", interaction)
                 await interaction.response.send_message(
                     "Unknown sponsorship plan. Choose a plan from autocomplete.",
@@ -350,7 +353,7 @@ class SponsorsFeature:
             interaction: discord.Interaction,
             plan: Optional[str] = None,
         ):
-            catalog = feature._get_catalog()
+            catalog = await asyncio.to_thread(feature._get_catalog)
             if plan is not None and plan not in catalog:
                 await record_for("failure", "sponsor-tiers-modal-submit", interaction)
                 await interaction.response.send_message(
@@ -369,7 +372,7 @@ class SponsorsFeature:
         @self.tree.command(name="sponsor-plans", description="Show available sponsorship plans")
         async def sponsor_plans(interaction: discord.Interaction):
             logger.info("Command /sponsor-plans called by %s", interaction.user)
-            messages = _split_sponsor_plans_message(feature._get_catalog())
+            messages = _split_sponsor_plans_message(await asyncio.to_thread(feature._get_catalog))
             await interaction.response.send_message(messages[0])
             for message in messages[1:]:
                 await interaction.followup.send(message)
@@ -394,7 +397,7 @@ class SponsorsFeature:
             days = int(remaining // 86400)
             hours = int((remaining % 86400) // 3600)
             minutes = int((remaining % 3600) // 60)
-            catalog = feature._get_catalog()
+            catalog = await asyncio.to_thread(feature._get_catalog)
             tier_info = catalog.get(feature.sponsor_tier, catalog["standard"])
             await interaction.response.send_message(
                 f"**Current Sponsor:** {feature.sponsor}\n"
@@ -413,7 +416,7 @@ class SponsorsFeature:
 
             if elapsed >= one_day_before and not self.sponsor_warned:
                 self.sponsor_warned = True
-                db.set_setting("sponsor_warned", "1")
+                await asyncio.to_thread(db.set_setting, "sponsor_warned", "1")
                 for guild in self.client.guilds:
                     channel = guild.system_channel or next(
                         (ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages),
@@ -433,6 +436,6 @@ class SponsorsFeature:
 
             if elapsed >= ONE_YEAR_SECONDS:
                 logger.info("Sponsor '%s' has expired", self.sponsor)
-                self.apply(None, "standard", None)
+                await asyncio.to_thread(self.apply, None, "standard", None)
         except Exception:
             logger.exception("Error in check_sponsor_expiry task")

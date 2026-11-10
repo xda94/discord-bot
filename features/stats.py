@@ -149,7 +149,7 @@ class StatsFeature:
             description="Show stats for the machine running the bot",
         )
         async def stats(interaction: discord.Interaction):
-            logger.info(f"Command /stats called by {interaction.user}")
+            logger.info("Command /stats called by %s", interaction.user)
             await interaction.response.defer()
             try:
                 text = await asyncio.to_thread(_collect_stats)

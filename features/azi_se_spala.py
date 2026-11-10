@@ -104,7 +104,7 @@ def _parse_date(raw: Optional[str]) -> Optional[date]:
 async def _run(interaction: discord.Interaction, data: Optional[str]) -> None:
     """Core /azi-se-spala handler. Kept module-level (not a registration
     closure) so it can be unit-tested with a mock interaction."""
-    logger.info(f"Command /azi-se-spala called by {interaction.user} (data={data!r})")
+    logger.info("Command /azi-se-spala called by %s (data=%r)", interaction.user, data)
 
     target = _parse_date(data)
     if target is None:
@@ -126,7 +126,7 @@ async def _run(interaction: discord.Interaction, data: Optional[str]) -> None:
         )
         return
     except requests.RequestException as exc:
-        logger.warning(f"Failed to fetch azisespala calendar: {exc}")
+        logger.warning("Failed to fetch azisespala calendar: %s", exc)
         await interaction.followup.send(
             "Nu am putut contacta azisespala.ro acum. Încearcă mai târziu."
         )

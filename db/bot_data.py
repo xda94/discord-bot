@@ -34,12 +34,12 @@ def add_response(keyword, response, guild_id: int) -> bool:
                 (guild_id, keyword.lower(), response),
             )
         logger.info(
-            f"Inserted new response for keyword '{keyword}' in guild {guild_id}"
+            "Inserted new response for keyword '%s' in guild %s", keyword, guild_id
         )
         _invalidate_responses_cache(guild_id)
         return True
     except Exception:
-        logger.exception(f"Failed to add response for '{keyword}' in guild {guild_id}")
+        logger.exception("Failed to add response for '%s' in guild %s", keyword, guild_id)
         return False
 
 
@@ -58,16 +58,25 @@ def remove_response(keyword, guild_id: int, response=None):
                 )
             deleted = c.rowcount
         logger.info(
-            f"Deleted {deleted} response(s) for keyword '{keyword}' in guild {guild_id}"
+            "Deleted %s response(s) for keyword '%s' in guild %s", deleted, keyword, guild_id
         )
         if deleted:
             _invalidate_responses_cache(guild_id)
         return deleted > 0
     except Exception:
         logger.exception(
-            f"Failed to remove response for '{keyword}' in guild {guild_id}"
+            "Failed to remove response for '%s' in guild %s", keyword, guild_id
         )
         return False
+
+
+def get_cached_responses(guild_id: int):
+    cached_at = _responses_cache_at.get(guild_id)
+    if cached_at is None or guild_id not in _responses_cache:
+        return None
+    if (time.time() - cached_at) >= _RESPONSES_CACHE_TTL:
+        return None
+    return _responses_cache[guild_id]
 
 
 def get_all_responses(guild_id: int):
@@ -94,7 +103,7 @@ def get_all_responses(guild_id: int):
         _responses_cache_at[guild_id] = now
         return result
     except Exception:
-        logger.exception(f"Failed to fetch responses for guild {guild_id}")
+        logger.exception("Failed to fetch responses for guild %s", guild_id)
         return {}
 
 
@@ -111,7 +120,7 @@ def get_random_response(keyword, guild_id: int):
         return random.choice(rows)[0]
     except Exception:
         logger.exception(
-            f"Error retrieving random response for '{keyword}' in guild {guild_id}"
+            "Error retrieving random response for '%s' in guild %s", keyword, guild_id
         )
         return None
 
@@ -123,7 +132,7 @@ def add_reminder(user_id, channel_id, remind_at, message):
             c.execute("INSERT INTO reminders (user_id, channel_id, remind_at, message) VALUES (?, ?, ?, ?)",
                       (user_id, channel_id, remind_at, message))
             reminder_id = c.lastrowid
-        logger.info(f"Scheduled reminder for user {user_id} at timestamp {remind_at}")
+        logger.info("Scheduled reminder for user %s at timestamp %s", user_id, remind_at)
         return reminder_id
     except Exception:
         logger.exception("Failed to add reminder")
@@ -146,9 +155,9 @@ def delete_reminder(reminder_id):
         with _connect(commit=True) as c:
             c.execute("DELETE FROM reminder_occurrences WHERE reminder_id = ?", (reminder_id,))
             c.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
-        logger.debug(f"Deleted reminder ID: {reminder_id}")
+        logger.debug("Deleted reminder ID: %s", reminder_id)
     except Exception:
-        logger.exception(f"Failed to delete reminder ID {reminder_id}")
+        logger.exception("Failed to delete reminder ID %s", reminder_id)
 
 
 def get_all_reminders():
@@ -167,9 +176,9 @@ def log_keyword_usage(keyword, user_id, guild_id):
         with _connect(commit=True) as c:
             c.execute("INSERT INTO keyword_usage (keyword, user_id, guild_id, used_at) VALUES (?, ?, ?, ?)",
                       (keyword.lower(), user_id, guild_id, time.time()))
-        logger.debug(f"Logged usage of keyword '{keyword}' by user {user_id}")
+        logger.debug("Logged usage of keyword '%s' by user %s", keyword, user_id)
     except Exception:
-        logger.exception(f"Failed to log keyword usage for '{keyword}'")
+        logger.exception("Failed to log keyword usage for '%s'", keyword)
 
 
 def get_top_keywords(guild_id, limit=10):
@@ -180,7 +189,7 @@ def get_top_keywords(guild_id, limit=10):
                 "WHERE guild_id = ? GROUP BY keyword ORDER BY cnt DESC LIMIT ?",
                 (guild_id, limit))
             rows = c.fetchall()
-        logger.info(f"Fetched top {limit} keywords for guild {guild_id}")
+        logger.info("Fetched top %s keywords for guild %s", limit, guild_id)
         return rows
     except Exception:
         logger.exception("Failed to fetch top keywords")
@@ -195,10 +204,10 @@ def get_top_keywords_by_user(guild_id, user_id, limit=10):
                 "WHERE guild_id = ? AND user_id = ? GROUP BY keyword ORDER BY cnt DESC LIMIT ?",
                 (guild_id, user_id, limit))
             rows = c.fetchall()
-        logger.info(f"Fetched top {limit} keywords for user {user_id} in guild {guild_id}")
+        logger.info("Fetched top %s keywords for user %s in guild %s", limit, user_id, guild_id)
         return rows
     except Exception:
-        logger.exception(f"Failed to fetch top keywords for user {user_id}")
+        logger.exception("Failed to fetch top keywords for user %s", user_id)
         return []
 
 
@@ -207,7 +216,7 @@ def add_joke(text):
     try:
         with _connect(commit=True) as c:
             c.execute("INSERT INTO jokes (text, sent) VALUES (?, 0)", (text,))
-        logger.info(f"Added new joke: '{text[:50]}...'")
+        logger.info("Added new joke: '%s...'", text[:50])
     except Exception:
         logger.exception("Failed to add joke")
 
@@ -228,15 +237,17 @@ def get_unsent_joke_for_guild(guild_id):
                 WHERE j.id NOT IN (
                     SELECT joke_id FROM guild_joke_sent WHERE guild_id = ?
                 )
+                ORDER BY RANDOM()
+                LIMIT 1
                 """,
                 (guild_id,),
             )
-            rows = c.fetchall()
-        if not rows:
+            row = c.fetchone()
+        if row is None:
             return None
-        return random.choice(rows)
+        return row
     except Exception:
-        logger.exception(f"Failed to get unsent joke for guild {guild_id}")
+        logger.exception("Failed to get unsent joke for guild %s", guild_id)
         return None
 
 
@@ -252,9 +263,9 @@ def mark_guild_joke_sent(guild_id, joke_id):
                 "ON CONFLICT(guild_id, joke_id) DO UPDATE SET sent_at = excluded.sent_at",
                 (guild_id, joke_id, time.time()),
             )
-        logger.debug(f"Marked joke {joke_id} as sent for guild {guild_id}")
+        logger.debug("Marked joke %s as sent for guild %s", joke_id, guild_id)
     except Exception:
-        logger.exception(f"Failed to mark joke {joke_id} as sent for guild {guild_id}")
+        logger.exception("Failed to mark joke %s as sent for guild %s", joke_id, guild_id)
 
 
 def reset_guild_joke_sent(guild_id):
@@ -262,9 +273,9 @@ def reset_guild_joke_sent(guild_id):
     try:
         with _connect(commit=True) as c:
             c.execute("DELETE FROM guild_joke_sent WHERE guild_id = ?", (guild_id,))
-        logger.info(f"Reset joke sent history for guild {guild_id}")
+        logger.info("Reset joke sent history for guild %s", guild_id)
     except Exception:
-        logger.exception(f"Failed to reset joke history for guild {guild_id}")
+        logger.exception("Failed to reset joke history for guild %s", guild_id)
 
 
 def reset_all_guild_joke_sent():
@@ -296,7 +307,7 @@ def get_setting(key):
             row = c.fetchone()
         return row[0] if row else None
     except Exception:
-        logger.exception(f"Failed to get setting '{key}'")
+        logger.exception("Failed to get setting '%s'", key)
         return None
 
 
@@ -308,9 +319,9 @@ def set_setting(key, value):
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, str(value)),
             )
-        logger.info(f"Setting '{key}' set to '{value}'")
+        logger.info("Setting '%s' set to '%s'", key, value)
     except Exception:
-        logger.exception(f"Failed to set setting '{key}'")
+        logger.exception("Failed to set setting '%s'", key)
 
 def set_guild_joke_config(guild_id, channel_id, send_time):
     """Upsert one guild's joke schedule. Preserves `last_sent_date` on
@@ -329,11 +340,14 @@ def set_guild_joke_config(guild_id, channel_id, send_time):
                 (guild_id, channel_id, send_time),
             )
         logger.info(
-            f"Joke config set for guild {guild_id}: "
-            f"channel={channel_id} time={send_time}"
+            "Joke config set for guild %s: "
+            "channel=%s time=%s",
+            guild_id,
+            channel_id,
+            send_time,
         )
     except Exception:
-        logger.exception(f"Failed to set joke config for guild {guild_id}")
+        logger.exception("Failed to set joke config for guild %s", guild_id)
 
 
 def get_guild_joke_config(guild_id):
@@ -356,7 +370,7 @@ def get_guild_joke_config(guild_id):
             "last_sent_date": row[3],
         }
     except Exception:
-        logger.exception(f"Failed to fetch joke config for guild {guild_id}")
+        logger.exception("Failed to fetch joke config for guild %s", guild_id)
         return None
 
 
@@ -394,10 +408,10 @@ def clear_guild_joke_config(guild_id):
             c.execute("DELETE FROM guild_joke_config WHERE guild_id = ?", (guild_id,))
             deleted = c.rowcount
         if deleted:
-            logger.info(f"Cleared joke config for guild {guild_id}")
+            logger.info("Cleared joke config for guild %s", guild_id)
         return deleted > 0
     except Exception:
-        logger.exception(f"Failed to clear joke config for guild {guild_id}")
+        logger.exception("Failed to clear joke config for guild %s", guild_id)
         return False
 
 
@@ -411,7 +425,7 @@ def set_guild_joke_last_sent(guild_id, date_iso):
                 (date_iso, guild_id),
             )
     except Exception:
-        logger.exception(f"Failed to set last_sent_date for guild {guild_id}")
+        logger.exception("Failed to set last_sent_date for guild %s", guild_id)
 
 
 def get_joke_by_id(joke_id):
@@ -420,7 +434,7 @@ def get_joke_by_id(joke_id):
             c.execute("SELECT id, text, sent FROM jokes WHERE id = ?", (joke_id,))
             return c.fetchone()
     except Exception:
-        logger.exception(f"Failed to fetch joke {joke_id}")
+        logger.exception("Failed to fetch joke %s", joke_id)
         return None
 
 
@@ -429,10 +443,10 @@ def update_joke(joke_id, text):
         with _connect(commit=True) as c:
             c.execute("UPDATE jokes SET text = ? WHERE id = ?", (text, joke_id))
             updated = c.rowcount
-        logger.info(f"Updated joke {joke_id}")
+        logger.info("Updated joke %s", joke_id)
         return updated > 0
     except Exception:
-        logger.exception(f"Failed to update joke {joke_id}")
+        logger.exception("Failed to update joke %s", joke_id)
         return False
 
 
@@ -441,10 +455,10 @@ def delete_joke(joke_id):
         with _connect(commit=True) as c:
             c.execute("DELETE FROM jokes WHERE id = ?", (joke_id,))
             deleted = c.rowcount
-        logger.info(f"Deleted joke {joke_id}")
+        logger.info("Deleted joke %s", joke_id)
         return deleted > 0
     except Exception:
-        logger.exception(f"Failed to delete joke {joke_id}")
+        logger.exception("Failed to delete joke %s", joke_id)
         return False
 
 def set_guild_activity(guild_id, last_time, channel_id):
@@ -459,7 +473,7 @@ def set_guild_activity(guild_id, last_time, channel_id):
                 (guild_id, last_time, channel_id),
             )
     except Exception:
-        logger.exception(f"Failed to set guild_activity for guild {guild_id}")
+        logger.exception("Failed to set guild_activity for guild %s", guild_id)
 
 
 def get_all_guild_activity():
@@ -486,7 +500,7 @@ def set_guild_inactivity_enabled(guild_id: int, enabled: bool) -> None:
             )
     except Exception:
         logger.exception(
-            f"Failed to set inactivity configuration for guild {guild_id}"
+            "Failed to set inactivity configuration for guild %s", guild_id
         )
 
 
@@ -502,6 +516,6 @@ def is_guild_inactivity_enabled(guild_id: int) -> bool:
             return True if row is None else bool(row[0])
     except Exception:
         logger.exception(
-            f"Failed to fetch inactivity configuration for guild {guild_id}"
+            "Failed to fetch inactivity configuration for guild %s", guild_id
         )
         return False

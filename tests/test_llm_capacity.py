@@ -11,7 +11,6 @@ import pytest
 from llm.capacity import (
     CapacityBusy,
     CapacityError,
-    CapacityTimeout,
     action_context,
     async_action_context,
     busy,
@@ -261,3 +260,32 @@ def test_default_storage_is_beside_configured_database(tmp_path, monkeypatch):
         assert reservation.directory == tmp_path / "data" / ".llm-capacity"
     finally:
         reservation.release()
+
+
+def test_blocked_async_waiter_backs_off_between_activation_attempts():
+    async def scenario():
+        owner = reserve()
+        owner.activate()
+        waiter = reserve()
+        calls = []
+        original = waiter.try_activate
+
+        def counting():
+            calls.append(None)
+            return original()
+
+        waiter.try_activate = counting
+
+        async def waiting():
+            async with async_action_context(waiter):
+                return True
+
+        task = asyncio.create_task(waiting())
+        await asyncio.sleep(1)
+        blocked_calls = len(calls)
+        owner.release()
+        assert await asyncio.wait_for(task, 5) is True
+        assert 0 < blocked_calls < 20
+        assert not busy()
+
+    asyncio.run(scenario())

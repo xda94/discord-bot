@@ -45,8 +45,9 @@ def init_db():
                 legacy_count = c.fetchone()[0]
                 if legacy_count:
                     logger.warning(
-                        f"{legacy_count} legacy keyword(s) have no guild_id and "
-                        f"will not match until re-added per server with /keyword-add."
+                        "%s legacy keyword(s) have no guild_id and "
+                        "will not match until re-added per server with /keyword-add.",
+                        legacy_count,
                     )
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_responses_guild_id "
@@ -81,6 +82,14 @@ def init_db():
                     used_at REAL NOT NULL
                 )
             """)
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_keyword_usage_guild_keyword "
+                "ON keyword_usage(guild_id, keyword)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_keyword_usage_guild_user "
+                "ON keyword_usage(guild_id, user_id)"
+            )
             c.execute("""
                 CREATE TABLE IF NOT EXISTS jokes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,9 +187,10 @@ def init_db():
                 )
             """)
             c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_price_history_item_id "
-                "ON price_history(item_id)"
+                "CREATE INDEX IF NOT EXISTS idx_price_history_item_ts "
+                "ON price_history(item_id, timestamp)"
             )
+            c.execute("DROP INDEX IF EXISTS idx_price_history_item_id")
             c.execute(
                 "CREATE INDEX IF NOT EXISTS idx_price_history_timestamp "
                 "ON price_history(timestamp)"
