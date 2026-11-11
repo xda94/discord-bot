@@ -1,4 +1,4 @@
-# Discord Keyword Responder Bot
+# Multipurpose Discord Bot
 
 A Python Discord bot with keyword auto-responses, mood-based teases, reminders, recurring birthday greetings, per-server daily jokes, sponsorship tags, global per-user assistant profiles, image-aware mention replies, a **wishlist** price tracker (scrape loop, DMs on price/stock changes, buy/wait signals, and history graphs), and a per-user **flight price tracker**. A separate **Flask API** manages the same data from scripts or other tools. Both processes share one SQLite database and are typically kept alive with **PM2**.
 
