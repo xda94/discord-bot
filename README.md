@@ -427,6 +427,8 @@ cannot recover history already removed by the `WISHLIST_HISTORY_DAYS` retention 
 
 **Currency** — read from the page when possible; TLD fallback (e.g. `.ro` → RON, `.dk` → DKK).
 
+**Product variants** — JSON-LD `ProductGroup` pages (e.g. king.ro bottles sold in several sizes) use the `hasVariant` product whose URL matches the tracked link, falling back to the first variant.
+
 **Text-fallback extraction** — If JSON-LD or meta tags are missing, the scraper strips `<script>` and `<style>` tags to check visible page text for stock status keywords, preventing false "out of stock" readings triggered by hidden JS localization strings.
 
 **AI Fallback Scraping** — When both price and stock remain unknown, the scraper uses local llama.cpp (`LLAMA_CPP_DEFAULT_MODEL`) to extract them from visible page text, even when a title or currency exists. Usable data requires a finite nonnegative price (including zero) or explicit stock status. Boolean, negative, NaN, and infinite prices are rejected; blank titles/currencies become missing, and unknown availability stays unknown. Fallback fills missing fields, and TLD currency guessing runs afterward.

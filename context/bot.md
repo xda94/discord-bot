@@ -553,6 +553,8 @@ HTTP request
     -> local llama.cpp JSON extraction fallback
 ```
 
+JSON-LD `ProductGroup` entries (e.g. king.ro products sold in several sizes) are read through their `hasVariant` products: the variant whose `url` or `offers.url` matches the requested page wins, otherwise the first variant is used.
+
 Scripts and styles are removed before visible-text stock extraction, avoiding false signals from embedded localization or JavaScript data.
 
 `curl_cffi` is used when installed to improve compatibility with sites that inspect TLS/browser fingerprints. The implementation falls back to ordinary `requests` when it is unavailable.

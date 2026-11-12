@@ -111,6 +111,12 @@ class ScrapeResult:
 
 
 
+def _variant_url(variant):
+    offers = variant.get("offers")
+    url = variant.get("url") or (offers.get("url") if isinstance(offers, dict) else None)
+    return str(url or "").rstrip("/")
+
+
 def _domain(url: str) -> str:
     """Return the hostname of `url`, falling back to the URL itself on parse errors."""
     try:
@@ -230,7 +236,7 @@ class PriceScraper:
             in_stock: bool | None = None
 
             price, title, currency, in_stock = self._extract_from_json_ld(
-                soup, price, title, currency, in_stock
+                soup, price, title, currency, in_stock, url
             )
             title = title or self._extract_meta_title(soup)
             if price is None:
@@ -333,11 +339,19 @@ class PriceScraper:
         raise ValueError("Too many redirects")
 
     @staticmethod
-    def _extract_from_json_ld(soup, price, title, currency, in_stock):
+    def _extract_from_json_ld(soup, price, title, currency, in_stock, url=None):
+        page = urlparse(url or "")._replace(query="", fragment="").geturl().rstrip("/")
         for script in soup.find_all("script", type="application/ld+json"):
             try:
                 data = json.loads(script.string)
-                items = data if isinstance(data, list) else [data]
+                items = []
+                for item in data if isinstance(data, list) else [data]:
+                    if isinstance(item, dict) and item.get("@type") in ("ProductGroup", "http://schema.org/ProductGroup"):
+                        variants = [v for v in item.get("hasVariant") or [] if isinstance(v, dict)]
+                        matching = [v for v in variants if page and _variant_url(v) == page]
+                        items.extend(matching or variants[:1])
+                    else:
+                        items.append(item)
                 for item in items:
                     if not (isinstance(item, dict) and
                             item.get("@type") in ("Product", "http://schema.org/Product")):

@@ -97,6 +97,21 @@ def test_json_ld_basic_product():
     assert in_stock is True
 
 
+def test_json_ld_product_group_uses_variant_matching_page_url():
+    soup = _parse('''
+        <script type="application/ld+json">
+        [{"@type": "ProductGroup", "name": "Group", "hasVariant": [
+          {"@type": "Product", "name": "Small", "offers": {"url": "https://shop.ro/small.html", "price": 10, "priceCurrency": "RON", "availability": "https://schema.org/OutOfStock"}},
+          {"@type": "Product", "name": "Big", "offers": {"url": "https://shop.ro/big.html", "price": 20, "priceCurrency": "RON", "availability": "https://schema.org/InStock"}}
+        ]}]
+        </script>
+    ''')
+    assert PriceScraper._extract_from_json_ld(
+        soup, None, None, None, None, "https://shop.ro/big.html?utm=x",
+    ) == (20.0, "Big", "RON", True)
+    assert PriceScraper._extract_from_json_ld(soup, None, None, None, None)[:2] == (10.0, "Small")
+
+
 def test_json_ld_nested_price_specification():
     """Altex/eMag put the price inside a nested `priceSpecification` rather
     than directly on the offer — the extractor must look there too."""
